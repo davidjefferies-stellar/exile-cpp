@@ -1,0 +1,14 @@
+# Build output
+build/
+x64/
+Debug/
+Release/
+
+# Visual Studio per-user state
+*.vcxproj.user
+*.suo
+.vs/
+
+# Prebuilt/extracted dependencies (re-fetchable)
+deps/pdcurses.zip
+deps/PDCurses-3.9/

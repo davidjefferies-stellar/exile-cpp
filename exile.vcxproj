@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{2692A890-38C0-4497-A195-6F63DF705F40}</ProjectGuid>
+    <RootNamespace>exile</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>D:\Projects\Exile\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>D:\Projects\Exile\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)data;$(ProjectDir)deps;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <Optimization>Disabled</Optimization>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)data;$(ProjectDir)deps;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <Optimization>MaxSpeed</Optimization>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\core\random.cpp" />
+    <ClCompile Include="src\world\landscape.cpp" />
+    <ClCompile Include="src\world\obstruction.cpp" />
+    <ClCompile Include="src\world\wind.cpp" />
+    <ClCompile Include="src\world\water.cpp" />
+    <ClCompile Include="src\objects\object.cpp" />
+    <ClCompile Include="src\objects\object_manager.cpp" />
+    <ClCompile Include="src\objects\physics.cpp" />
+    <ClCompile Include="src\objects\collision.cpp" />
+    <ClCompile Include="src\objects\held_object.cpp" />
+    <ClCompile Include="src\objects\weapon.cpp" />
+    <ClCompile Include="src\ai\npc_helpers.cpp" />
+    <ClCompile Include="src\ai\mood.cpp" />
+    <ClCompile Include="src\ai\behavior_dispatch.cpp" />
+    <ClCompile Include="src\ai\behaviors\projectile.cpp" />
+    <ClCompile Include="src\ai\behaviors\creature.cpp" />
+    <ClCompile Include="src\ai\behaviors\robot.cpp" />
+    <ClCompile Include="src\ai\behaviors\environment.cpp" />
+    <ClCompile Include="src\ai\behaviors\collectable.cpp" />
+    <ClCompile Include="src\player\input.cpp" />
+    <ClCompile Include="src\rendering\camera.cpp" />
+    <ClCompile Include="src\rendering\fenster\fenster_renderer.cpp" />
+    <ClCompile Include="src\rendering\sprite_atlas.cpp" />
+    <ClCompile Include="src\particles\particle_system.cpp" />
+    <ClCompile Include="src\game\game.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\core\types.h" />
+    <ClInclude Include="src\core\random.h" />
+    <ClInclude Include="src\core\fixed_point.h" />
+    <ClInclude Include="data\map_overlay.h" />
+    <ClInclude Include="src\world\landscape.h" />
+    <ClInclude Include="src\world\obstruction.h" />
+    <ClInclude Include="src\world\tile_data.h" />
+    <ClInclude Include="src\world\wind.h" />
+    <ClInclude Include="src\world\water.h" />
+    <ClInclude Include="src\objects\object.h" />
+    <ClInclude Include="src\objects\object_data.h" />
+    <ClInclude Include="src\objects\object_tables.h" />
+    <ClInclude Include="src\objects\object_manager.h" />
+    <ClInclude Include="src\objects\held_object.h" />
+    <ClInclude Include="src\objects\weapon.h" />
+    <ClInclude Include="src\objects\physics.h" />
+    <ClInclude Include="src\objects\collision.h" />
+    <ClInclude Include="src\rendering\renderer.h" />
+    <ClInclude Include="src\rendering\camera.h" />
+    <ClInclude Include="src\rendering\fenster\fenster_renderer.h" />
+    <ClInclude Include="src\rendering\sprite_atlas.h" />
+    <ClInclude Include="src\rendering\font8x8.h" />
+    <ClInclude Include="src\rendering\debug_names.h" />
+    <ClInclude Include="src\particles\particle_system.h" />
+    <ClInclude Include="deps\fenster.h" />
+    <ClInclude Include="src\ai\npc_helpers.h" />
+    <ClInclude Include="src\ai\mood.h" />
+    <ClInclude Include="src\ai\behavior_dispatch.h" />
+    <ClInclude Include="src\ai\behaviors\projectile.h" />
+    <ClInclude Include="src\ai\behaviors\creature.h" />
+    <ClInclude Include="src\ai\behaviors\robot.h" />
+    <ClInclude Include="src\ai\behaviors\environment.h" />
+    <ClInclude Include="src\ai\behaviors\collectable.h" />
+    <ClInclude Include="src\player\input.h" />
+    <ClInclude Include="src\game\game.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

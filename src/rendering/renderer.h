@@ -1,0 +1,96 @@
+#pragma once
+#include <cstdint>
+#include "core/types.h"
+#include "core/fixed_point.h"
+
+struct TileRenderInfo {
+    uint8_t tile_type;    // 0-63 (low 6 bits)
+    uint8_t palette;
+    bool    flip_h;
+    bool    flip_v;
+};
+
+struct SpriteRenderInfo {
+    uint8_t sprite_id;
+    uint8_t palette;
+    bool    flip_h;
+    bool    flip_v;
+    bool    visible;
+    ObjectType type;
+};
+
+struct PlayerState {
+    uint8_t energy;
+    uint8_t weapon;
+    uint8_t keys_collected;
+    bool    has_jetpack_booster;
+};
+
+namespace InputKey {
+    constexpr int NONE  = -1;
+    constexpr int LEFT  = 0x100;
+    constexpr int RIGHT = 0x101;
+    constexpr int UP    = 0x102;
+    constexpr int DOWN  = 0x103;
+    constexpr int ENTER = 0x104;
+}
+
+class IRenderer {
+public:
+    virtual ~IRenderer() = default;
+
+    virtual bool init() = 0;
+    virtual void shutdown() = 0;
+
+    virtual void begin_frame() = 0;
+    virtual void end_frame() = 0;
+
+    // Set viewport center in world tile coordinates. The fractional args
+    // give sub-tile precision (0-255 = 0-1 tile), so the camera can
+    // smoothly follow the player between tile boundaries.
+    virtual void set_viewport(uint8_t center_x, uint8_t center_y,
+                              uint8_t frac_x = 0, uint8_t frac_y = 0) = 0;
+
+    // Render one tile at world coordinates
+    virtual void render_tile(uint8_t world_x, uint8_t world_y,
+                             const TileRenderInfo& info) = 0;
+
+    // Render one object at world position
+    virtual void render_object(Fixed8_8 world_x, Fixed8_8 world_y,
+                               const SpriteRenderInfo& info) = 0;
+
+    // Render one particle: a single pixel at world (x, y). Colour 0-7
+    // (BBC mode-1 palette). Default no-op for renderers that don't support
+    // particles.
+    virtual void render_particle(uint8_t /*wx*/, uint8_t /*wx_frac*/,
+                                 uint8_t /*wy*/, uint8_t /*wy_frac*/,
+                                 uint8_t /*colour*/) {}
+
+    // HUD
+    virtual void render_hud(const PlayerState& player) = 0;
+
+    // Viewport dimensions in tiles
+    virtual int viewport_width_tiles() const = 0;
+    virtual int viewport_height_tiles() const = 0;
+
+    // Input: get last key press (non-blocking)
+    virtual int get_key() = 0;
+
+    // --- Optional mouse / overlay hooks. Default no-ops for renderers that
+    //     don't support interactive input. ---
+
+    // Pop accumulated right-drag pan delta in tiles (one tile = tile_px).
+    // Returns true if a non-zero delta was consumed.
+    virtual bool consume_pan_tiles(int& dx_tiles, int& dy_tiles) {
+        dx_tiles = 0; dy_tiles = 0; return false;
+    }
+
+    // Pop a pending left-click as a screen-relative tile offset from the
+    // viewport center. Returns false if no click happened since last call.
+    virtual bool consume_left_click(int& tile_dx, int& tile_dy) {
+        tile_dx = 0; tile_dy = 0; return false;
+    }
+
+    // Set overlay text drawn in the top-right corner.
+    virtual void set_overlay_text(const char* /*text*/) {}
+};

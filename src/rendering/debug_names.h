@@ -1,0 +1,142 @@
+#pragma once
+#include <cstdint>
+#include "core/types.h"
+
+// Human-readable names used only for the debug overlay (left-click tile info).
+
+inline const char* tile_type_name(uint8_t tile_type) {
+    switch (tile_type & 0x3f) {
+        case 0x00: return "EMPTY";
+        case 0x08: return "CHECK_TERTIARY";
+        case 0x09: return "NEST";
+        case 0x0a: return "PIPE";
+        case 0x0b: return "CONSTANT_WIND";
+        case 0x0c: return "ENGINE";
+        case 0x0d: return "WATER";
+        case 0x0e: return "VARIABLE_WIND";
+        case 0x0f: return "MUSHROOMS";
+        case 0x10: return "GREEN_HORIZONTAL_QUARTER";
+        case 0x12: return "STONE_ONE";
+        case 0x13: return "STONE_SLOPE_45_FULL";
+        case 0x19: return "SPACE";
+        case 0x1a: return "SHORT_BUSH";
+        case 0x1b: return "TALL_BUSH";
+        case 0x1e: return "STONE_TWO";
+        case 0x21: return "COLUMN";
+        case 0x23: return "STONE_SLOPE_45";
+        case 0x24: return "STONE_SLOPE_22_ONE";
+        case 0x2b: return "EARTH_EDGE";
+        case 0x2c: return "EARTH_HORIZ_QUARTER_EDGE";
+        case 0x2d: return "EARTH";
+        case 0x2e: return "EARTH_SLOPE_45";
+        case 0x2f: return "EARTH_SLOPE_22_ONE";
+        default:   return "?";
+    }
+}
+
+inline const char* object_type_name(ObjectType t) {
+    switch (t) {
+        case ObjectType::PLAYER: return "PLAYER";
+        case ObjectType::ACTIVE_CHATTER: return "ACTIVE_CHATTER";
+        case ObjectType::CREW_MEMBER: return "CREW_MEMBER";
+        case ObjectType::FLUFFY: return "FLUFFY";
+        case ObjectType::SMALL_HIVE: return "SMALL_HIVE";
+        case ObjectType::LARGE_HIVE: return "LARGE_HIVE";
+        case ObjectType::RED_FROGMAN: return "RED_FROGMAN";
+        case ObjectType::GREEN_FROGMAN: return "GREEN_FROGMAN";
+        case ObjectType::INVISIBLE_FROGMAN: return "INVIS_FROGMAN";
+        case ObjectType::RED_SLIME: return "RED_SLIME";
+        case ObjectType::GREEN_SLIME: return "GREEN_SLIME";
+        case ObjectType::YELLOW_SLIME: return "YELLOW_SLIME";
+        case ObjectType::DENSE_NEST: return "DENSE_NEST";
+        case ObjectType::SUCKING_NEST: return "SUCKING_NEST";
+        case ObjectType::BIG_FISH: return "BIG_FISH";
+        case ObjectType::WORM: return "WORM";
+        case ObjectType::PIRANHA: return "PIRANHA";
+        case ObjectType::WASP: return "WASP";
+        case ObjectType::ACTIVE_GRENADE: return "ACTIVE_GRENADE";
+        case ObjectType::ICER_BULLET: return "ICER_BULLET";
+        case ObjectType::TRACER_BULLET: return "TRACER_BULLET";
+        case ObjectType::CANNONBALL: return "CANNONBALL";
+        case ObjectType::BLUE_DEATH_BALL: return "BLUE_DEATH_BALL";
+        case ObjectType::RED_BULLET: return "RED_BULLET";
+        case ObjectType::PISTOL_BULLET: return "PISTOL_BULLET";
+        case ObjectType::PLASMA_BALL: return "PLASMA_BALL";
+        case ObjectType::HOVERING_BALL: return "HOVERING_BALL";
+        case ObjectType::INVISIBLE_HOVERING_BALL: return "INVIS_HOVER_BALL";
+        case ObjectType::MAGENTA_ROLLING_ROBOT: return "M_ROLLING_ROBOT";
+        case ObjectType::RED_ROLLING_ROBOT: return "R_ROLLING_ROBOT";
+        case ObjectType::BLUE_ROLLING_ROBOT: return "B_ROLLING_ROBOT";
+        case ObjectType::GREEN_WHITE_TURRET: return "GW_TURRET";
+        case ObjectType::CYAN_RED_TURRET: return "CR_TURRET";
+        case ObjectType::HOVERING_ROBOT: return "HOVERING_ROBOT";
+        case ObjectType::MAGENTA_CLAWED_ROBOT: return "M_CLAWED_ROBOT";
+        case ObjectType::CYAN_CLAWED_ROBOT: return "C_CLAWED_ROBOT";
+        case ObjectType::GREEN_CLAWED_ROBOT: return "G_CLAWED_ROBOT";
+        case ObjectType::RED_CLAWED_ROBOT: return "R_CLAWED_ROBOT";
+        case ObjectType::TRIAX: return "TRIAX";
+        case ObjectType::MAGGOT: return "MAGGOT";
+        case ObjectType::GARGOYLE: return "GARGOYLE";
+        case ObjectType::RED_MAGENTA_IMP: return "RM_IMP";
+        case ObjectType::RED_YELLOW_IMP: return "RY_IMP";
+        case ObjectType::BLUE_CYAN_IMP: return "BC_IMP";
+        case ObjectType::CYAN_YELLOW_IMP: return "CY_IMP";
+        case ObjectType::RED_CYAN_IMP: return "RC_IMP";
+        case ObjectType::GREEN_YELLOW_BIRD: return "GY_BIRD";
+        case ObjectType::WHITE_YELLOW_BIRD: return "WY_BIRD";
+        case ObjectType::RED_MAGENTA_BIRD: return "RM_BIRD";
+        case ObjectType::INVISIBLE_BIRD: return "INVIS_BIRD";
+        case ObjectType::LIGHTNING: return "LIGHTNING";
+        case ObjectType::RED_MUSHROOM_BALL: return "RED_MUSH_BALL";
+        case ObjectType::BLUE_MUSHROOM_BALL: return "BLUE_MUSH_BALL";
+        case ObjectType::INVISIBLE_DEBRIS: return "INVIS_DEBRIS";
+        case ObjectType::RED_DROP: return "RED_DROP";
+        case ObjectType::FIREBALL: return "FIREBALL";
+        case ObjectType::INACTIVE_CHATTER: return "INACTIVE_CHATTER";
+        case ObjectType::MOVING_FIREBALL: return "MOVING_FIREBALL";
+        case ObjectType::GIANT_BLOCK: return "GIANT_BLOCK";
+        case ObjectType::ENGINE_FIRE: return "ENGINE_FIRE";
+        case ObjectType::HORIZONTAL_METAL_DOOR: return "H_METAL_DOOR";
+        case ObjectType::VERTICAL_METAL_DOOR: return "V_METAL_DOOR";
+        case ObjectType::HORIZONTAL_STONE_DOOR: return "H_STONE_DOOR";
+        case ObjectType::VERTICAL_STONE_DOOR: return "V_STONE_DOOR";
+        case ObjectType::BUSH: return "BUSH";
+        case ObjectType::TRANSPORTER_BEAM: return "TRANSPORTER_BEAM";
+        case ObjectType::SWITCH: return "SWITCH";
+        case ObjectType::PIANO: return "PIANO";
+        case ObjectType::EXPLOSION: return "EXPLOSION";
+        case ObjectType::BOULDER: return "BOULDER";
+        case ObjectType::CANNON: return "CANNON";
+        case ObjectType::ALIEN_WEAPON: return "ALIEN_WEAPON";
+        case ObjectType::MAGGOT_MACHINE: return "MAGGOT_MACHINE";
+        case ObjectType::PLACEHOLDER: return "PLACEHOLDER";
+        case ObjectType::DESTINATOR: return "DESTINATOR";
+        case ObjectType::POWER_POD: return "POWER_POD";
+        case ObjectType::EMPTY_FLASK: return "EMPTY_FLASK";
+        case ObjectType::FULL_FLASK: return "FULL_FLASK";
+        case ObjectType::REMOTE_CONTROL_DEVICE: return "REMOTE_CTRL";
+        case ObjectType::CANNON_CONTROL_DEVICE: return "CANNON_CTRL";
+        case ObjectType::INACTIVE_GRENADE: return "INACTIVE_GRENADE";
+        case ObjectType::CYAN_YELLOW_GREEN_KEY: return "CYG_KEY";
+        case ObjectType::RED_YELLOW_GREEN_KEY: return "RYG_KEY";
+        case ObjectType::GREEN_YELLOW_RED_KEY: return "GYR_KEY";
+        case ObjectType::YELLOW_WHITE_RED_KEY: return "YWR_KEY";
+        case ObjectType::CORONIUM_BOULDER: return "CORONIUM_BOULDER";
+        case ObjectType::RED_MAGENTA_RED_KEY: return "RMR_KEY";
+        case ObjectType::BLUE_CYAN_GREEN_KEY: return "BCG_KEY";
+        case ObjectType::CORONIUM_CRYSTAL: return "CORONIUM_CRYSTAL";
+        case ObjectType::JETPACK_BOOSTER: return "JETPACK_BOOSTER";
+        case ObjectType::PISTOL: return "PISTOL";
+        case ObjectType::ICER: return "ICER";
+        case ObjectType::BLASTER: return "BLASTER";
+        case ObjectType::PLASMA_GUN: return "PLASMA_GUN";
+        case ObjectType::PROTECTION_SUIT: return "PROTECTION_SUIT";
+        case ObjectType::FIRE_IMMUNITY_DEVICE: return "FIRE_IMMUNITY";
+        case ObjectType::MUSHROOM_IMMUNITY_PILL: return "MUSH_IMMUNE_PILL";
+        case ObjectType::WHISTLE_ONE: return "WHISTLE_ONE";
+        case ObjectType::WHISTLE_TWO: return "WHISTLE_TWO";
+        case ObjectType::RADIATION_IMMUNITY_PILL: return "RAD_IMMUNE_PILL";
+        case ObjectType::INVISIBLE_INERT: return "INVIS_INERT";
+        default: return "UNKNOWN";
+    }
+}
