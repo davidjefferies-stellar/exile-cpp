@@ -1,5 +1,7 @@
 #include "particles/particle_system.h"
 #include "objects/object.h"
+#include "objects/object_data.h"
+#include "rendering/sprite_atlas.h"
 #include "core/types.h"
 
 // ===== Per-type configuration (from &0206-&0276 in the disassembly) =========
@@ -119,13 +121,72 @@ void ParticleSystem::emit(ParticleType type, int count, const Object& src, Rando
     if (type >= ParticleType::COUNT || count <= 0) return;
     const TypeData& t = TYPES[static_cast<int>(type)];
 
-    // Build base position from source object (&2197-&2209, simplified).
-    // The original picks edge/centre of sprite using width; here we just
-    // use the object's position point.
+    // Build base position from source object (&2197-&2209).
+    //
+    // After the three ASLs at &21e4-&21e8, the flags byte is walked MSB-first
+    // and each axis goes through two flag bits:
+    //   - "consider sprite flip": if set AND the object is flipped on this
+    //     axis, start the offset at the sprite's (width-1)*16 / (height-1)*8
+    //     edge; otherwise start at 0.
+    //   - "use centre": if set, add half the sprite's width/height in the
+    //     6502's sub-tile units (1 sprite-pixel horizontally = 16, 1 row
+    //     vertically = 8).
+    // Both offsets are applied to the object's position fraction, carrying
+    // into the whole-tile byte on overflow. Jetpack particles use the "use
+    // vertical centre" bit (0x08) so they come out of the middle of the
+    // spacesuit instead of its head.
     uint8_t base_x         = src.x.whole;
     uint8_t base_x_frac    = src.x.fraction;
     uint8_t base_y         = src.y.whole;
     uint8_t base_y_frac    = src.y.fraction;
+
+    // Look up the source sprite so we know how big it is in sub-tile units.
+    // object_types_sprite[type] picks the default spritesheet index; fall
+    // back to the object's overridden sprite (used by direction animations).
+    uint8_t sprite_id = src.sprite;
+    if (sprite_id > 0x7c) {
+        uint8_t tidx = static_cast<uint8_t>(src.type);
+        if (tidx < static_cast<uint8_t>(ObjectType::COUNT)) {
+            sprite_id = object_types_sprite[tidx];
+        }
+    }
+    int sw_units = 0, sh_units = 0;
+    if (sprite_id <= 0x7c) {
+        const SpriteAtlasEntry& e = sprite_atlas[sprite_id];
+        sw_units = (e.w > 0 ? (e.w - 1) : 0) * 16;   // 1 sprite-px = 16 frac
+        sh_units = (e.h > 0 ? (e.h - 1) : 0) * 8;    // 1 sprite-row = 8 frac
+    }
+
+    // Helper applies the 6502's per-axis "flip-aware edge + optional centre"
+    // offset. `size` is the sub-tile extent on this axis, `flipped` is whether
+    // the object's flip bit is set for this axis, `consider_flip` and
+    // `use_centre` come out of the flags byte.
+    auto apply_base_offset = [&](uint8_t& whole, uint8_t& frac,
+                                 int size, bool flipped,
+                                 bool consider_flip, bool use_centre) {
+        int offset = 0;
+        if (consider_flip && flipped) offset = size;    // start at far edge
+        if (use_centre) offset += size / 2;              // plus half-extent
+        int sum = int(frac) + offset;
+        frac = static_cast<uint8_t>(sum);
+        whole = static_cast<uint8_t>(whole + (sum >> 8));
+    };
+
+    // After 3 ASLs the flags byte has been consumed down to bits 4..0; the
+    // per-axis pair order the 6502 uses is (y first — X=2 in its loop, then
+    // x — X=0). Bits walked: vflip, vcentre, hflip, hcentre.
+    bool consider_vflip  = (t.flags & 0x10) != 0;
+    bool use_vcentre     = (t.flags & 0x08) != 0;
+    bool consider_hflip  = (t.flags & 0x04) != 0;
+    bool use_hcentre     = (t.flags & 0x02) != 0;
+
+    bool y_flipped = (src.flags & ObjectFlags::FLIP_VERTICAL)   != 0;
+    bool x_flipped = (src.flags & ObjectFlags::FLIP_HORIZONTAL) != 0;
+
+    apply_base_offset(base_y, base_y_frac, sh_units, y_flipped,
+                      consider_vflip, use_vcentre);
+    apply_base_offset(base_x, base_x_frac, sw_units, x_flipped,
+                      consider_hflip, use_hcentre);
 
     // Base velocity from the source object's velocity or acceleration
     // (bits 7-6 of flags). Acceleration source isn't wired yet; treat any
@@ -187,4 +248,39 @@ void ParticleSystem::emit(ParticleType type, int count, const Object& src, Rando
             p.velocity_y = clamp_signed(int(p.velocity_y) + int(src.velocity_y));
         }
     }
+}
+
+void ParticleSystem::emit_at(ParticleType type, uint8_t wx, uint8_t wy,
+                              Random& rng) {
+    if (type >= ParticleType::COUNT) return;
+    const TypeData& t = TYPES[static_cast<int>(type)];
+
+    int slot = allocate_slot(rng);
+    Particle& p = pool_[slot];
+
+    p.ttl = static_cast<uint8_t>((rng.next() & t.ttl_rand) + t.ttl_base);
+    p.colour_and_flags = (rng.next() & t.cf_rand) ^ t.cf_base;
+
+    // For star placement the 6502 pre-zeroes both fractions and both
+    // velocity randomness fields are 0x00 (see STAR_OR_MUSHROOM row), so
+    // the per-axis random loop collapses to "keep the base whole cell".
+    auto axis = [&](uint8_t v_rand, uint8_t pos_rand, uint8_t base_pos,
+                    uint8_t& out_v_unsigned, uint8_t& out_whole,
+                    uint8_t& out_frac) {
+        uint8_t r = rng.next();
+        bool negate = (r & 0x80) != 0;
+        int8_t mag = static_cast<int8_t>((r >> 1) & v_rand);
+        int v = negate ? -int(mag) : int(mag);
+        out_v_unsigned = static_cast<uint8_t>(clamp_signed(v));
+
+        uint8_t jitter = rng.next() & pos_rand;
+        out_frac  = jitter;
+        out_whole = base_pos + (jitter > 0 ? 0 : 0); // no carry from 0
+    };
+
+    uint8_t vxu = 0, vyu = 0;
+    axis(t.vx_rand, t.x_rand, wx, vxu, p.x, p.x_fraction);
+    axis(t.vy_rand, t.y_rand, wy, vyu, p.y, p.y_fraction);
+    p.velocity_x = static_cast<int8_t>(vxu);
+    p.velocity_y = static_cast<int8_t>(vyu);
 }

@@ -76,8 +76,27 @@ public:
     int find_free_primary_slot() const;
     int find_free_secondary_slot() const;
 
-    // Check if an object is far from the player
-    bool is_far_from_player(uint8_t obj_x, uint8_t obj_y, uint8_t distance) const;
+    // Read-only view of the secondary slot array (for debug overlays etc.).
+    const SecondaryObject& secondary(int slot) const { return secondary_[slot]; }
+
+    // Check if an object is far from the activation anchor (see below).
+    bool is_far_from_anchor(uint8_t obj_x, uint8_t obj_y, uint8_t distance) const;
+
+    // ========================================================================
+    // Activation anchor
+    // ========================================================================
+    // The anchor is the world point distance-based lifecycle checks (demotion,
+    // promotion, placeholder conversion) measure against. By default the 6502
+    // uses the player; Game::run updates this each frame so it can optionally
+    // follow the camera centre when the user has scrolled the viewport off
+    // the player ("map mode"). When left at the player's position the
+    // behaviour matches the original exactly.
+    void set_activation_anchor(uint8_t x, uint8_t y) {
+        activation_anchor_x_ = x;
+        activation_anchor_y_ = y;
+    }
+    uint8_t activation_anchor_x() const { return activation_anchor_x_; }
+    uint8_t activation_anchor_y() const { return activation_anchor_y_; }
 
     // ========================================================================
     // Tertiary data byte access (used by the tile update routines)
@@ -94,6 +113,36 @@ public:
             tertiary_data_[offset] &= 0x7f;
         }
     }
+    // Whole-byte write, used by process_switch_effects when a switch toggles
+    // bits in another object's tertiary data slot. Preserves no fields — the
+    // caller is responsible for keeping / stripping bit 7 as appropriate.
+    void set_tertiary_data_byte(int offset, uint8_t value) {
+        if (offset > 0 && offset < static_cast<int>(sizeof(tertiary_data_))) {
+            tertiary_data_[offset] = value;
+        }
+    }
+
+    // ========================================================================
+    // Per-frame lifecycle counters (debug)
+    // ========================================================================
+    // Incremented from return_to_tertiary / remove_object / demote_to_secondary
+    // so the HUD can tell us which path is clearing primaries each frame.
+    // Game::run resets these at the top of each non-paused tick.
+    uint32_t debug_returns_ = 0;
+    uint32_t debug_removes_ = 0;
+    uint32_t debug_demotes_ = 0;
+    uint32_t debug_switch_presses_ = 0;   // lifetime press count (not reset)
+
+    // Port of &0819 door_timer — the 6502's single global "hold door open"
+    // countdown. update_door reads/writes this; the main loop decrements it
+    // once per frame (same place as the mushroom timers at &19d4-&19dd,
+    // which iterate X=2,1,0 — the X=0 case lands on &0819).
+    uint8_t door_timer_ = 0;
+    void reset_debug_counters() {
+        debug_returns_ = 0;
+        debug_removes_ = 0;
+        debug_demotes_ = 0;
+    }
 
 private:
     std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS> primary_;
@@ -107,6 +156,12 @@ private:
     uint8_t secondary_update_next_ = 0;
     uint8_t secondary_update_shuffle_ = 0;
     uint8_t secondary_update_distance_ = 0;
+
+    // Activation anchor — Game::run refreshes each frame. Defaults to (0,0)
+    // which is fine since the first set_activation_anchor runs before any
+    // distance check.
+    uint8_t activation_anchor_x_ = 0;
+    uint8_t activation_anchor_y_ = 0;
 
     // Initialize object from type tables
     void init_object_from_type(Object& obj, ObjectType type);

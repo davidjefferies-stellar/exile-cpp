@@ -161,6 +161,83 @@ namespace TileFlip {
 }
 
 // ============================================================================
+// Tile types — the low 6 bits of a landscape byte. Names from the 6502
+// disassembly catalogue (#675-#738). Use `static_cast<uint8_t>(TileType::X)`
+// when comparing against raw tile bytes already masked with TileFlip::TYPE_MASK.
+// ============================================================================
+enum class TileType : uint8_t {
+    INVISIBLE_SWITCH                 = 0x00,
+    TRANSPORTER                      = 0x01,
+    SPACE_WITH_OBJECT_FROM_DATA      = 0x02,
+    METAL_DOOR                       = 0x03,
+    STONE_DOOR                       = 0x04,
+    STONE_HALF_WITH_OBJECT_FROM_TYPE = 0x05,
+    SPACE_WITH_OBJECT_FROM_TYPE      = 0x06,
+    GREENERY_WITH_OBJECT_FROM_TYPE   = 0x07,
+    SWITCH                           = 0x08,
+    NEST                             = 0x09,
+    PIPE                             = 0x0a,
+    CONSTANT_WIND                    = 0x0b,
+    ENGINE                           = 0x0c,
+    WATER                            = 0x0d,
+    VARIABLE_WIND                    = 0x0e,
+    MUSHROOMS                        = 0x0f,
+    GREEN_HORIZONTAL_QUARTER         = 0x10,
+    POSSIBLE_LEAF                    = 0x11,
+    STONE_ONE                        = 0x12,
+    STONE_SLOPE_45_FULL              = 0x13,
+    SPACESHIP_WALL_PIPES             = 0x14,
+    SPACESHIP_WALL_VERTICAL_QUARTER  = 0x15,
+    SPACESHIP_WALL_HORIZONTAL_HALF_TWO = 0x16,
+    SPACESHIP_WALL_HORIZONTAL_QUARTER  = 0x17,
+    WALL_MOUNTED_EQUIPMENT           = 0x18,
+    SPACE                            = 0x19,
+    SHORT_BUSH                       = 0x1a,
+    TALL_BUSH                        = 0x1b,
+    SPACESHIP_WALL_SMALL_CORNER      = 0x1c,
+    SPACESHIP_WALL_CORNER            = 0x1d,
+    STONE_TWO                        = 0x1e,
+    STONE_HORIZONTAL_HALF            = 0x1f,
+    STONE_HORIZONTAL_QUARTER         = 0x20,
+    COLUMN                           = 0x21,
+    LEAF                             = 0x22,
+    STONE_SLOPE_45                   = 0x23,
+    STONE_SLOPE_22_ONE               = 0x24,
+    STONE_SLOPE_22_TWO               = 0x25,
+    SPACESHIP_WALL_SLOPE_12_ONE      = 0x26,
+    SPACESHIP_WALL_SLOPE_12_TWO      = 0x27,
+    SPACESHIP_WALL_SLOPE_12_THREE    = 0x28,
+    SPACESHIP_WALL_SLOPE_12_FOUR     = 0x29,
+    STONE_SLOPE_78                   = 0x2a,
+    EARTH_EDGE                       = 0x2b,
+    EARTH_HORIZ_QUARTER_EDGE         = 0x2c,
+    EARTH                            = 0x2d,
+    EARTH_SLOPE_45                   = 0x2e,
+    EARTH_SLOPE_22_ONE               = 0x2f,
+    EARTH_SLOPE_22_TWO               = 0x30,
+    EARTH_HORIZ_HALF_WITH_EDGE       = 0x31,
+    SPACESHIP_WALL_CORNER_PIPES_TWO  = 0x32,
+    RAIL_HORIZONTAL                  = 0x33,
+    RAIL_CORNER                      = 0x34,
+    RAIL_VERTICAL                    = 0x35,
+    SPACESHIP_WALL_HORIZONTAL_HALF   = 0x36,
+    SPACESHIP_WALL_CORNER_PIPES      = 0x37,
+    SPACESHIP_WALL_HORIZONTAL_HALF_PIPES = 0x38,
+    STONE_VERTICAL_QUARTER           = 0x39,
+    GARGOYLE_TILE                    = 0x3a,
+    STONE_HORIZ_THREE_QUARTERS       = 0x3b,
+    RED_PIPE                         = 0x3c,
+    SPACESHIP_SUPPORT                = 0x3d,
+    CONSOLE                          = 0x3e,
+    SPACESHIP_LEG                    = 0x3f,
+};
+
+// Helper: compare a raw byte's type bits against a TileType.
+inline bool tile_is(uint8_t raw, TileType t) {
+    return (raw & TileFlip::TYPE_MASK) == static_cast<uint8_t>(t);
+}
+
+// ============================================================================
 // Game Colors (8 BBC Micro logical colors)
 // ============================================================================
 enum class GameColor : uint8_t {

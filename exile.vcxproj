@@ -91,6 +91,7 @@
     <ClCompile Include="src\world\obstruction.cpp" />
     <ClCompile Include="src\world\wind.cpp" />
     <ClCompile Include="src\world\water.cpp" />
+    <ClCompile Include="src\world\tertiary.cpp" />
     <ClCompile Include="src\objects\object.cpp" />
     <ClCompile Include="src\objects\object_manager.cpp" />
     <ClCompile Include="src\objects\physics.cpp" />
@@ -109,8 +110,17 @@
     <ClCompile Include="src\rendering\camera.cpp" />
     <ClCompile Include="src\rendering\fenster\fenster_renderer.cpp" />
     <ClCompile Include="src\rendering\sprite_atlas.cpp" />
+    <ClCompile Include="src\rendering\sprite_data.cpp" />
+    <ClCompile Include="src\rendering\palette.cpp" />
     <ClCompile Include="src\particles\particle_system.cpp" />
     <ClCompile Include="src\game\game.cpp" />
+    <ClCompile Include="src\game\config.cpp" />
+    <ClCompile Include="src\game\tertiary_spawn.cpp" />
+    <ClCompile Include="src\game\player_actions.cpp" />
+    <ClCompile Include="src\game\player_motion.cpp" />
+    <ClCompile Include="src\game\player_sprite.cpp" />
+    <ClCompile Include="src\game\object_update.cpp" />
+    <ClCompile Include="src\game\render.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\core\types.h" />
@@ -122,6 +132,7 @@
     <ClInclude Include="src\world\tile_data.h" />
     <ClInclude Include="src\world\wind.h" />
     <ClInclude Include="src\world\water.h" />
+    <ClInclude Include="src\world\tertiary.h" />
     <ClInclude Include="src\objects\object.h" />
     <ClInclude Include="src\objects\object_data.h" />
     <ClInclude Include="src\objects\object_tables.h" />
@@ -134,6 +145,8 @@
     <ClInclude Include="src\rendering\camera.h" />
     <ClInclude Include="src\rendering\fenster\fenster_renderer.h" />
     <ClInclude Include="src\rendering\sprite_atlas.h" />
+    <ClInclude Include="src\rendering\sprite_data.h" />
+    <ClInclude Include="src\rendering\palette.h" />
     <ClInclude Include="src\rendering\font8x8.h" />
     <ClInclude Include="src\rendering\debug_names.h" />
     <ClInclude Include="src\particles\particle_system.h" />
@@ -148,6 +161,13 @@
     <ClInclude Include="src\ai\behaviors\collectable.h" />
     <ClInclude Include="src\player\input.h" />
     <ClInclude Include="src\game\game.h" />
+    <ClInclude Include="src\game\config.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Non-code files surfaced in Solution Explorer for easy editing.
+         <None> means "track but don't compile" — no build action. -->
+    <None Include="exile.ini" />
+    <None Include="CLAUDE.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

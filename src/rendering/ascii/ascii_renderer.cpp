@@ -93,55 +93,56 @@ bool AsciiRenderer::world_to_screen(uint8_t wx, uint8_t wy, int& sx, int& sy) co
 }
 
 char AsciiRenderer::tile_to_char(uint8_t tile_type, bool flip_h, bool flip_v) {
-    // Tile type is the low 6 bits
-    uint8_t t = tile_type & 0x3f;
-    switch (t) {
-        case 0x19: return ' ';  // TILE_SPACE
-        case 0x2d: return '#';  // TILE_EARTH
-        case 0x1e: return '%';  // TILE_STONE_TWO
-        case 0x12: return '%';  // TILE_STONE_ONE
-        case 0x2e: return (flip_h != flip_v) ? '\\' : '/'; // TILE_EARTH_SLOPE_FORTY_FIVE
-        case 0x2f: return (flip_h != flip_v) ? '\\' : '/'; // TILE_EARTH_SLOPE_TWENTY_TWO_ONE
-        case 0x23: return (flip_h != flip_v) ? '\\' : '/'; // TILE_STONE_SLOPE_FORTY_FIVE
-        case 0x0f: return flip_v ? 'v' : '^'; // TILE_MUSHROOMS
-        case 0x1b: return 'T';  // TILE_TALL_BUSH
-        case 0x1a: return 't';  // TILE_SHORT_BUSH
-        case 0x09: return 'O';  // TILE_NEST
-        case 0x0a: return 'P';  // TILE_PIPE
-        case 0x0e: return '~';  // TILE_VARIABLE_WIND
-        case 0x0b: return '=';  // TILE_CONSTANT_WIND
-        case 0x0d: return '~';  // TILE_WATER
-        case 0x0c: return '&';  // TILE_ENGINE
-        case 0x21: return '|';  // TILE_COLUMN
-        case 0x08: return ':';  // TILE_CHECK_TERTIARY (vertical shaft)
-        case 0x2b: return '_';  // TILE_EARTH_EDGE
-        case 0x2c: return '-';  // TILE_EARTH_HORIZONTAL_QUARTER_WITH_EDGE
-        case 0x10: return '-';  // TILE_GREEN_HORIZONTAL_QUARTER
-        case 0x13: return '/';  // TILE_STONE_SLOPE_FORTY_FIVE_FULL
-        case 0x24: return '/';  // TILE_STONE_SLOPE_TWENTY_TWO_ONE
-        default:
-            // Unknown tile - use fill character if likely solid
-            if (t == 0x00) return ':';  // Tertiary object check ranges
-            return '?';
+    switch (static_cast<TileType>(tile_type & TileFlip::TYPE_MASK)) {
+        case TileType::SPACE:              return ' ';
+        case TileType::EARTH:              return '#';
+        case TileType::STONE_TWO:          return '%';
+        case TileType::STONE_ONE:          return '%';
+        case TileType::EARTH_SLOPE_45:
+        case TileType::EARTH_SLOPE_22_ONE:
+        case TileType::STONE_SLOPE_45:
+            return (flip_h != flip_v) ? '\\' : '/';
+        case TileType::MUSHROOMS:          return flip_v ? 'v' : '^';
+        case TileType::TALL_BUSH:          return 'T';
+        case TileType::SHORT_BUSH:         return 't';
+        case TileType::NEST:               return 'O';
+        case TileType::PIPE:               return 'P';
+        case TileType::VARIABLE_WIND:      return '~';
+        case TileType::CONSTANT_WIND:      return '=';
+        case TileType::WATER:              return '~';
+        case TileType::ENGINE:             return '&';
+        case TileType::COLUMN:             return '|';
+        case TileType::SWITCH:             return ':';
+        case TileType::EARTH_EDGE:         return '_';
+        case TileType::EARTH_HORIZ_QUARTER_EDGE: return '-';
+        case TileType::GREEN_HORIZONTAL_QUARTER: return '-';
+        case TileType::STONE_SLOPE_45_FULL: return '/';
+        case TileType::STONE_SLOPE_22_ONE:  return '/';
+        case TileType::INVISIBLE_SWITCH:    return ':';
+        default:                            return '?';
     }
 }
 
 int AsciiRenderer::tile_to_color(uint8_t tile_type) {
-    uint8_t t = tile_type & 0x3f;
-    switch (t) {
-        case 0x19: return CP_DEFAULT;    // Space
-        case 0x2d: return CP_YELLOW;     // Earth
-        case 0x1e: case 0x12: return CP_WHITE; // Stone
-        case 0x2e: case 0x2f: return CP_YELLOW; // Earth slopes
-        case 0x23: case 0x13: case 0x24: return CP_WHITE; // Stone slopes
-        case 0x0f: return CP_RED;        // Mushrooms
-        case 0x1b: case 0x1a: return CP_GREEN; // Bushes
-        case 0x09: return CP_CYAN;       // Nest
-        case 0x0a: return CP_CYAN;       // Pipe
-        case 0x0e: return CP_CYAN;       // Wind
-        case 0x0d: return CP_BLUE;       // Water
-        case 0x0c: return CP_RED;        // Engine
-        default:   return CP_WHITE;
+    switch (static_cast<TileType>(tile_type & TileFlip::TYPE_MASK)) {
+        case TileType::SPACE:              return CP_DEFAULT;
+        case TileType::EARTH:              return CP_YELLOW;
+        case TileType::STONE_TWO:
+        case TileType::STONE_ONE:          return CP_WHITE;
+        case TileType::EARTH_SLOPE_45:
+        case TileType::EARTH_SLOPE_22_ONE: return CP_YELLOW;
+        case TileType::STONE_SLOPE_45:
+        case TileType::STONE_SLOPE_45_FULL:
+        case TileType::STONE_SLOPE_22_ONE: return CP_WHITE;
+        case TileType::MUSHROOMS:          return CP_RED;
+        case TileType::TALL_BUSH:
+        case TileType::SHORT_BUSH:         return CP_GREEN;
+        case TileType::NEST:               return CP_CYAN;
+        case TileType::PIPE:               return CP_CYAN;
+        case TileType::VARIABLE_WIND:      return CP_CYAN;
+        case TileType::WATER:              return CP_BLUE;
+        case TileType::ENGINE:             return CP_RED;
+        default:                           return CP_WHITE;
     }
 }
 

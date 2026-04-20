@@ -4,17 +4,58 @@
 namespace Behaviors {
 
 // &4B88: Generic collectable item (keys, weapons, equipment, etc.)
-// These are passive objects that can be collected by the player.
-// They flash visually and become "disturbed" when touched by non-player objects.
+// Port of update_collectable_object.
+//
+// `energy` is overloaded as a "disturbed" flag — bit 7 SET means
+// undisturbed (still pinned to spawn). The 6502 uses ASL/LSR at &4ba1
+// to clear that bit when something touches the object, then BIT/BPL at
+// &4ba5 to skip the rest of the routine if disturbed. Our previous
+// version had this inverted: it SET bit 7 on touch, leaving the pin
+// behaviour permanently active and letting collectables drift under
+// gravity / tile collision (then demote to secondary, then promote, and
+// so on — over time the secondary pool fills with one entry per tile
+// the player has wandered through).
+//
+// Faithful behaviour:
+//   - If the player is currently holding this object, mark it collected
+//     and remove it (set_object_for_removal &2529 → PENDING_REMOVAL).
+//   - If something other than the player is touching us, clear bit 7
+//     of energy ("disturbed").
+//   - If still undisturbed, zero our velocity and snap back to the
+//     previous frame's position — the collectable is glued to its tile.
+//   - If disturbed, fall through and let the main physics step take
+//     over (gravity, water, tile collision).
 void update_collectable(Object& obj, UpdateContext& ctx) {
-    // Flash animation: toggle palette bit every 8 frames
-    if (ctx.every_eight_frames) {
-        obj.palette ^= 0x08;
+    // &4b88-&4b97: if the player is currently holding this exact object
+    // (held_object_slot == this_slot), it counts as collected. The 6502
+    // decrements `player_collected[type - 0x51]` and triggers the
+    // "set_object_for_removal" path which sets PENDING_REMOVAL — the
+    // main update loop reaps the slot next frame.
+    //
+    // We don't yet track per-type collected counts (TODO: wire to a
+    // PlayerInventory struct), but flagging PENDING_REMOVAL is enough
+    // for the object to disappear and the held slot to free.
+    if (ctx.held_object_slot == static_cast<uint8_t>(ctx.this_slot)) {
+        obj.flags |= ObjectFlags::PENDING_REMOVAL;
+        return;
     }
 
-    // If touched by a non-player object, become "disturbed"
-    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS && obj.touching != 0) {
-        obj.energy |= 0x80; // Set "disturbed" flag in top bit
+    // &4b9d-&4ba3: any non-self touch clears bit 7 of energy. The 6502
+    // does ASL/LSR rather than AND #&7f, but the visible effect is the
+    // same — the "undisturbed" flag is gone.
+    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
+        obj.energy &= 0x7f;
+    }
+
+    // &4ba5-&4ba7: if undisturbed, pin position. We don't have access to
+    // a "previous position" buffer, so approximate by zeroing velocity
+    // each frame — gravity in step 15 will reintroduce a downward push,
+    // but as long as the object is supported the integrator will undo
+    // it. Net effect: object stays put on its tile.
+    bool undisturbed = (obj.energy & 0x80) != 0;
+    if (undisturbed) {
+        obj.velocity_x = 0;
+        obj.velocity_y = 0;
     }
 }
 

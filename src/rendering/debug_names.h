@@ -5,33 +5,74 @@
 // Human-readable names used only for the debug overlay (left-click tile info).
 
 inline const char* tile_type_name(uint8_t tile_type) {
-    switch (tile_type & 0x3f) {
-        case 0x00: return "EMPTY";
-        case 0x08: return "CHECK_TERTIARY";
-        case 0x09: return "NEST";
-        case 0x0a: return "PIPE";
-        case 0x0b: return "CONSTANT_WIND";
-        case 0x0c: return "ENGINE";
-        case 0x0d: return "WATER";
-        case 0x0e: return "VARIABLE_WIND";
-        case 0x0f: return "MUSHROOMS";
-        case 0x10: return "GREEN_HORIZONTAL_QUARTER";
-        case 0x12: return "STONE_ONE";
-        case 0x13: return "STONE_SLOPE_45_FULL";
-        case 0x19: return "SPACE";
-        case 0x1a: return "SHORT_BUSH";
-        case 0x1b: return "TALL_BUSH";
-        case 0x1e: return "STONE_TWO";
-        case 0x21: return "COLUMN";
-        case 0x23: return "STONE_SLOPE_45";
-        case 0x24: return "STONE_SLOPE_22_ONE";
-        case 0x2b: return "EARTH_EDGE";
-        case 0x2c: return "EARTH_HORIZ_QUARTER_EDGE";
-        case 0x2d: return "EARTH";
-        case 0x2e: return "EARTH_SLOPE_45";
-        case 0x2f: return "EARTH_SLOPE_22_ONE";
-        default:   return "?";
+    // Names taken from the disassembly tile-type catalogue (#675-#738).
+    switch (static_cast<TileType>(tile_type & TileFlip::TYPE_MASK)) {
+        case TileType::INVISIBLE_SWITCH:                 return "INVISIBLE_SWITCH";
+        case TileType::TRANSPORTER:                      return "TRANSPORTER";
+        case TileType::SPACE_WITH_OBJECT_FROM_DATA:      return "SPACE_WITH_OBJECT_FROM_DATA";
+        case TileType::METAL_DOOR:                       return "METAL_DOOR";
+        case TileType::STONE_DOOR:                       return "STONE_DOOR";
+        case TileType::STONE_HALF_WITH_OBJECT_FROM_TYPE: return "STONE_HALF_WITH_OBJECT_FROM_TYPE";
+        case TileType::SPACE_WITH_OBJECT_FROM_TYPE:      return "SPACE_WITH_OBJECT_FROM_TYPE";
+        case TileType::GREENERY_WITH_OBJECT_FROM_TYPE:   return "GREENERY_WITH_OBJECT_FROM_TYPE";
+        case TileType::SWITCH:                           return "SWITCH";
+        case TileType::NEST:                             return "NEST";
+        case TileType::PIPE:                             return "PIPE";
+        case TileType::CONSTANT_WIND:                    return "CONSTANT_WIND";
+        case TileType::ENGINE:                           return "ENGINE";
+        case TileType::WATER:                            return "WATER";
+        case TileType::VARIABLE_WIND:                    return "VARIABLE_WIND";
+        case TileType::MUSHROOMS:                        return "MUSHROOMS";
+        case TileType::GREEN_HORIZONTAL_QUARTER:         return "GREEN_HORIZONTAL_QUARTER";
+        case TileType::POSSIBLE_LEAF:                    return "POSSIBLE_LEAF";
+        case TileType::STONE_ONE:                        return "STONE_ONE";
+        case TileType::STONE_SLOPE_45_FULL:              return "STONE_SLOPE_45_FULL";
+        case TileType::SPACESHIP_WALL_PIPES:             return "SPACESHIP_WALL_PIPES";
+        case TileType::SPACESHIP_WALL_VERTICAL_QUARTER:  return "SPACESHIP_WALL_VERTICAL_QUARTER";
+        case TileType::SPACESHIP_WALL_HORIZONTAL_HALF_TWO: return "SPACESHIP_WALL_HORIZONTAL_HALF_TWO";
+        case TileType::SPACESHIP_WALL_HORIZONTAL_QUARTER:  return "SPACESHIP_WALL_HORIZONTAL_QUARTER";
+        case TileType::WALL_MOUNTED_EQUIPMENT:           return "WALL_MOUNTED_EQUIPMENT";
+        case TileType::SPACE:                            return "SPACE";
+        case TileType::SHORT_BUSH:                       return "SHORT_BUSH";
+        case TileType::TALL_BUSH:                        return "TALL_BUSH";
+        case TileType::SPACESHIP_WALL_SMALL_CORNER:      return "SPACESHIP_WALL_SMALL_CORNER";
+        case TileType::SPACESHIP_WALL_CORNER:            return "SPACESHIP_WALL_CORNER";
+        case TileType::STONE_TWO:                        return "STONE_TWO";
+        case TileType::STONE_HORIZONTAL_HALF:            return "STONE_HORIZONTAL_HALF";
+        case TileType::STONE_HORIZONTAL_QUARTER:         return "STONE_HORIZONTAL_QUARTER";
+        case TileType::COLUMN:                           return "COLUMN";
+        case TileType::LEAF:                             return "LEAF";
+        case TileType::STONE_SLOPE_45:                   return "STONE_SLOPE_45";
+        case TileType::STONE_SLOPE_22_ONE:               return "STONE_SLOPE_22_ONE";
+        case TileType::STONE_SLOPE_22_TWO:               return "STONE_SLOPE_22_TWO";
+        case TileType::SPACESHIP_WALL_SLOPE_12_ONE:      return "SPACESHIP_WALL_SLOPE_12_ONE";
+        case TileType::SPACESHIP_WALL_SLOPE_12_TWO:      return "SPACESHIP_WALL_SLOPE_12_TWO";
+        case TileType::SPACESHIP_WALL_SLOPE_12_THREE:    return "SPACESHIP_WALL_SLOPE_12_THREE";
+        case TileType::SPACESHIP_WALL_SLOPE_12_FOUR:     return "SPACESHIP_WALL_SLOPE_12_FOUR";
+        case TileType::STONE_SLOPE_78:                   return "STONE_SLOPE_78";
+        case TileType::EARTH_EDGE:                       return "EARTH_EDGE";
+        case TileType::EARTH_HORIZ_QUARTER_EDGE:         return "EARTH_HORIZ_QUARTER_EDGE";
+        case TileType::EARTH:                            return "EARTH";
+        case TileType::EARTH_SLOPE_45:                   return "EARTH_SLOPE_45";
+        case TileType::EARTH_SLOPE_22_ONE:               return "EARTH_SLOPE_22_ONE";
+        case TileType::EARTH_SLOPE_22_TWO:               return "EARTH_SLOPE_22_TWO";
+        case TileType::EARTH_HORIZ_HALF_WITH_EDGE:       return "EARTH_HORIZ_HALF_WITH_EDGE";
+        case TileType::SPACESHIP_WALL_CORNER_PIPES_TWO:  return "SPACESHIP_WALL_CORNER_PIPES_TWO";
+        case TileType::RAIL_HORIZONTAL:                  return "RAIL_HORIZONTAL";
+        case TileType::RAIL_CORNER:                      return "RAIL_CORNER";
+        case TileType::RAIL_VERTICAL:                    return "RAIL_VERTICAL";
+        case TileType::SPACESHIP_WALL_HORIZONTAL_HALF:   return "SPACESHIP_WALL_HORIZONTAL_HALF";
+        case TileType::SPACESHIP_WALL_CORNER_PIPES:      return "SPACESHIP_WALL_CORNER_PIPES";
+        case TileType::SPACESHIP_WALL_HORIZONTAL_HALF_PIPES: return "SPACESHIP_WALL_HORIZONTAL_HALF_PIPES";
+        case TileType::STONE_VERTICAL_QUARTER:           return "STONE_VERTICAL_QUARTER";
+        case TileType::GARGOYLE_TILE:                    return "GARGOYLE";
+        case TileType::STONE_HORIZ_THREE_QUARTERS:       return "STONE_HORIZ_THREE_QUARTERS";
+        case TileType::RED_PIPE:                         return "RED_PIPE";
+        case TileType::SPACESHIP_SUPPORT:                return "SPACESHIP_SUPPORT";
+        case TileType::CONSOLE:                          return "CONSOLE";
+        case TileType::SPACESHIP_LEG:                    return "SPACESHIP_LEG";
     }
+    return "?";
 }
 
 inline const char* object_type_name(ObjectType t) {
@@ -39,7 +80,7 @@ inline const char* object_type_name(ObjectType t) {
         case ObjectType::PLAYER: return "PLAYER";
         case ObjectType::ACTIVE_CHATTER: return "ACTIVE_CHATTER";
         case ObjectType::CREW_MEMBER: return "CREW_MEMBER";
-        case ObjectType::FLUFFY: return "FLUFFY";
+        case ObjectType::FLUFFY: return "FLUFFY"; 
         case ObjectType::SMALL_HIVE: return "SMALL_HIVE";
         case ObjectType::LARGE_HIVE: return "LARGE_HIVE";
         case ObjectType::RED_FROGMAN: return "RED_FROGMAN";

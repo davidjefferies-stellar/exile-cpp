@@ -9,8 +9,11 @@
 
 #include "rendering/fenster/fenster_renderer.h"
 #include "rendering/sprite_atlas.h"
+#include "rendering/sprite_data.h"
+#include "rendering/palette.h"
 #include "rendering/font8x8.h"
 #include "world/tile_data.h"
+#include "objects/object_data.h"
 #include "fenster.h"
 #include <cstring>
 #include <algorithm>
@@ -27,71 +30,27 @@ static constexpr int TILE_PX_BASE_Y = 32 * PX_SCALE_Y;  // 32
 static constexpr int INITIAL_W = 640;
 static constexpr int INITIAL_H = 480;
 static constexpr int HUD_PX = TILE_PX_BASE_Y / 2;
-static constexpr int MIN_SCALE = 1;
-static constexpr int MAX_SCALE = 8;
+// Zoom is expressed as (scale / zoom_den). MIN_SCALE=1 with an
+// MAX_ZOOM_DEN > 1 lets the wheel keep zooming out past 1:1.
+static constexpr int MIN_SCALE      = 1;
+static constexpr int MAX_SCALE      = 8;
+static constexpr int MAX_ZOOM_DEN   = 4;
 
-static const char* const ATLAS_PATHS[] = {
-    "exile_sprites.png",
-    "../exile_sprites.png",
-    "../../exile_sprites.png",
-    "../../../exile_sprites.png",
-};
-
-static constexpr uint32_t COL_BLACK   = 0x000000;
 static constexpr uint32_t COL_RED     = 0xCC0000;
 static constexpr uint32_t COL_GREEN   = 0x00CC00;
-static constexpr uint32_t COL_YELLOW  = 0xCCCC00;
-static constexpr uint32_t COL_BLUE    = 0x2244CC;
 static constexpr uint32_t COL_MAGENTA = 0xCC00CC;
 static constexpr uint32_t COL_CYAN    = 0x00CCCC;
 static constexpr uint32_t COL_WHITE   = 0xCCCCCC;
-static constexpr uint32_t COL_BROWN   = 0x8B6914;
-static constexpr uint32_t COL_GRAY    = 0x808080;
-static constexpr uint32_t COL_DARK    = 0x333333;
-static constexpr uint32_t COL_ORANGE  = 0xFF6600;
-
-// Per-sprite intrinsic flip bits — bit 0 = h-flip, bit 1 = v-flip.
-// Taken from the low bits of sprites_width_and_horizontal_flip_table
-// (&5e0c) and sprites_height_and_vertical_flip_table (&5e89). The atlas
-// PNG stores sprites in "raw ROM" orientation; these bits say how each
-// sprite must be flipped to reach its display orientation.
-static constexpr uint8_t SPRITE_INTRINSIC_FLIP[125] = {
-    /* 0x00 */ 0, /* 0x01 */ 0, /* 0x02 */ 0, /* 0x03 */ 2,
-    /* 0x04 */ 0, /* 0x05 */ 0, /* 0x06 */ 0, /* 0x07 */ 0,
-    /* 0x08 */ 3, /* 0x09 */ 0, /* 0x0a */ 0, /* 0x0b */ 3,
-    /* 0x0c */ 3, /* 0x0d */ 1, /* 0x0e */ 0, /* 0x0f */ 0,
-    /* 0x10 */ 0, /* 0x11 */ 1, /* 0x12 */ 2, /* 0x13 */ 0,
-    /* 0x14 */ 0, /* 0x15 */ 0, /* 0x16 */ 0, /* 0x17 */ 0,
-    /* 0x18 */ 0, /* 0x19 */ 0, /* 0x1a */ 0, /* 0x1b */ 2,
-    /* 0x1c */ 0, /* 0x1d */ 0, /* 0x1e */ 0, /* 0x1f */ 0,
-    /* 0x20 */ 0, /* 0x21 */ 0, /* 0x22 */ 0, /* 0x23 */ 1,
-    /* 0x24 */ 1, /* 0x25 */ 1, /* 0x26 */ 2, /* 0x27 */ 2,
-    /* 0x28 */ 2, /* 0x29 */ 2, /* 0x2a */ 2, /* 0x2b */ 1,
-    /* 0x2c */ 0, /* 0x2d */ 0, /* 0x2e */ 0, /* 0x2f */ 0,
-    /* 0x30 */ 0, /* 0x31 */ 0, /* 0x32 */ 0, /* 0x33 */ 1,
-    /* 0x34 */ 0, /* 0x35 */ 0, /* 0x36 */ 0, /* 0x37 */ 0,
-    /* 0x38 */ 1, /* 0x39 */ 0, /* 0x3a */ 2, /* 0x3b */ 0,
-    /* 0x3c */ 0, /* 0x3d */ 0, /* 0x3e */ 2, /* 0x3f */ 2,
-    /* 0x40 */ 2, /* 0x41 */ 0, /* 0x42 */ 0, /* 0x43 */ 2,
-    /* 0x44 */ 2, /* 0x45 */ 0, /* 0x46 */ 0, /* 0x47 */ 0,
-    /* 0x48 */ 0, /* 0x49 */ 0, /* 0x4a */ 2, /* 0x4b */ 2,
-    /* 0x4c */ 3, /* 0x4d */ 1, /* 0x4e */ 0, /* 0x4f */ 0,
-    /* 0x50 */ 2, /* 0x51 */ 2, /* 0x52 */ 0, /* 0x53 */ 2,
-    /* 0x54 */ 2, /* 0x55 */ 0, /* 0x56 */ 0, /* 0x57 */ 0,
-    /* 0x58 */ 0, /* 0x59 */ 0, /* 0x5a */ 2, /* 0x5b */ 0,
-    /* 0x5c */ 0, /* 0x5d */ 0, /* 0x5e */ 0, /* 0x5f */ 0,
-    /* 0x60 */ 0, /* 0x61 */ 0, /* 0x62 */ 2, /* 0x63 */ 2,
-    /* 0x64 */ 0, /* 0x65 */ 0, /* 0x66 */ 0, /* 0x67 */ 0,
-    /* 0x68 */ 0, /* 0x69 */ 0, /* 0x6a */ 0, /* 0x6b */ 0,
-    /* 0x6c */ 0, /* 0x6d */ 1, /* 0x6e */ 0, /* 0x6f */ 1,
-    /* 0x70 */ 0, /* 0x71 */ 0, /* 0x72 */ 1, /* 0x73 */ 1,
-    /* 0x74 */ 0, /* 0x75 */ 3, /* 0x76 */ 0, /* 0x77 */ 0,
-    /* 0x78 */ 0, /* 0x79 */ 0, /* 0x7a */ 0, /* 0x7b */ 0,
-    /* 0x7c */ 0,
-};
 
 struct FensterRenderer::Impl {
     std::vector<uint32_t> buf;
+    // Parallel per-pixel foreground mask. Bit set = a tile wrote a BBC
+    // logical-colour-8..15 pixel here, which the 6502 marks by leaving
+    // bit 7 set on the plotted byte. The object-plot pass BMIs past any
+    // pixel that already has bit 7 set (&1066 BMI skip_byte), so objects
+    // hide behind those tile pixels. We reset every begin_frame and
+    // sample it in blit_sprite when drawing objects.
+    std::vector<uint8_t> fg_mask;
     struct fenster f;
     bool initialized = false;
     uint8_t vp_center_x = 0;
@@ -100,11 +59,25 @@ struct FensterRenderer::Impl {
     uint8_t vp_frac_y   = 0;   // (0-255, same units as Fixed8_8 fraction)
     bool tile_outline_on = false;    // debug: draw tile cell borders
     bool tile_outline_key_prev = false;
+    // Highlighted tile — drawn only while the tile grid is on.
+    bool has_highlight = false;
+    uint8_t highlight_x = 0;
+    uint8_t highlight_y = 0;
+    // Debug: colour-code primary/secondary/tertiary objects when on.
+    bool object_tiers_on = false;
+    bool object_tiers_key_prev = false;
+    // Debug: draw pixel-precise AABBs used by object-object collision.
+    // Toggled with 'B'.
+    bool aabb_overlay_on = false;
+    bool aabb_key_prev = false;
     int key_scan_idx = 0;
     bool events_processed = false;
     bool should_close = false;
+    // Zoom factor = scale / zoom_den. Only one of the two is >1 at any
+    // time: wheel up from 1:1 grows `scale`; wheel down from 1:1 grows
+    // `zoom_den`. Keeps everything integer-arithmetic friendly.
     int scale = 1;
-    bool atlas_ready = false;
+    int zoom_den = 1;
 
     // Mouse / pan / click state
     int prev_mouse_x = 0;
@@ -121,6 +94,7 @@ struct FensterRenderer::Impl {
     std::string overlay;
 
     Impl() : buf(INITIAL_W * INITIAL_H, 0),
+             fg_mask(INITIAL_W * INITIAL_H, 0),
              f{.title = "Exile",
                .width = INITIAL_W,
                .height = INITIAL_H,
@@ -133,8 +107,8 @@ struct FensterRenderer::Impl {
 
     int win_w() const { return f.width; }
     int win_h() const { return f.height; }
-    int tile_px_x() const { return TILE_PX_BASE_X * scale; }
-    int tile_px_y() const { return TILE_PX_BASE_Y * scale; }
+    int tile_px_x() const { return (TILE_PX_BASE_X * scale) / zoom_den; }
+    int tile_px_y() const { return (TILE_PX_BASE_Y * scale) / zoom_den; }
     int vp_w_tiles() const { return win_w() / tile_px_x() + 2; }
     int vp_h_tiles() const { return (win_h() - HUD_PX) / tile_px_y() + 2; }
     int hud_y_px() const { return win_h() - HUD_PX; }
@@ -145,6 +119,7 @@ struct FensterRenderer::Impl {
             f.width = f.pending_w;
             f.height = f.pending_h;
             buf.assign((size_t)f.width * f.height, 0);
+            fg_mask.assign((size_t)f.width * f.height, 0);
             f.buf = buf.data();
         }
         f.pending_w = 0;
@@ -184,38 +159,129 @@ struct FensterRenderer::Impl {
         }
     }
 
+    // Blit a sprite by reading logical colour indices (0..3) out of the
+    // BBC 128x81 sheet and resolving them through `lut` per sprite pixel.
+    // lut[0] is treated as transparent; only lut[1..3] are written.
+    //
+    // Iterates SCREEN pixels and box-samples the atlas pixels that fall
+    // under each one. At 1:1 or zoom-in the box is a single atlas pixel
+    // and this collapses to nearest-neighbour; at zoom-out the box covers
+    // multiple atlas pixels and their RGB contributions are averaged,
+    // blending against the existing frame buffer where transparent atlas
+    // pixels partially cover the output pixel.
+    // `fg` (per LUT slot) = 1 for pixels drawn with BBC logical-colour 8..15,
+    // which the 6502 treats as foreground (see palette.cpp comments). When
+    // `is_tile` is true such pixels set fg_mask. When false (object blit),
+    // pixels with fg_mask[idx] already set are skipped — that's the 6502's
+    // BMI past pre-existing foreground at &1066. Default behaviour (fg null)
+    // leaves the mask untouched and doesn't read it, matching the old
+    // blit_sprite signature.
     void blit_sprite(int dst_x, int dst_y, uint8_t sprite_id,
-                     bool flip_h, bool flip_v) {
-        if (!atlas_ready || sprite_id > 0x7c) return;
+                     bool flip_h, bool flip_v, const uint32_t lut[4],
+                     const uint8_t fg[4] = nullptr, bool is_tile = false) {
+        if (sprite_id > 0x7c) return;
         const SpriteAtlasEntry& e = sprite_atlas[sprite_id];
-        const uint32_t* atlas = atlas_pixels();
-        const int sxm = PX_SCALE_X * scale;
-        const int sym = PX_SCALE_Y * scale;
         const int hud_y = hud_y_px();
 
-        uint8_t intrinsic = SPRITE_INTRINSIC_FLIP[sprite_id];
-        flip_h ^= (intrinsic & 1) != 0;
-        flip_v ^= (intrinsic & 2) != 0;
+        flip_h ^= (e.intrinsic_flip & 1) != 0;
+        flip_v ^= (e.intrinsic_flip & 2) != 0;
 
-        for (int sy = 0; sy < e.h; ++sy) {
-            int src_y = flip_v ? (e.h - 1 - sy) : sy;
-            const uint32_t* src_row = &atlas[(e.y + src_y) * ATLAS_W + e.x];
-            for (int sx = 0; sx < e.w; ++sx) {
-                int src_x = flip_h ? (e.w - 1 - sx) : sx;
-                uint32_t px = src_row[src_x] & 0x00FFFFFF;
-                if (px == 0) continue; // black = transparent
+        // Screen-pixel extents of the blit. Width/height collapse to 0
+        // at extreme zoom-out; guard with max(1) so tiny sprites still
+        // show at least one pixel instead of vanishing entirely.
+        int w_screen = e.w * PX_SCALE_X * scale / zoom_den;
+        int h_screen = e.h * PX_SCALE_Y * scale / zoom_den;
+        if (w_screen < 1) w_screen = 1;
+        if (h_screen < 1) h_screen = 1;
 
-                int ox = dst_x + sx * sxm;
-                int oy = dst_y + sy * sym;
-                for (int dy = 0; dy < sym; ++dy) {
-                    int py = oy + dy;
-                    if (py < 0 || py >= hud_y) continue;
-                    for (int dx = 0; dx < sxm; ++dx) {
-                        int ppx = ox + dx;
-                        if (ppx < 0 || ppx >= f.width) continue;
-                        buf[(size_t)py * f.width + ppx] = px;
+        // Mapping constants: atlas-pixel = screen-pixel * num / den.
+        // When num > den (zoom-out) each screen pixel covers multiple
+        // atlas pixels; the inner loops box-filter over that range.
+        int sx_num = zoom_den;
+        int sx_den = PX_SCALE_X * scale;
+        int sy_num = zoom_den;
+        int sy_den = PX_SCALE_Y * scale;
+
+        for (int py = 0; py < h_screen; ++py) {
+            int ppy = dst_y + py;
+            if (ppy < 0 || ppy >= hud_y) continue;
+            int ay0 = py * sy_num / sy_den;
+            int ay1 = (py + 1) * sy_num / sy_den;
+            if (ay1 <= ay0) ay1 = ay0 + 1;        // sample at least 1 row
+            if (ay1 > e.h) ay1 = e.h;
+            if (ay0 >= e.h) ay0 = e.h - 1;
+            uint32_t* row      = &buf[(size_t)ppy * f.width];
+            uint8_t*  fg_row   = &fg_mask[(size_t)ppy * f.width];
+            for (int px = 0; px < w_screen; ++px) {
+                int ppx = dst_x + px;
+                if (ppx < 0 || ppx >= f.width) continue;
+
+                // Object-plot skip: match the 6502's BMI past pre-existing
+                // foreground at &1066. Only applies when blitting an object
+                // (is_tile=false) and there's a fg lookup available.
+                if (!is_tile && fg && fg_row[ppx]) continue;
+
+                int ax0 = px * sx_num / sx_den;
+                int ax1 = (px + 1) * sx_num / sx_den;
+                if (ax1 <= ax0) ax1 = ax0 + 1;
+                if (ax1 > e.w) ax1 = e.w;
+                if (ax0 >= e.w) ax0 = e.w - 1;
+
+                // Accumulate RGB contributions of non-transparent atlas
+                // pixels in the [ax0,ax1) x [ay0,ay1) box. Track whether
+                // any of the contributing pixels are foreground so tiles
+                // can mark the fg_mask appropriately.
+                int r_sum = 0, g_sum = 0, b_sum = 0;
+                int count = 0;
+                bool any_fg = false;
+                for (int ay = ay0; ay < ay1; ++ay) {
+                    int src_y = e.y + (flip_v ? (e.h - 1 - ay) : ay);
+                    for (int ax = ax0; ax < ax1; ++ax) {
+                        int src_x = e.x + (flip_h ? (e.w - 1 - ax) : ax);
+                        uint8_t idx = bbc_sprite_pixel(src_x, src_y);
+                        if (idx == 0) continue;   // 0 = transparent
+                        uint32_t c = lut[idx];
+                        r_sum += (c >> 16) & 0xff;
+                        g_sum += (c >>  8) & 0xff;
+                        b_sum +=  c        & 0xff;
+                        if (fg && fg[idx]) any_fg = true;
+                        ++count;
                     }
                 }
+                if (count == 0) continue;         // fully transparent box
+
+                int total = (ay1 - ay0) * (ax1 - ax0);
+                int sr = r_sum / count;
+                int sg = g_sum / count;
+                int sb = b_sum / count;
+
+                if (count == total) {
+                    // Fully covered — write the box average directly.
+                    row[ppx] = 0xff000000u | (uint32_t(sr) << 16)
+                                           | (uint32_t(sg) <<  8)
+                                           |  uint32_t(sb);
+                } else {
+                    // Partial coverage — alpha-blend sprite-average over
+                    // the existing pixel. alpha256 = 256 * count / total.
+                    uint32_t existing = row[ppx];
+                    int er = (existing >> 16) & 0xff;
+                    int eg = (existing >>  8) & 0xff;
+                    int eb =  existing        & 0xff;
+                    int alpha = (count * 256) / total;
+                    int inv   = 256 - alpha;
+                    int or_ = (sr * alpha + er * inv) >> 8;
+                    int og  = (sg * alpha + eg * inv) >> 8;
+                    int ob  = (sb * alpha + eb * inv) >> 8;
+                    row[ppx] = 0xff000000u | (uint32_t(or_) << 16)
+                                           | (uint32_t(og)  <<  8)
+                                           |  uint32_t(ob);
+                }
+
+                // Tiles mark any pixel that contributed a foreground colour
+                // so subsequent object blits can skip past it. We set on
+                // any_fg regardless of partial coverage — consistent with
+                // the 6502's byte-granular BMI check.
+                if (is_tile && any_fg) fg_row[ppx] = 1;
             }
         }
     }
@@ -266,11 +332,17 @@ struct FensterRenderer::Impl {
 
     // Inverse of world_to_screen: screen pixel → world-tile offset from
     // the view center (camera center).
+    //
+    // world_to_screen shifts tiles by -vp_frac_*·tpx/256 so the world scrolls
+    // under a fixed player sprite; the inverse must undo that shift, else
+    // clicks snap to the wrong tile whenever the player is mid-cell.
     void screen_to_tile_offset(int sx, int sy, int& tdx, int& tdy) const {
         int tpx = tile_px_x();
         int tpy = tile_px_y();
-        int rel_x = sx - f.width / 2 - pan_px_x;
-        int rel_y = sy - hud_y_px() / 2 - pan_px_y;
+        int frac_off_x = int(vp_frac_x) * tpx / 256;
+        int frac_off_y = int(vp_frac_y) * tpy / 256;
+        int rel_x = sx - f.width / 2 - pan_px_x + frac_off_x;
+        int rel_y = sy - hud_y_px() / 2 - pan_px_y + frac_off_y;
         // Floor-division toward -inf so negative offsets map correctly.
         tdx = (rel_x >= 0) ? (rel_x / tpx) : -((-rel_x + tpx - 1) / tpx);
         tdy = (rel_y >= 0) ? (rel_y / tpy) : -((-rel_y + tpy - 1) / tpy);
@@ -333,29 +405,6 @@ static constexpr uint8_t TILE_SPRITE_ID[64] = {
     /* 0x3c */ 0x6a,         /* 0x3d */ 0x23,         /* 0x3e */ 0x60,         /* 0x3f */ 0xcc,
 };
 
-static uint32_t tile_color(uint8_t tile_type) {
-    uint8_t t = tile_type & 0x3f;
-    switch (t) {
-        case 0x19: return COL_BLACK;
-        case 0x2d: return COL_BROWN;
-        case 0x1e: case 0x12: return COL_GRAY;
-        case 0x2e: case 0x2f: return COL_BROWN;
-        case 0x23: case 0x13: case 0x24: return COL_GRAY;
-        case 0x0f: return COL_RED;
-        case 0x1b: case 0x1a: return COL_GREEN;
-        case 0x09: return COL_CYAN;
-        case 0x0a: return COL_CYAN;
-        case 0x0e: case 0x0b: return 0x4488CC;
-        case 0x0d: return COL_BLUE;
-        case 0x0c: return COL_ORANGE;
-        case 0x21: return COL_WHITE;
-        case 0x08: return COL_DARK;
-        case 0x2b: case 0x2c: return COL_BROWN;
-        case 0x10: return COL_GREEN;
-        default: return (t == 0x00) ? COL_DARK : 0x444444;
-    }
-}
-
 static uint32_t object_color(ObjectType type) {
     switch (type) {
         case ObjectType::PLAYER:        return 0xFFFF00;
@@ -380,9 +429,6 @@ FensterRenderer::~FensterRenderer() { shutdown(); }
 bool FensterRenderer::init() {
     if (impl_->initialized) return true;
     if (fenster_open(&impl_->f) != 0) return false;
-    for (const char* p : ATLAS_PATHS) {
-        if (atlas_load(p)) { impl_->atlas_ready = true; break; }
-    }
     impl_->initialized = true;
     return true;
 }
@@ -403,12 +449,53 @@ void FensterRenderer::begin_frame() {
     impl_->apply_pending_resize();
 
     if (impl_->f.wheel != 0) {
-        impl_->scale = std::clamp(impl_->scale + impl_->f.wheel,
-                                  MIN_SCALE, MAX_SCALE);
+        int w = impl_->f.wheel;
         impl_->f.wheel = 0;
-        // Normalize pan after scale change so the view doesn't jump wildly.
-        impl_->pan_px_x %= impl_->tile_px_x();
-        impl_->pan_px_y %= impl_->tile_px_y();
+
+        // Anchor the zoom on the tile under the mouse pointer: record the
+        // screen-space offset from the view centre before the zoom change,
+        // then rescale it to the new tile pitch so the same world point
+        // stays under the cursor. See world_to_screen for the mapping
+        //   screen = centre + (wx - vp_centre) * tpx + pan_px
+        // — holding world-coord fixed, pan_px_new = (mouse - centre) -
+        //   (mouse - centre - pan_px_old) * tpx_new / tpx_old.
+        int mx = impl_->f.x;
+        int my = impl_->f.y;
+        int cx = impl_->f.width / 2;
+        int cy = impl_->hud_y_px() / 2;
+        int tpx_old = impl_->tile_px_x();
+        int tpy_old = impl_->tile_px_y();
+        int off_x   = mx - cx - impl_->pan_px_x;
+        int off_y   = my - cy - impl_->pan_px_y;
+
+        // Treat the zoom ladder as a single signed axis. When zooming in
+        // past 1:1 we grow `scale`; below 1:1 we grow `zoom_den` so the
+        // tile/sprite pitch shrinks further. They never both exceed 1
+        // simultaneously.
+        while (w > 0) {
+            if (impl_->zoom_den > 1) impl_->zoom_den--;
+            else if (impl_->scale < MAX_SCALE) impl_->scale++;
+            --w;
+        }
+        while (w < 0) {
+            if (impl_->scale > MIN_SCALE) impl_->scale--;
+            else if (impl_->zoom_den < MAX_ZOOM_DEN) impl_->zoom_den++;
+            ++w;
+        }
+
+        int tpx_new = impl_->tile_px_x();
+        int tpy_new = impl_->tile_px_y();
+        if (tpx_old > 0 && tpy_old > 0) {
+            impl_->pan_px_x = (mx - cx) - off_x * tpx_new / tpx_old;
+            impl_->pan_px_y = (my - cy) - off_y * tpy_new / tpy_old;
+        }
+        // Normalize: any pan past a whole tile feeds back into the
+        // pending-pan queue (matches the drag-pan bookkeeping), keeping
+        // pan_px_* inside one tile of the new zoom.
+        while (impl_->pan_px_x >=  tpx_new) { impl_->pan_px_x -= tpx_new; impl_->pending_pan_tiles_x -= 1; }
+        while (impl_->pan_px_x <= -tpx_new) { impl_->pan_px_x += tpx_new; impl_->pending_pan_tiles_x += 1; }
+        while (impl_->pan_px_y >=  tpy_new) { impl_->pan_px_y -= tpy_new; impl_->pending_pan_tiles_y -= 1; }
+        while (impl_->pan_px_y <= -tpy_new) { impl_->pan_px_y += tpy_new; impl_->pending_pan_tiles_y += 1; }
     }
 
     impl_->process_mouse();
@@ -420,7 +507,25 @@ void FensterRenderer::begin_frame() {
     }
     impl_->tile_outline_key_prev = g_down;
 
+    // Debug: toggle primary/secondary/tertiary tier overlay on rising edge 'T'.
+    // (Moved off 'O' so that key is free for aim-raise, matching the original.)
+    bool t_down = impl_->f.keys['T'] != 0;
+    if (t_down && !impl_->object_tiers_key_prev) {
+        impl_->object_tiers_on = !impl_->object_tiers_on;
+    }
+    impl_->object_tiers_key_prev = t_down;
+
+    // Debug: toggle AABB overlay on rising edge 'B'. Draws pixel-precise
+    // bounding boxes (sprite w × h in sub-tile units) for each primary so
+    // we can see whether the player and switch/door actually overlap.
+    bool b_down = impl_->f.keys['B'] != 0;
+    if (b_down && !impl_->aabb_key_prev) {
+        impl_->aabb_overlay_on = !impl_->aabb_overlay_on;
+    }
+    impl_->aabb_key_prev = b_down;
+
     std::fill(impl_->buf.begin(), impl_->buf.end(), 0u);
+    std::fill(impl_->fg_mask.begin(), impl_->fg_mask.end(), 0u);
 }
 
 void FensterRenderer::end_frame() {
@@ -468,52 +573,118 @@ void FensterRenderer::render_tile(uint8_t world_x, uint8_t world_y,
     int sx, sy;
     if (!impl_->world_to_screen(world_x, world_y, sx, sy)) return;
 
-    if (impl_->atlas_ready) {
-        uint8_t entry = TILE_SPRITE_ID[info.tile_type & 0x3f];
-        uint8_t sid = entry & 0x7f;
-        bool override_flip_v = (entry & 0x80) != 0;
-        if (entry != 0xff && sid <= 0x7c) {
-            // Compute sub-tile offset so the sprite aligns to the
-            // correct half of the cell when flipped — matches the
-            // fraction-shifting at &2420-&243f in the disassembly.
-            // Base y-offset comes from tiles_y_offset_and_pattern;
-            // horizontally the base is always 0.
-            const SpriteAtlasEntry& e = sprite_atlas[sid];
-            int base_y_atlas = (tiles_y_offset_and_pattern[info.tile_type & 0x3f] >> 4) * 2;
-            // upper nibble * 16 fractions / 8 fractions-per-atlas-row = upper nibble * 2
+    uint8_t entry = TILE_SPRITE_ID[info.tile_type & 0x3f];
+    uint8_t sid = entry & 0x7f;
+    // Bit 7 of TILE_SPRITE_ID mirrors the &04ab flag that marks the tile's
+    // obstruction as being at the bottom — it's used for COLLISION (&2477)
+    // not rendering. Rendering flip comes from the landscape's tile_flip
+    // XOR the sprite's intrinsic flip (applied inside blit_sprite).
+    if (entry != 0xff && sid <= 0x7c) {
+        // Compute sub-tile offset so the sprite aligns to the correct half
+        // of the cell when flipped — matches &2420-&243f in the disassembly.
+        const SpriteAtlasEntry& e = sprite_atlas[sid];
+        int base_y_atlas = (tiles_y_offset_and_pattern[info.tile_type & 0x3f] >> 4) * 2;
 
-            bool final_v = info.flip_v ^ override_flip_v;
-            int y_off_atlas = final_v
-                ? (32 - base_y_atlas - e.h)   // tile_h - base - sprite_h
-                : base_y_atlas;
-            int x_off_atlas = info.flip_h
-                ? (16 - e.w)                   // tile_w - sprite_w
-                : 0;
+        int y_off_atlas = info.flip_v
+            ? (32 - base_y_atlas - e.h)
+            : base_y_atlas;
+        int x_off_atlas = info.flip_h ? (16 - e.w) : 0;
 
-            int scale = impl_->scale;
-            int x_off_px = x_off_atlas * PX_SCALE_X * scale;
-            int y_off_px = y_off_atlas * PX_SCALE_Y * scale;
+        int x_off_px = x_off_atlas * PX_SCALE_X * impl_->scale / impl_->zoom_den;
+        int y_off_px = y_off_atlas * PX_SCALE_Y * impl_->scale / impl_->zoom_den;
 
-            impl_->blit_sprite(sx + x_off_px, sy + y_off_px, sid,
-                               info.flip_h, final_v);
-            if (impl_->tile_outline_on) {
-                impl_->stroke_rect(sx, sy,
-                                   impl_->tile_px_x(), impl_->tile_px_y(),
-                                   0x404040);
-            }
-            return;
-        }
-    }
-
-    uint32_t col = tile_color(info.tile_type);
-    if (col != COL_BLACK) {
-        impl_->fill_rect(sx, sy, impl_->tile_px_x(), impl_->tile_px_y(), col);
+        // Tiles draw with the foreground mask (&ff) — full 16-colour range.
+        // `fg` per-slot tells blit_sprite which pixels should mark the
+        // foreground buffer (colours 8..15 in the BBC logical palette).
+        uint32_t lut[4];
+        uint8_t  fg[4];
+        resolve_palette_with_fg(info.palette, /*is_tile=*/true, lut, fg);
+        impl_->blit_sprite(sx + x_off_px, sy + y_off_px, sid,
+                           info.flip_h, info.flip_v, lut, fg,
+                           /*is_tile=*/true);
     }
 
     if (impl_->tile_outline_on) {
-        impl_->stroke_rect(sx, sy, impl_->tile_px_x(), impl_->tile_px_y(),
-                           0x404040);
+        int tpx = impl_->tile_px_x();
+        int tpy = impl_->tile_px_y();
+        // Highlighted tile gets a brighter outline on top of the grey grid,
+        // doubled up for visibility at high zoom.
+        bool highlighted = impl_->has_highlight
+                           && impl_->highlight_x == world_x
+                           && impl_->highlight_y == world_y;
+        impl_->stroke_rect(sx, sy, tpx, tpy, 0x404040);
+        if (highlighted) {
+            impl_->stroke_rect(sx,     sy,     tpx,     tpy,     0xFFEE33);
+            impl_->stroke_rect(sx + 1, sy + 1, tpx - 2, tpy - 2, 0xFFEE33);
+        }
     }
+}
+
+// Port of the 6502 raster-palette swap at &12a6-&12d8. Instead of
+// reprogramming VDU colour 0 at scanline boundaries (not possible in a
+// framebuffer renderer), we pre-fill the screen behind the tile blits:
+// pixels that end up logical-colour 0 are drawn transparent in
+// blit_sprite, so whatever we paint here shows through.
+//
+// Above the waterline: leave whatever begin_frame cleared to (black).
+// On the waterline:    one pixel row of cyan (=&06), matching the 1-line
+//                      delay_loop wait in the IRQ handler.
+// Below the waterline: blue (=&04) all the way to the bottom of this
+//                      tile row.
+void FensterRenderer::render_water_column(uint8_t world_x,
+                                          uint8_t waterline_y) {
+    int tpx = impl_->tile_px_x();
+
+    // Port of &16db calculate_waterline_timer's tri-state decision:
+    //   &16ec BCC: waterline_y < screen_origin_y → entire screen below
+    //              waterline (raster fires immediately, colour 0 is blue
+    //              for the whole scan).
+    //   &16f0 BCS (delta >= screen_height): entire screen above waterline
+    //              (timer never fires, colour 0 stays black).
+    //   Else: waterline is inside the visible area — raster fires at that
+    //         scanline, cyan for one line, blue afterwards.
+    //
+    // Crucial: do the subtraction in signed int arithmetic, NOT uint8_t.
+    // The 6502's `SBC screen_origin_y` is strictly 8-bit unsigned, but
+    // that's only safe because the BBC camera can never pan outside the
+    // playable range — so screen_origin_y never wraps past 0. Our map-mode
+    // viewport pans freely, so computing `vp_top_y = vp_center_y − vp_h/2`
+    // with a uint8_t underflows at the top of the map (0x03 → 0xF9) and
+    // flips the unsigned comparison's meaning: every column shows as
+    // submerged even though the waterline is far below.
+    int vp_h = impl_->vp_h_tiles();
+    int vp_top_y = int(impl_->vp_center_y) - vp_h / 2;   // may be negative
+    int water    = int(waterline_y);
+    int delta_from_top = water - vp_top_y;
+
+    // Use physical BBC MODE 2 hues so the "mid-frame palette swap" lands on
+    // the same RGB values as a colour-0 pixel would if the palette register
+    // had been rewritten. LOGICAL_TO_RGB[4]=blue, [6]=cyan.
+    const uint32_t BLUE = LOGICAL_TO_RGB[4];
+    const uint32_t CYAN = LOGICAL_TO_RGB[6];
+
+    int hud_y = impl_->hud_y_px();
+    int top_sx = 0, top_sy = 0;
+    (void)impl_->world_to_screen(world_x, waterline_y, top_sx, top_sy);
+    if (top_sx + tpx <= 0 || top_sx >= impl_->f.width) return;
+
+    if (delta_from_top < 0) {
+        // Waterline above screen top → entire column submerged → blue.
+        impl_->fill_rect(top_sx, 0, tpx, hud_y, BLUE);
+    } else if (delta_from_top < vp_h) {
+        // Waterline inside viewport. Cyan on the waterline row's top
+        // scanline, blue below.
+        if (top_sy + 1 < hud_y) {
+            int below_y0 = top_sy + 1;
+            if (below_y0 < 0) below_y0 = 0;
+            impl_->fill_rect(top_sx, below_y0, tpx, hud_y - below_y0, BLUE);
+        }
+        if (top_sy >= 0 && top_sy < hud_y) {
+            impl_->fill_rect(top_sx, top_sy, tpx, 1, CYAN);
+        }
+    }
+    // else: entire column above waterline → leave black (begin_frame
+    // cleared to 0 already).
 }
 
 void FensterRenderer::render_object(Fixed8_8 world_x, Fixed8_8 world_y,
@@ -523,19 +694,30 @@ void FensterRenderer::render_object(Fixed8_8 world_x, Fixed8_8 world_y,
     if (!impl_->world_to_screen(world_x.whole, world_y.whole, sx, sy,
                                 world_x.fraction, world_y.fraction)) return;
 
-    if (impl_->atlas_ready && info.sprite_id <= 0x7c) {
-        // Anchor the sprite so its bottom sits at the world position — the
-        // game's physics treats (x.whole, y.whole) as the feet tile, so
-        // feet-at-position keeps visuals and collision consistent.
-        const SpriteAtlasEntry& e = sprite_atlas[info.sprite_id];
-        int sprite_h_px = e.h * PX_SCALE_Y * impl_->scale;
-        impl_->blit_sprite(sx, sy - sprite_h_px, info.sprite_id,
-                           info.flip_h, info.flip_v);
+    if (info.sprite_id <= 0x7c) {
+        // Object position (x, y) is the sprite's TOP-left in world
+        // coordinates, matching the 6502 at &0d91: screen_x = object_x -
+        // screen_start_x with no sprite-height offset. Tertiary spawns
+        // pre-compute an x_frac / y_frac that place the sprite in the
+        // intended half of the tile when flipped, so anchoring at the top
+        // is the one that keeps their half-of-cell layout correct.
+        //
+        // Pass an `fg` array of all-zero entries so blit_sprite performs
+        // the foreground-skip check against fg_mask: where a tile has
+        // already marked a pixel foreground (BBC logical-colour 8..15)
+        // the object pixel is skipped — the 6502 "BMI skip_byte" at
+        // &1066 that hides objects behind foliage / spaceship overlays.
+        uint32_t lut[4];
+        uint8_t  fg[4] = {0, 0, 0, 0};
+        resolve_palette(info.palette, /*is_tile=*/false, lut);
+        impl_->blit_sprite(sx, sy, info.sprite_id,
+                           info.flip_h, info.flip_v, lut, fg,
+                           /*is_tile=*/false);
     } else {
         uint32_t col = object_color(info.type);
         int tx = impl_->tile_px_x();
         int ty = impl_->tile_px_y();
-        impl_->fill_rect(sx + 1, sy - ty + 1, tx - 2, ty - 2, col);
+        impl_->fill_rect(sx + 1, sy + 1, tx - 2, ty - 2, col);
     }
 }
 
@@ -548,28 +730,63 @@ void FensterRenderer::render_hud(const PlayerState& player) {
     int wi = player.weapon;
     if (wi > 5) wi = 0;
     impl_->fill_rect(impl_->f.width - 40, hud_y + 2, 30, 6, weapon_colors[wi]);
+
+    // Top-left pockets panel. One cell per pocket, slot 0 (the "top" of the
+    // stack — i.e. next to retrieve) drawn leftmost. Sprites render at a
+    // fixed BBC 2:1 aspect, independent of world zoom.
+    static constexpr int CELL     = 28;
+    static constexpr int CELL_PAD = 4;
+    static constexpr int ORIGIN_X = 4;
+    static constexpr int ORIGIN_Y = 4;
+    static constexpr int LABEL_H  = 9;
+    impl_->draw_text(ORIGIN_X, ORIGIN_Y, "POCKETS", 0xFFFFFF, 0x000000);
+    int cells_y = ORIGIN_Y + LABEL_H;
+    for (int i = 0; i < 5; i++) {
+        int cx = ORIGIN_X + i * (CELL + CELL_PAD);
+        int cy = cells_y;
+        impl_->fill_rect(cx, cy, CELL, CELL, 0x000000);
+        uint8_t ot = player.pockets[i];
+        uint32_t border = (ot == 0xff) ? 0x333333 : 0x888888;
+        impl_->stroke_rect(cx, cy, CELL, CELL, border);
+        if (ot == 0xff) continue;
+        uint8_t sprite_id = object_types_sprite[ot];
+        if (sprite_id > 0x7c) continue;
+        const SpriteAtlasEntry& e = sprite_atlas[sprite_id];
+        uint32_t lut[4];
+        resolve_palette(object_types_palette_and_pickup[ot] & 0x7f,
+                        /*is_tile=*/false, lut);
+        int sprite_w_px = e.w * 2;   // BBC 2:1 horizontal aspect
+        int sprite_h_px = e.h;
+        int blit_x = cx + (CELL - sprite_w_px) / 2;
+        int blit_y = cy + (CELL - sprite_h_px) / 2;
+        bool flip_h = (e.intrinsic_flip & 1) != 0;
+        bool flip_v = (e.intrinsic_flip & 2) != 0;
+        for (int sy = 0; sy < e.h; sy++) {
+            int src_y = e.y + (flip_v ? (e.h - 1 - sy) : sy);
+            for (int sx = 0; sx < e.w; sx++) {
+                int src_x = e.x + (flip_h ? (e.w - 1 - sx) : sx);
+                uint8_t idx = bbc_sprite_pixel(src_x, src_y);
+                if (idx == 0) continue;
+                uint32_t px = lut[idx];
+                int ox = blit_x + sx * 2;
+                int oy = blit_y + sy;
+                impl_->put_pixel(ox,     oy, px);
+                impl_->put_pixel(ox + 1, oy, px);
+            }
+        }
+    }
 }
 
 void FensterRenderer::render_particle(uint8_t wx, uint8_t wx_frac,
                                        uint8_t wy, uint8_t wy_frac,
                                        uint8_t colour) {
-    // Map BBC mode-1 style 3-bit colour (0-7) to our palette.
-    static constexpr uint32_t COLOURS[8] = {
-        0x000000, // 0 black
-        0xCC0000, // 1 red
-        0x00CC00, // 2 green
-        0xCCCC00, // 3 yellow
-        0x2244CC, // 4 blue
-        0xCC00CC, // 5 magenta
-        0x00CCCC, // 6 cyan
-        0xCCCCCC, // 7 white
-    };
-    uint32_t col = COLOURS[colour & 0x07];
+    // Particles use the same 16-slot logical palette as sprites/tiles, keyed
+    // by their low 3 bits (BBC background colour group).
+    uint32_t col = LOGICAL_TO_RGB[colour & 0x07];
     if (col == 0) return; // black → invisible
 
     int sx, sy;
     if (!impl_->world_to_screen(wx, wy, sx, sy, wx_frac, wy_frac)) return;
-    // Draw as a `scale` x `scale` square so particles are visible at zoom.
     int s = impl_->scale;
     impl_->fill_rect(sx, sy, s, s, col);
 }
@@ -596,6 +813,97 @@ bool FensterRenderer::consume_left_click(int& tile_dx, int& tile_dy) {
 
 void FensterRenderer::set_overlay_text(const char* text) {
     impl_->overlay = text ? text : "";
+}
+
+void FensterRenderer::set_highlighted_tile(uint8_t world_x, uint8_t world_y) {
+    impl_->has_highlight = true;
+    impl_->highlight_x = world_x;
+    impl_->highlight_y = world_y;
+}
+
+void FensterRenderer::render_activation_overlay(uint8_t anchor_x,
+                                                 uint8_t anchor_y) {
+    // Piggyback on the tile-grid toggle (G) so all the debug overlays share
+    // one key. Nothing to draw otherwise.
+    if (!impl_->tile_outline_on) return;
+
+    // Ring radii taken from ObjectManager's lifecycle decisions:
+    //   r = 1  — KEEP_AS_TERTIARY without KEEP_AS_PRIMARY_FOR_LONGER (flags
+    //            &50): objects return to tertiary the moment they leave
+    //            this box.
+    //   r = 4  — standard demotion / promotion distance. Secondary objects
+    //            within this get promoted back to primary.
+    //   r = 12 — KEEP_AS_PRIMARY_FOR_LONGER extended range.
+    struct Ring { int r; uint32_t rgb; const char* label; };
+    static constexpr Ring RINGS[] = {
+        { 1,  0xFF3333, "1" },
+        { 4,  0xFFDD33, "4" },
+        { 12, 0x33DD55, "12" },
+    };
+
+    int tpx = impl_->tile_px_x();
+    int tpy = impl_->tile_px_y();
+    int sx_anchor, sy_anchor;
+    // Render the anchor cell itself as a small cross so you can always find
+    // it even at high zoom-out. world_to_screen clips offscreen points to
+    // false, but we still want to draw the rings if the anchor is *near*
+    // the edge — recompute geometrically.
+    (void)impl_->world_to_screen(anchor_x, anchor_y, sx_anchor, sy_anchor);
+
+    for (const Ring& ring : RINGS) {
+        int w = (2 * ring.r + 1) * tpx;
+        int h = (2 * ring.r + 1) * tpy;
+        int x = sx_anchor - ring.r * tpx;
+        int y = sy_anchor - ring.r * tpy;
+        impl_->stroke_rect(x, y, w, h, ring.rgb);
+        // Double up for visibility at high zoom.
+        impl_->stroke_rect(x + 1, y + 1, w - 2, h - 2, ring.rgb);
+        // Label the ring at its top-left corner.
+        impl_->draw_text(x + 2, y + 2, ring.label, ring.rgb, 0x000000);
+    }
+
+    // Crosshair on the anchor cell itself.
+    impl_->fill_rect(sx_anchor + tpx / 2 - 1, sy_anchor, 2, tpy, 0xFFFFFF);
+    impl_->fill_rect(sx_anchor, sy_anchor + tpy / 2 - 1, tpx, 2, 0xFFFFFF);
+}
+
+bool FensterRenderer::aabb_overlay_enabled() const {
+    return impl_->aabb_overlay_on;
+}
+
+void FensterRenderer::render_aabb(Fixed8_8 world_x, Fixed8_8 world_y,
+                                  int w_units, int h_units, uint32_t rgb) {
+    // w_units / h_units are in 1/256 of a tile (matches x.fraction /
+    // y.fraction arithmetic). The top-left lives at (world_x, world_y);
+    // bottom-right at (world_x + w_units, world_y + h_units).
+    int sx0, sy0;
+    if (!impl_->world_to_screen(world_x.whole, world_y.whole, sx0, sy0,
+                                 world_x.fraction, world_y.fraction)) return;
+    int tpx = impl_->tile_px_x();
+    int tpy = impl_->tile_px_y();
+    int w_px = w_units * tpx / 256;
+    int h_px = h_units * tpy / 256;
+    if (w_px < 1) w_px = 1;
+    if (h_px < 1) h_px = 1;
+    impl_->stroke_rect(sx0, sy0, w_px, h_px, rgb);
+    // Double up the rectangle so it's visible at low zoom.
+    impl_->stroke_rect(sx0 + 1, sy0 + 1, w_px - 2, h_px - 2, rgb);
+}
+
+void FensterRenderer::render_debug_marker(uint8_t world_x, uint8_t world_y,
+                                          uint32_t rgb, const char* label) {
+    if (!impl_->object_tiers_on) return;
+    int sx, sy;
+    if (!impl_->world_to_screen(world_x, world_y, sx, sy)) return;
+    // Anchor the swatch at the top-left corner of the cell so multiple
+    // markers on the same tile stack predictably.
+    int sz = 6 + impl_->scale;                   // swatch size grows with zoom
+    impl_->fill_rect(sx + 2, sy + 2, sz, sz, rgb);
+    impl_->stroke_rect(sx + 2, sy + 2, sz, sz, 0x000000);
+    if (label && *label) {
+        // Black background behind text keeps it readable against sprites.
+        impl_->draw_text(sx + 2 + sz + 2, sy + 2, label, 0xFFFFFF, 0x000000);
+    }
 }
 
 int FensterRenderer::get_key() {

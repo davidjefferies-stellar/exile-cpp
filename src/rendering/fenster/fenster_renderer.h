@@ -16,6 +16,8 @@ public:
                       uint8_t frac_x = 0, uint8_t frac_y = 0) override;
     void render_tile(uint8_t world_x, uint8_t world_y,
                      const TileRenderInfo& info) override;
+    void render_water_column(uint8_t world_x,
+                             uint8_t waterline_y) override;
     void render_object(Fixed8_8 world_x, Fixed8_8 world_y,
                        const SpriteRenderInfo& info) override;
     void render_particle(uint8_t wx, uint8_t wx_frac,
@@ -28,6 +30,13 @@ public:
     bool consume_pan_tiles(int& dx, int& dy) override;
     bool consume_left_click(int& tile_dx, int& tile_dy) override;
     void set_overlay_text(const char* text) override;
+    void set_highlighted_tile(uint8_t world_x, uint8_t world_y) override;
+    void render_debug_marker(uint8_t world_x, uint8_t world_y,
+                             uint32_t rgb, const char* label) override;
+    void render_activation_overlay(uint8_t anchor_x, uint8_t anchor_y) override;
+    bool aabb_overlay_enabled() const override;
+    void render_aabb(Fixed8_8 world_x, Fixed8_8 world_y,
+                     int w_units, int h_units, uint32_t rgb) override;
 
 private:
     struct Impl;

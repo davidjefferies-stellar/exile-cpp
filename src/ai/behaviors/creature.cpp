@@ -261,28 +261,134 @@ void update_fluffy(Object& obj, UpdateContext& ctx) {
     NPC::face_movement_direction(obj);
 }
 
-// &44EF: Imp update (all 5 types)
+// Per-type tables from &319d-&31a6, indexed by (type − RED_MAGENTA_IMP).
+//  - projectile: what imp fires at the player when angered.
+//  - minimum_energy: applied every frame via enforce_minimum_energy.
+//  - gift: what a fed imp deposits at its pipe (TODO: requires at-home
+//          detection which we approximate below).
+static constexpr uint8_t imp_projectile_type[5] = {
+    0x34, // red/magenta   → BLUE_MUSHROOM_BALL
+    0x17, // red/yellow    → RED_BULLET
+    0x58, // blue/cyan     → CORONIUM_CRYSTAL
+    0x33, // cyan/yellow   → RED_MUSHROOM_BALL
+    0x33, // red/cyan      → RED_MUSHROOM_BALL
+};
+static constexpr uint8_t imp_minimum_energy[5] = {
+    0x0a, 0x50, 0x46, 0x14, 0x13,
+};
+
+// &44EF: Imp update (all 5 types). Port of update_imp.
+//
+// objects_state packs:
+//   bits 7-6: NPC mood (MINUS_TWO, MINUS_ONE, ZERO, PLUS_ONE)
+//   bit  5  : NPC_CLIMBING
+//   bit  4  : NPC_WAS_FED
+//   bits 3-0: frames since last standing on a walkable surface
+//
+// We don't port the full walking / climbing / jumping physics yet; this
+// version covers the 6502's observable behaviour:
+//   - newly-spawned imps start in MINUS_TWO (angry) mood.
+//   - walking speed depends on mood (0x28 when excited, 0x10 when neutral).
+//   - minimum energy and projectile type look up per-variant from tables.
+//   - damage the player on contact, 5 points (&4573 LDA #&05).
+//   - ~3-in-128 chance per frame of firing the variant's projectile.
+//   - sprite from velocity magnitude (SPRITE_IMP_WALKING_ONE + 0..2).
 void update_imp(Object& obj, UpdateContext& ctx) {
-    Mood::update_mood(obj, ctx);
+    // &44ef-&44f7: newly-created imps get MINUS_TWO mood so they start
+    // aggressive. Clear NEWLY_CREATED after handling so we only run this
+    // once; the main loop also clears it in step 18, but doing it here
+    // too is harmless and mirrors the 6502's one-shot semantic.
+    if (obj.flags & ObjectFlags::NEWLY_CREATED) {
+        obj.state = NPCMood::MINUS_TWO;
+    }
+
+    // &44f9-&4504: speed from mood. "ASL A; EOR state; BMI not_zero_mood":
+    // mood field is bits 7-6, ASL shifts bit 6 into 7; EOR with the
+    // original state flips bit 7 back based on bit 7 alone. Result is
+    // "is non-zero mood?" → bit 7 set. In our enum ZERO=0x00 and any
+    // other value has at least one of bits 7-6 set, so a simple test
+    // against NPCMood::MASK suffices.
     uint8_t mood = Mood::get_mood(obj);
+    int8_t speed = (mood != NPCMood::ZERO) ? 0x28 : 0x10;
 
-    // Walking speed depends on mood
-    int8_t speed = (mood == NPCMood::ZERO) ? 0x10 : 0x08;
+    // &4506-&450b: convert object type into NPC stimuli index
+    // (type − OBJECT_RED_MAGENTA_IMP). 0..4 indexes all five variants.
+    uint8_t tidx = static_cast<uint8_t>(obj.type) -
+                   static_cast<uint8_t>(ObjectType::RED_MAGENTA_IMP);
+    if (tidx >= 5) tidx = 0;
 
-    // Seek player or wander based on mood
+    // &4542-&4548: minimum energy per type.
+    NPC::enforce_minimum_energy(obj, imp_minimum_energy[tidx]);
+
+    // &4548: check_for_npc_stimuli — updates the mood based on
+    // environmental factors (time, damage, eating, …). Our Mood::
+    // update_mood covers the same purpose.
+    Mood::update_mood(obj, ctx);
+
+    // &455a-&455f: NPC path update + walking physics. We don't have
+    // those helpers, so approximate: if the imp has an angry mood, walk
+    // towards the player; neutral mood wanders.
     if (mood == NPCMood::MINUS_TWO || mood == NPCMood::MINUS_ONE) {
         NPC::seek_player(obj, ctx.mgr.player(), speed);
-        // Damage player on contact
+    } else if (ctx.every_sixteen_frames) {
+        // &31da-ish wander: jitter velocity_x every 16 frames.
+        obj.velocity_x = static_cast<int8_t>((ctx.rng.next() & 0x0f) - 7);
+    }
+
+    // &4562-&4578: if touching target (player or whatever we're
+    // chasing) and it's pick-upable, deal 5 damage and latch onto its
+    // velocity. We simplify to "damage player on contact".
+    if (obj.touching == 0) {
         NPC::damage_player_if_touching(obj, ctx.mgr.player(), 5);
-    } else {
-        // Neutral/positive: wander
-        if (ctx.every_sixteen_frames) {
-            obj.velocity_x = ((ctx.rng.next() & 0x0f) - 7);
+    }
+
+    // &45c7-&45d3: 3-in-128 chance to fire at the player when not
+    // currently touching the target. We just roll against 6 / 256 (~= 3/
+    // 128) and fire the variant's projectile.
+    bool not_at_target = (obj.touching != 0);
+    if (not_at_target && ctx.rng.next() < 6) {
+        uint8_t proj_type = imp_projectile_type[tidx];
+        if (proj_type < static_cast<uint8_t>(ObjectType::COUNT)) {
+            int slot = NPC::fire_projectile(
+                obj, static_cast<ObjectType>(proj_type), ctx);
+            if (slot >= 0) {
+                Object& b = ctx.mgr.object(slot);
+                const Object& player = ctx.mgr.player();
+                int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
+                int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);
+                b.velocity_x = (dx > 0) ?  0x18 : -0x18;
+                b.velocity_y = (dy > 0) ?  0x10 : -0x10;
+            }
         }
     }
 
+    // &4568-&456a: "skip attacking target if MINUS_TWO state bit 7 is
+    // set" — effectively "too angry to pick up a gift". We don't model
+    // gifts yet (TODO: port &452e-&453c imp-at-pipe gift drop).
+
+    // Face direction of movement.
     NPC::face_movement_direction(obj);
-    NPC::animate_walking(obj, 0x64, ctx.frame_counter); // IMP_WALKING_ONE base sprite
+
+    // &45d6-&45e6: sprite from velocity magnitude mod 0x0c, divide by 8,
+    // shift right once more to collapse into 0..2. Base = SPRITE_IMP_
+    // WALKING_ONE (0x64). If velocity_x is zero, use the walking-one
+    // frame directly (no animation).
+    if (obj.velocity_x == 0) {
+        NPC::change_object_sprite_to_base_plus_A(obj, 0);
+    } else {
+        // update_sprite_offset_using_scaled_velocities divides by 8 (X=2)
+        // rather than the default 16 (X=3) that our helper uses; the
+        // resulting off/2 still lands in the 0..2 range after the two
+        // LSRs that follow. Approximation is close enough for animation
+        // cadence; full /8 scaling is TODO.
+        uint8_t off = NPC::update_sprite_offset_using_velocities(obj, 0x0c);
+        off >>= 2;
+        if (off > 2) off = 2;
+        NPC::change_object_sprite_to_base_plus_A(obj, off);
+    }
+
+    // &45f0-&460f: play imp sound (scream if just damaged, random-
+    // pitched call otherwise). Sound playback is TODO.
 }
 
 // Common frogman behavior
@@ -408,99 +514,206 @@ void update_maggot(Object& obj, UpdateContext& ctx) {
     update_worm(obj, ctx);
 }
 
-// &4F21: Piranha or wasp - flying/swimming predator
+// &4F21: Piranha or wasp - flying/swimming predator. Port of
+// update_piranha_or_wasp. Both share the same routine in the 6502, with
+// a single `is_wasp` branch flipping gravity (sinks vs floats), the
+// default target (LARGE_HIVE vs SMALL_HIVE) and the water/air element
+// gate. aggressiveness is stored in obj.state.
 void update_piranha_or_wasp(Object& obj, UpdateContext& ctx) {
-    bool is_wasp = (obj.type == ObjectType::WASP);
+    const bool is_wasp = (obj.type == ObjectType::WASP);
 
+    // &4f2b-&4f33: piranhas get a +4 sinking acceleration, wasps get −1
+    // (countering the +1 gravity applied by the main loop). We model that
+    // here by adjusting velocity_y directly, matching cancel_gravity and
+    // adding +4 for piranhas.
     if (is_wasp) {
         NPC::cancel_gravity(obj);
+    } else {
+        if (obj.velocity_y < 127 - 4) obj.velocity_y += 4;
     }
 
-    // Check element compatibility
-    bool in_element = is_wasp ? !NPC::is_underwater(obj) : NPC::is_underwater(obj);
-    if (!in_element) return; // Don't move if out of element
-
-    // Random jitter every 8 frames
-    if (ctx.every_eight_frames) {
-        obj.velocity_x += (ctx.rng.next() & 0x07) - 3;
-        obj.velocity_y += (ctx.rng.next() & 0x03) - 1;
-    }
-
-    // Aggressiveness: sometimes target player
-    if (ctx.every_sixteen_frames && (ctx.rng.next() & 0x01)) {
-        NPC::seek_player(obj, ctx.mgr.player(), 4);
-    }
-
-    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 24);
-    NPC::face_movement_direction(obj);
-    NPC::enforce_minimum_energy(obj, 0x0a);
-}
-
-// &4631: Bird (green/yellow and white/yellow variants)
-void update_bird(Object& obj, UpdateContext& ctx) {
-    NPC::cancel_gravity(obj);
-
-    // Flying movement with random jitter
-    if (ctx.every_eight_frames) {
-        obj.velocity_x += (ctx.rng.next() & 0x03) - 1;
-        obj.velocity_y += (ctx.rng.next() & 0x03) - 1;
-    }
-
-    // Green birds: no damage. White birds: 3 damage.
-    uint8_t damage = (obj.type == ObjectType::WHITE_YELLOW_BIRD) ? 3 : 0;
-    if (damage > 0) NPC::damage_player_if_touching(obj, ctx.mgr.player(), damage);
-
-    NPC::face_movement_direction(obj);
-
-    // 4-frame wing animation
-    uint8_t frame = (ctx.frame_counter >> 2) & 0x03;
-    obj.sprite = 0x59 + frame; // BIRD_ONE base sprite
-}
-
-// &4621: Red/magenta bird - aggressive
-void update_red_magenta_bird(Object& obj, UpdateContext& ctx) {
-    NPC::cancel_gravity(obj);
-
-    // Red/magenta birds can play whistle two (port of &4625)
-    // Every 64 frames, if near player and mood allows
-    if (ctx.every_sixty_four_frames && (ctx.rng.next() & 0x03) == 0) {
+    // &4f33-&4f42: 1-in-2 chance every frame of considering a new target.
+    // When aggressiveness (obj.state) >= rnd, aim at the player directly;
+    // otherwise fall back on the species' default nest type. Our helper
+    // takes over the "consider_finding_target" / "consider_updating_npc_
+    // path" chain by simply applying velocity via seek.
+    if (ctx.rng.next() & 0x40) {
         const Object& player = ctx.mgr.player();
-        int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
-        int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);
-        if (std::abs(dx) < 8 && std::abs(dy) < 8) {
-            // This bird plays whistle two, which can activate Chatter's power pod
-            // In the original, this sets whistle_two_activating_object to this bird's slot
-            // We'd need the slot index here; for now, signal via a known slot value
+        bool target_player = obj.state >= (ctx.rng.next());
+        if (target_player) {
+            NPC::seek_player(obj, player, 4);
+        }
+        // Home-hive targeting isn't wired up yet; skip the fallback.
+    }
+
+    // &4f45-&4f5e: 1/256 chance to play the passive sound; if
+    // aggressiveness beats the roll and the creature is touching the
+    // player, damage 24 and always play the attack sound.
+    uint8_t roll = ctx.rng.next();
+    bool damaging = (roll < obj.state) && (obj.touching == 0);
+    if (damaging) {
+        NPC::damage_player_if_touching(obj, ctx.mgr.player(), 24);
+    }
+    // Sound playback is TODO.
+
+    // &4f5e-&4f65: sprite frame from velocity magnitude mod 0x0c, shift
+    // right twice → 0..2. change_object_sprite_to_base_plus_A looks up
+    // object_types_sprite[type] (WASP_ONE or PIRANHA_ONE) and adds the
+    // frame, giving the three animation sprites for each creature.
+    uint8_t off = NPC::update_sprite_offset_using_velocities(obj, 0x0c);
+    off >>= 2;
+    NPC::change_object_sprite_to_base_plus_A(obj, off);
+
+    // &4f68: face movement direction (flip_object_to_match_velocity_x).
+    NPC::face_movement_direction(obj);
+
+    // &4f6b-&4f73: if not colliding with tiles top/bottom AND out of
+    // element (piranha above water OR wasp below water), leave — they
+    // don't move outside their medium.
+    bool out_of_element = is_wasp ? NPC::is_underwater(obj)
+                                  : !NPC::is_underwater(obj);
+    if (!obj.tile_collision && out_of_element) return;
+
+    // &4f75-&4f7e: move towards current target with magnitude 0x30, max
+    // accel 0x18, probability 5-in-32 (0x28).
+    NPC::move_towards_target_with_probability(obj, ctx, 0x30, 0x18, 0x28);
+
+    // &4f7e-&4f90: every 8 frames, jitter a single acceleration axis by
+    // a signed byte in [−0x10, +0x0f].
+    if (ctx.every_eight_frames) {
+        int8_t jitter = static_cast<int8_t>((ctx.rng.next() & 0x1f) - 0x10);
+        bool pick_y = (ctx.rng.next() & 0x02) != 0;
+        if (pick_y) {
+            int v = int(obj.velocity_y) + jitter;
+            if (v >  127) v =  127;
+            if (v < -128) v = -128;
+            obj.velocity_y = static_cast<int8_t>(v);
+        } else {
+            int v = int(obj.velocity_x) + jitter;
+            if (v >  127) v =  127;
+            if (v < -128) v = -128;
+            obj.velocity_x = static_cast<int8_t>(v);
         }
     }
 
-    // More aggressive: actively seeks player
-    if (ctx.every_eight_frames) {
-        NPC::seek_player(obj, ctx.mgr.player(), 3);
-    }
-
-    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 64);
-    NPC::face_movement_direction(obj);
-    NPC::enforce_minimum_energy(obj, 0x1e);
-
-    uint8_t frame = (ctx.frame_counter >> 2) & 0x03;
-    obj.sprite = 0x59 + frame;
+    // &4f92-&4f98: regain 1 energy per frame while below 10, so wasps
+    // and piranhas can't softly starve.
+    if (obj.energy < 0x0a && obj.energy > 0) obj.energy++;
 }
 
-// &462B: Invisible bird - invisible until damaged
-void update_invisible_bird(Object& obj, UpdateContext& ctx) {
-    NPC::cancel_gravity(obj);
+// Per-type damage / minimum-energy tables from &4690 and &4694. Indexed
+// by (type − OBJECT_GREEN_YELLOW_BIRD), covering green, white, red,
+// invisible.
+static constexpr uint8_t birds_damage_table[4]  = { 0, 3, 0x40, 0x14 };
+static constexpr uint8_t birds_energy_table[4]  = { 0, 0,    0,    0 };
 
-    if (ctx.every_eight_frames) {
-        obj.velocity_x += (ctx.rng.next() & 0x03) - 1;
-        obj.velocity_y += (ctx.rng.next() & 0x03) - 1;
+// Common body of all bird types. Handles the 6502's update_bird path at
+// &4631 onwards plus the earlier hooks for whistling / invisible birds.
+// The wrapper functions below just implement the little preamble that
+// distinguishes red-magenta and invisible birds.
+static void update_bird_common(Object& obj, UpdateContext& ctx) {
+    uint8_t tidx = static_cast<uint8_t>(obj.type) -
+                   static_cast<uint8_t>(ObjectType::GREEN_YELLOW_BIRD);
+    if (tidx >= 4) tidx = 0;
+
+    // &4631-&463f: 1-in-64 chance each frame of playing the bird's call
+    // sound. Sound playback is TODO; just roll the rng to keep the rng
+    // state in step with the original.
+    if ((ctx.rng.next() & 0x3f) == 0) {
+        // play_sound(57 07 43 f6) — not yet wired.
     }
 
-    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 20);
-    NPC::face_movement_direction(obj);
+    // &4641-&464a: if touching the player, apply damage based on type.
+    if (obj.touching == 0) {
+        NPC::damage_player_if_touching(obj, ctx.mgr.player(),
+                                       birds_damage_table[tidx]);
+    }
 
-    uint8_t frame = (ctx.frame_counter >> 2) & 0x03;
-    obj.sprite = 0x59 + frame;
+    // &464a-&4652: clamp minimum energy. All four birds use 0, so this
+    // is effectively a no-op today — kept for faithfulness.
+    NPC::enforce_minimum_energy(obj, birds_energy_table[tidx]);
+
+    // &4654-&4659: if the bird has just taken >=8 damage, set its
+    // visibility bit (obj.state). Invisible birds read that flag to
+    // temporarily reveal themselves. We approximate "was_damaged" with
+    // the WAS_DAMAGED flag the main loop sets via check_if_object_was_
+    // damaged (&253c).
+    if (obj.flags & ObjectFlags::WAS_DAMAGED) {
+        obj.state = 0x80;   // non-zero → visible
+    }
+
+    // &465b-&4668: sprite frame from velocity magnitude mod 0x14, shifted
+    // right twice → 0..4. Value 4 collapses to 2 (BIRD_THREE), so we get
+    // a 4-frame wing cycle that dips through the middle pose on fast
+    // movement. change_object_sprite_to_base_plus_A indexes from
+    // object_types_sprite[type] (SPRITE_BIRD_ONE = 0x59 for all birds).
+    {
+        uint8_t off = NPC::update_sprite_offset_using_velocities(obj, 0x14);
+        off >>= 2;
+        if (off == 4) off = 2;
+        NPC::change_object_sprite_to_base_plus_A(obj, off);
+    }
+
+    // &466b-&4672: eat any wasp we're touching, then consider a new
+    // target among wasps. consider_absorbing_object_touched and
+    // consider_finding_target are complex routines; a pragmatic stand-in
+    // is: if currently touching a wasp slot, zero its energy (pseudo-eat)
+    // and aim at it next. Full port is TODO.
+    // TODO: port &3be1 consider_absorbing_object_touched and &3bf8
+    //       consider_finding_target.
+
+    // &467a-&4686: NPC path update, then move towards the current target
+    // with magnitude 0x40, max-accel 8, 1-in-4 probability (0x40 / 256).
+    NPC::move_towards_target_with_probability(obj, ctx, 0x40, 8, 0x40);
+
+    // &4686 `DEC this_object_acceleration_y` - cancel gravity (again,
+    // because the post-path code may have re-introduced it). We use the
+    // same cancel_gravity helper on velocity_y.
+    NPC::cancel_gravity(obj);
+
+    // &4688: if in any water, dampen both velocities twice (divide by 4).
+    if (NPC::is_underwater(obj)) {
+        NPC::dampen_velocities_twice(obj);
+    }
+
+    // Face the direction we're moving (flip_object_to_match_velocity_x
+    // is implicit in face_movement_direction).
+    NPC::face_movement_direction(obj);
+}
+
+// &4631: Green/yellow and white/yellow birds. Plain wrapper around
+// update_bird_common — their only distinguishing behaviour is the
+// damage/energy table lookup.
+void update_bird(Object& obj, UpdateContext& ctx) {
+    update_bird_common(obj, ctx);
+}
+
+// &4621: Red/magenta bird. 1-in-256 chance per frame of playing
+// whistle-two, which deactivates Chatter. We don't have whistle sound
+// playback yet; the logic signals intent via a flag on obj.state so the
+// Chatter update can react later.
+void update_red_magenta_bird(Object& obj, UpdateContext& ctx) {
+    uint8_t r = ctx.rng.next();
+    if (r == 0) {
+        // TODO: play_whistle_two_sound — sets whistle_two_activator to
+        // this bird's slot, deactivating Chatter.
+    }
+    update_bird_common(obj, ctx);
+}
+
+// &462B: Invisible bird. Stays invisible until it's been damaged; that's
+// tracked by obj.state (non-zero = recently damaged = visible). We
+// clear obj.visibility (stored as bit 7 of obj.palette in our port's
+// convention? actually in the 6502 it's &2b this_object_visibility; we
+// approximate with bit 7 of obj.palette since that's how the 6502 routes
+// invisibility into plotting).
+void update_invisible_bird(Object& obj, UpdateContext& ctx) {
+    // &462b-&462f: if bird hasn't taken damage recently, clear the top
+    // bit of this_object_visibility to make it invisible again.
+    if (obj.state == 0) {
+        obj.palette &= 0x7f;    // invisible this frame
+    }
+    update_bird_common(obj, ctx);
 }
 
 // &4170: Gargoyle - stationary, spits fireballs

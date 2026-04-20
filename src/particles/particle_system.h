@@ -77,6 +77,12 @@ public:
     // position. Port of &218c / &218e (add_particle / add_particles).
     void emit(ParticleType type, int count, const Object& src, Random& rng);
 
+    // Emit a single particle at an explicit world tile (whole coords only,
+    // fractions = 0). Used by the star-field at &26ce-&26e3 which fills
+    // &87/&89/&8b/&8d directly before calling add_particle, bypassing the
+    // object-position path.
+    void emit_at(ParticleType type, uint8_t wx, uint8_t wy, Random& rng);
+
     int count() const { return n_; }
     const Particle& get(int i) const { return pool_[i]; }
 

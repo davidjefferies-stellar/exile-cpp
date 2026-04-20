@@ -18,8 +18,26 @@ struct Object {
     uint8_t    ty         = 0;        // &0936: target/teleport tile y
     uint8_t    touching   = 0x80;     // &0946: slot of touching object, 0x80+ = none
     uint8_t    timer      = 0;        // &0956: type-dependent
-    uint8_t    tertiary_data_offset = 0; // &0966
+    uint8_t    tertiary_data_offset = 0; // &0966: objects_data byte (door
+                                         // locked/opening flags, switch effect
+                                         // id + toggle mask, explosion
+                                         // duration counter, etc.) — despite
+                                         // the legacy name this is the DATA
+                                         // byte, not an offset.
     uint8_t    state      = 0;        // &0976: type-dependent (NPC mood, etc.)
+    // Tertiary bookkeeping: the offset into ObjectManager::tertiary_data_
+    // that this primary was spawned from. Needed so return_to_tertiary can
+    // set the spawn gate and write back any switch-toggled state. Not
+    // present in the 6502 — there it's rederived from the tile position
+    // each time demotion happens. Zero means "not from a tertiary slot".
+    uint8_t    tertiary_slot = 0;
+    // Transient collision flags, written by object-update physics at step 15
+    // and read by the next frame's type-specific updater. Mirrors the 6502
+    // zero-page scratch at &1b (tile_top_or_bottom_collision) and its x
+    // counterpart at &1c — in our port we store them per-object because
+    // our update order is (update_fn, physics) rather than (physics, update_fn),
+    // so the bullet updater reads the previous frame's flag.
+    bool       tile_collision = false;  // true if axis-separated move was undone
 
     bool is_active() const { return y.whole != 0; }
     bool is_flipped_h() const { return flags & ObjectFlags::FLIP_HORIZONTAL; }

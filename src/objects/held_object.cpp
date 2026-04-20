@@ -1,36 +1,50 @@
 #include "objects/held_object.h"
 #include "objects/object_data.h"
+#include "rendering/sprite_atlas.h"
+#include <cstdint>
 
 namespace HeldObject {
 
-// Port of &1afd-&1b48.
-// The original uses sprite width/height tables to precisely position the held
-// object. Without the full sprite dimension tables extracted, we use reasonable
-// defaults (player ~16px wide, ~16px tall, held objects ~8px wide/tall).
-// The key behaviors are: vertical centering and horizontal offset by facing direction.
+// Port of &1afd-&1b48. Positions the held object flush to the player's side
+// (right if facing right, left if facing left) with vertical centres aligned.
+//
+// Unit convention (matching Fixed8_8 / the 6502 fraction arithmetic):
+//   1 screen pixel in X = 0x10 x-fraction units   (16 px per tile)
+//   1 screen row    in Y = 8    y-fraction units  (32 rows per tile)
 void update_position(Object& held, const Object& player) {
-    // Y positioning: center held object with player vertically.
-    // The original computes: (player_height - held_height) / 2, rounded to pixel,
-    // then adds to player y_fraction with carry to y_whole.
-    // With typical heights being similar, the offset is small.
-    // For now, match player Y position directly (offset ~0 for same-height objects).
-    held.y.fraction = player.y.fraction;
-    held.y.whole = player.y.whole;
+    uint8_t player_w_px = (player.sprite <= 0x7c) ? sprite_atlas[player.sprite].w : 5;
+    uint8_t player_h_px = (player.sprite <= 0x7c) ? sprite_atlas[player.sprite].h : 22;
+    uint8_t held_w_px   = (held.sprite   <= 0x7c) ? sprite_atlas[held.sprite].w   : 4;
+    uint8_t held_h_px   = (held.sprite   <= 0x7c) ? sprite_atlas[held.sprite].h   : 6;
 
-    // X positioning: offset to the side the player is facing.
-    // The original adds player_width (in fractions, ~0x10 per pixel) to player x.
-    // For facing right: held.x = player.x + (player_width + 0x10)
-    // For facing left: held.x = player.x - (held_width + 0x10)
-    // A pixel is 0x10 in fraction units. Player width ~16px = 0x100 = 1 tile.
+    // X: signed offset in fraction units, applied across (whole, fraction).
+    int32_t x_offset;
     if (player.is_flipped_h()) {
-        // Facing left: place held object 1 tile to the left
-        held.x.fraction = player.x.fraction;
-        held.x.whole = player.x.whole - 1;
+        // Facing left: shift so the held object's right edge touches the
+        // player's left edge (port of &1b2b..&1b30).
+        x_offset = -static_cast<int32_t>(held_w_px) * 0x10;
     } else {
-        // Facing right: place held object 1 tile to the right
-        held.x.fraction = player.x.fraction;
-        held.x.whole = player.x.whole + 1;
+        // Facing right: shift so held left edge touches player right edge
+        // (port of &1b1f..&1b24).
+        x_offset = static_cast<int32_t>(player_w_px) * 0x10;
     }
+    int32_t x_combined = static_cast<int32_t>(player.x.whole) * 0x100
+                       + static_cast<int32_t>(player.x.fraction)
+                       + x_offset;
+    held.x.whole    = static_cast<uint8_t>((x_combined >> 8) & 0xff);
+    held.x.fraction = static_cast<uint8_t>(x_combined & 0xff);
+
+    // Y: align vertical centres (port of &1b00..&1b1b). Because sprites are
+    // bottom-anchored, a smaller held object needs a larger world Y to
+    // line its centre up with the player's.
+    int16_t diff_rows = (static_cast<int16_t>(player_h_px) -
+                         static_cast<int16_t>(held_h_px)) / 2;
+    int32_t y_offset = static_cast<int32_t>(diff_rows) * 8;
+    int32_t y_combined = static_cast<int32_t>(player.y.whole) * 0x100
+                       + static_cast<int32_t>(player.y.fraction)
+                       + y_offset;
+    held.y.whole    = static_cast<uint8_t>((y_combined >> 8) & 0xff);
+    held.y.fraction = static_cast<uint8_t>(y_combined & 0xff);
 
     // Sync velocity from player (port of &1b45 JSR set_this_object_velocities_from_object_Y)
     held.velocity_x = player.velocity_x;

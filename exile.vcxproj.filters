@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="src">
+      <UniqueIdentifier>{a0010001-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\core">
+      <UniqueIdentifier>{a0010002-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\world">
+      <UniqueIdentifier>{a0010003-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\objects">
+      <UniqueIdentifier>{a0010004-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\ai">
+      <UniqueIdentifier>{a0010005-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\ai\behaviors">
+      <UniqueIdentifier>{a0010006-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\player">
+      <UniqueIdentifier>{a0010007-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\rendering">
+      <UniqueIdentifier>{a0010008-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\rendering\fenster">
+      <UniqueIdentifier>{a0010009-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\particles">
+      <UniqueIdentifier>{a001000a-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\game">
+      <UniqueIdentifier>{a001000b-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="data">
+      <UniqueIdentifier>{a001000c-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="deps">
+      <UniqueIdentifier>{a001000d-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- src\ -->
+    <ClCompile Include="src\main.cpp">                           <Filter>src</Filter> </ClCompile>
+
+    <!-- src\core\ -->
+    <ClCompile Include="src\core\random.cpp">                    <Filter>src\core</Filter> </ClCompile>
+
+    <!-- src\world\ -->
+    <ClCompile Include="src\world\landscape.cpp">                <Filter>src\world</Filter> </ClCompile>
+    <ClCompile Include="src\world\obstruction.cpp">              <Filter>src\world</Filter> </ClCompile>
+    <ClCompile Include="src\world\wind.cpp">                     <Filter>src\world</Filter> </ClCompile>
+    <ClCompile Include="src\world\water.cpp">                    <Filter>src\world</Filter> </ClCompile>
+    <ClCompile Include="src\world\tertiary.cpp">                 <Filter>src\world</Filter> </ClCompile>
+
+    <!-- src\objects\ -->
+    <ClCompile Include="src\objects\object.cpp">                 <Filter>src\objects</Filter> </ClCompile>
+    <ClCompile Include="src\objects\object_manager.cpp">         <Filter>src\objects</Filter> </ClCompile>
+    <ClCompile Include="src\objects\physics.cpp">                <Filter>src\objects</Filter> </ClCompile>
+    <ClCompile Include="src\objects\collision.cpp">              <Filter>src\objects</Filter> </ClCompile>
+    <ClCompile Include="src\objects\held_object.cpp">            <Filter>src\objects</Filter> </ClCompile>
+    <ClCompile Include="src\objects\weapon.cpp">                 <Filter>src\objects</Filter> </ClCompile>
+
+    <!-- src\ai\ -->
+    <ClCompile Include="src\ai\npc_helpers.cpp">                 <Filter>src\ai</Filter> </ClCompile>
+    <ClCompile Include="src\ai\mood.cpp">                        <Filter>src\ai</Filter> </ClCompile>
+    <ClCompile Include="src\ai\behavior_dispatch.cpp">           <Filter>src\ai</Filter> </ClCompile>
+
+    <!-- src\ai\behaviors\ -->
+    <ClCompile Include="src\ai\behaviors\projectile.cpp">        <Filter>src\ai\behaviors</Filter> </ClCompile>
+    <ClCompile Include="src\ai\behaviors\creature.cpp">          <Filter>src\ai\behaviors</Filter> </ClCompile>
+    <ClCompile Include="src\ai\behaviors\robot.cpp">             <Filter>src\ai\behaviors</Filter> </ClCompile>
+    <ClCompile Include="src\ai\behaviors\environment.cpp">       <Filter>src\ai\behaviors</Filter> </ClCompile>
+    <ClCompile Include="src\ai\behaviors\collectable.cpp">       <Filter>src\ai\behaviors</Filter> </ClCompile>
+
+    <!-- src\player\ -->
+    <ClCompile Include="src\player\input.cpp">                   <Filter>src\player</Filter> </ClCompile>
+
+    <!-- src\rendering\ -->
+    <ClCompile Include="src\rendering\camera.cpp">               <Filter>src\rendering</Filter> </ClCompile>
+    <ClCompile Include="src\rendering\sprite_atlas.cpp">         <Filter>src\rendering</Filter> </ClCompile>
+    <ClCompile Include="src\rendering\sprite_data.cpp">          <Filter>src\rendering</Filter> </ClCompile>
+    <ClCompile Include="src\rendering\palette.cpp">              <Filter>src\rendering</Filter> </ClCompile>
+
+    <!-- src\rendering\fenster\ -->
+    <ClCompile Include="src\rendering\fenster\fenster_renderer.cpp">
+                                                                 <Filter>src\rendering\fenster</Filter> </ClCompile>
+
+    <!-- src\particles\ -->
+    <ClCompile Include="src\particles\particle_system.cpp">      <Filter>src\particles</Filter> </ClCompile>
+
+    <!-- src\game\ -->
+    <ClCompile Include="src\game\game.cpp">                      <Filter>src\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\config.cpp">                    <Filter>src\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\tertiary_spawn.cpp">            <Filter>src\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\player_actions.cpp">            <Filter>src\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\player_motion.cpp">             <Filter>src\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\player_sprite.cpp">             <Filter>src\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\object_update.cpp">             <Filter>src\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\render.cpp">                    <Filter>src\game</Filter> </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- src\core\ -->
+    <ClInclude Include="src\core\types.h">                       <Filter>src\core</Filter> </ClInclude>
+    <ClInclude Include="src\core\random.h">                      <Filter>src\core</Filter> </ClInclude>
+    <ClInclude Include="src\core\fixed_point.h">                 <Filter>src\core</Filter> </ClInclude>
+
+    <!-- data\ -->
+    <ClInclude Include="data\map_overlay.h">                     <Filter>data</Filter> </ClInclude>
+
+    <!-- src\world\ -->
+    <ClInclude Include="src\world\landscape.h">                  <Filter>src\world</Filter> </ClInclude>
+    <ClInclude Include="src\world\obstruction.h">                <Filter>src\world</Filter> </ClInclude>
+    <ClInclude Include="src\world\tile_data.h">                  <Filter>src\world</Filter> </ClInclude>
+    <ClInclude Include="src\world\wind.h">                       <Filter>src\world</Filter> </ClInclude>
+    <ClInclude Include="src\world\water.h">                      <Filter>src\world</Filter> </ClInclude>
+    <ClInclude Include="src\world\tertiary.h">                   <Filter>src\world</Filter> </ClInclude>
+
+    <!-- src\objects\ -->
+    <ClInclude Include="src\objects\object.h">                   <Filter>src\objects</Filter> </ClInclude>
+    <ClInclude Include="src\objects\object_data.h">              <Filter>src\objects</Filter> </ClInclude>
+    <ClInclude Include="src\objects\object_tables.h">            <Filter>src\objects</Filter> </ClInclude>
+    <ClInclude Include="src\objects\object_manager.h">           <Filter>src\objects</Filter> </ClInclude>
+    <ClInclude Include="src\objects\held_object.h">              <Filter>src\objects</Filter> </ClInclude>
+    <ClInclude Include="src\objects\weapon.h">                   <Filter>src\objects</Filter> </ClInclude>
+    <ClInclude Include="src\objects\physics.h">                  <Filter>src\objects</Filter> </ClInclude>
+    <ClInclude Include="src\objects\collision.h">                <Filter>src\objects</Filter> </ClInclude>
+
+    <!-- src\rendering\ -->
+    <ClInclude Include="src\rendering\renderer.h">               <Filter>src\rendering</Filter> </ClInclude>
+    <ClInclude Include="src\rendering\camera.h">                 <Filter>src\rendering</Filter> </ClInclude>
+    <ClInclude Include="src\rendering\sprite_atlas.h">           <Filter>src\rendering</Filter> </ClInclude>
+    <ClInclude Include="src\rendering\sprite_data.h">            <Filter>src\rendering</Filter> </ClInclude>
+    <ClInclude Include="src\rendering\palette.h">                <Filter>src\rendering</Filter> </ClInclude>
+    <ClInclude Include="src\rendering\font8x8.h">                <Filter>src\rendering</Filter> </ClInclude>
+    <ClInclude Include="src\rendering\debug_names.h">            <Filter>src\rendering</Filter> </ClInclude>
+
+    <!-- src\rendering\fenster\ -->
+    <ClInclude Include="src\rendering\fenster\fenster_renderer.h">
+                                                                 <Filter>src\rendering\fenster</Filter> </ClInclude>
+
+    <!-- src\particles\ -->
+    <ClInclude Include="src\particles\particle_system.h">        <Filter>src\particles</Filter> </ClInclude>
+
+    <!-- deps\ -->
+    <ClInclude Include="deps\fenster.h">                         <Filter>deps</Filter> </ClInclude>
+
+    <!-- src\ai\ -->
+    <ClInclude Include="src\ai\npc_helpers.h">                   <Filter>src\ai</Filter> </ClInclude>
+    <ClInclude Include="src\ai\mood.h">                          <Filter>src\ai</Filter> </ClInclude>
+    <ClInclude Include="src\ai\behavior_dispatch.h">             <Filter>src\ai</Filter> </ClInclude>
+
+    <!-- src\ai\behaviors\ -->
+    <ClInclude Include="src\ai\behaviors\projectile.h">          <Filter>src\ai\behaviors</Filter> </ClInclude>
+    <ClInclude Include="src\ai\behaviors\creature.h">            <Filter>src\ai\behaviors</Filter> </ClInclude>
+    <ClInclude Include="src\ai\behaviors\robot.h">               <Filter>src\ai\behaviors</Filter> </ClInclude>
+    <ClInclude Include="src\ai\behaviors\environment.h">         <Filter>src\ai\behaviors</Filter> </ClInclude>
+    <ClInclude Include="src\ai\behaviors\collectable.h">         <Filter>src\ai\behaviors</Filter> </ClInclude>
+
+    <!-- src\player\ -->
+    <ClInclude Include="src\player\input.h">                     <Filter>src\player</Filter> </ClInclude>
+
+    <!-- src\game\ -->
+    <ClInclude Include="src\game\game.h">                        <Filter>src\game</Filter> </ClInclude>
+    <ClInclude Include="src\game\config.h">                      <Filter>src\game</Filter> </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Non-code files at the project root — left without <Filter> so
+         they appear at the top level in Solution Explorer. -->
+    <None Include="exile.ini" />
+    <None Include="CLAUDE.md" />
+  </ItemGroup>
+</Project>

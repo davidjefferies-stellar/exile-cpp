@@ -24,6 +24,11 @@ struct PlayerState {
     uint8_t weapon;
     uint8_t keys_collected;
     bool    has_jetpack_booster;
+    // Port of &0848 player_pockets / &0847 player_pockets_used. Up to 5 stored
+    // object types. Slot 0 is the "top" (most recently stored / next to
+    // retrieve). Unused slots set to 0xff.
+    uint8_t pockets[5] = {0xff, 0xff, 0xff, 0xff, 0xff};
+    uint8_t pockets_used = 0;
 };
 
 namespace InputKey {
@@ -54,6 +59,20 @@ public:
     // Render one tile at world coordinates
     virtual void render_tile(uint8_t world_x, uint8_t world_y,
                              const TileRenderInfo& info) = 0;
+
+    // Paint the water backdrop for a single tile column. The 6502 does this
+    // by reprogramming physical palette register 0 (VDU colour 0) mid-frame
+    // via a raster timer at &12a6 / &12b8 / &12c2 / &12d8:
+    //   - above the waterline:   colour 0 = black (&00)
+    //   - on the waterline:      colour 0 = cyan  (&06) for one raster line
+    //   - below the waterline:   colour 0 = blue  (&04)
+    // Since colour-0 pixels in our blit_sprite are transparent, we emulate
+    // this by pre-filling the appropriate screen cells with the water /
+    // surface colours before the tile blits run. `world_x` is the column,
+    // `waterline_y` is the returned get_waterline_y(world_x). Default no-op
+    // for renderers that don't support it.
+    virtual void render_water_column(uint8_t /*world_x*/,
+                                     uint8_t /*waterline_y*/) {}
 
     // Render one object at world position
     virtual void render_object(Fixed8_8 world_x, Fixed8_8 world_y,
@@ -93,4 +112,32 @@ public:
 
     // Set overlay text drawn in the top-right corner.
     virtual void set_overlay_text(const char* /*text*/) {}
+
+    // Mark a world tile as the "selected" tile. Renderers with a visible tile
+    // grid should highlight this cell while the grid is on; others can ignore.
+    virtual void set_highlighted_tile(uint8_t /*world_x*/, uint8_t /*world_y*/) {}
+
+    // Debug overlay: draw a small coloured swatch + label at a world tile.
+    // Each renderer can gate it on its own toggle; implementations that don't
+    // support overlays should leave the default no-op.
+    virtual void render_debug_marker(uint8_t /*world_x*/, uint8_t /*world_y*/,
+                                     uint32_t /*rgb*/,
+                                     const char* /*label*/) {}
+
+    // Draw the activation-distance rings around the anchor point that drives
+    // demotion / promotion / placeholder conversion. Renderers that support
+    // a tile-grid toggle should gate this on the same toggle so all the
+    // debug overlays come and go together.
+    virtual void render_activation_overlay(uint8_t /*anchor_x*/,
+                                           uint8_t /*anchor_y*/) {}
+
+    // Debug AABB overlay: draw the pixel-precise bounding box used by
+    // object-object collision for a single primary. Dimensions are given in
+    // the 6502's sub-tile units (1/256 tile = 1/8 sprite pixel), matching
+    // sprite_atlas.w/h minus one times 16/8 respectively. Gated by the
+    // renderer's own toggle key ('B' on Fenster).
+    virtual bool aabb_overlay_enabled() const { return false; }
+    virtual void render_aabb(Fixed8_8 /*world_x*/, Fixed8_8 /*world_y*/,
+                             int /*w_units*/, int /*h_units*/,
+                             uint32_t /*rgb*/) {}
 };

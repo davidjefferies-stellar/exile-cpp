@@ -26,6 +26,15 @@ struct UpdateContext {
     // `particles->emit(ParticleType::X, count, obj, rng)`. May be null if
     // the system isn't initialised yet (headless/tests).
     ParticleSystem* particles;
+    // Index of the slot the player is currently holding, or 0x80+ if no
+    // object is held. Mirrors the 6502's &dd player_object_held byte.
+    // update_collectable consults this to know "the player is carrying me
+    // right now → mark me collected and remove" (port of &4b88).
+    uint8_t held_object_slot;
+    // Slot index of the object whose update routine is currently running
+    // (the 6502's &aa this_object). update_collectable compares against
+    // held_object_slot to decide whether the player is carrying it.
+    int this_slot;
 };
 
 // Common NPC movement helpers
@@ -63,5 +72,33 @@ void face_movement_direction(Object& obj);
 
 // Create a child projectile from this object
 int fire_projectile(Object& obj, ObjectType bullet_type, UpdateContext& ctx);
+
+// Port of &2555 update_sprite_offset_using_velocities. Picks the larger
+// of |velocity_x|/|velocity_y|, divides by 16, adds 1 + obj.timer, and
+// reduces modulo `modulus`. The result replaces obj.timer and is returned
+// — makes animation frames advance faster when the object is moving
+// faster, which birds / wasps / piranhas all rely on.
+uint8_t update_sprite_offset_using_velocities(Object& obj, uint8_t modulus);
+
+// Port of &3292 change_object_sprite_to_base_plus_A. Looks up the base
+// sprite for this object's type in `object_types_sprite` and sets
+// obj.sprite = base + offset. Used for directional / walk-cycle frames.
+void change_object_sprite_to_base_plus_A(Object& obj, uint8_t offset);
+
+// Port of &321f dampen_this_object_velocities_twice. Halves both axes
+// of velocity via arithmetic shift right, twice. Used by birds when
+// they wander into water.
+void dampen_velocities_twice(Object& obj);
+
+// Port of &31da move_towards_target_with_probability_X in a reduced form.
+// Each frame with probability X/256 (X is the threshold byte), nudges
+// velocity towards the object's current target (obj.target_and_flags
+// slot) by up to `max_accel` and at most `magnitude` apart. Called with
+// fixed X, magnitude, max_accel so different creatures get different
+// responsiveness.
+void move_towards_target_with_probability(Object& obj, UpdateContext& ctx,
+                                          uint8_t magnitude,
+                                          uint8_t max_accel,
+                                          uint8_t prob_threshold);
 
 } // namespace NPC

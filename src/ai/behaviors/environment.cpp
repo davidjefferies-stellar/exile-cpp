@@ -1,5 +1,6 @@
 #include "ai/behaviors/environment.h"
 #include "core/types.h"
+#include "objects/object_data.h"
 #include "particles/particle_system.h"
 #include <cstdlib>
 
@@ -31,32 +32,74 @@ namespace DoorFlag {
 //  - obj.ty (bit 1) is orientation: 0=horizontal, 2=vertical.
 // TODOs not yet wired: remote-control toggle of lock, the switch-effects
 // integration (&4c9e / &31ac), and door destruction via energy.
+// Faithful port of &4c83-&4d71 update_door.
+//
+// Per-frame door lifecycle:
+//   - tx          = "open fraction" (0x00 open → 0xff closed)
+//   - state       = tile x (horizontal door) or tile y (vertical door), the
+//                   fixed axis coord the door slides past
+//   - ty (bit 1)  = orientation, 0=horizontal (slides along x), 2=vertical
+//   - data byte   = LOCKED / OPENING / MOVING / SLOW_OR_DESTROYED + colour
+//
+// Each frame the routine:
+//   1. Masks touching back to "none" if the toucher is too light/wrong type.
+//   2. Refills energy if above a colour-dependent threshold, else marks the
+//      door being destroyed or sets energy=0 for the explosion.
+//   3. Picks a signed "door speed" — positive when opening, negative (via
+//      EOR #&ff) when closing, halved when closing, clamped to -1 if
+//      something is in the way.
+//   4. Runs signed SBC on (tx EOR 0x80) to get the new open fraction. The
+//      6502's V flag catches crossings of the 0x80 boundary (i.e. the door
+//      hitting an endpoint); at that point we clamp, and decide whether to
+//      stop, toggle direction, or start the global &0819 door_timer.
+//   5. Writes tx, writes axis_fraction = tx + 0x10 (carry to axis_whole),
+//      sets a per-frame velocity from (new_tx - old_tx)/2, and commits the
+//      data byte + palette.
 void update_door(Object& obj, UpdateContext& ctx) {
-    // &4c83-&4c8b: if something is touching but it can't trigger, mask it
-    // out so the "touching" checks below don't see it.
-    bool touching_trigger = false;
+    // &4c83-&4c8b: mask "touched but untriggerable" back to none. Very
+    // light objects, invisible debris, clawed robots and Triax don't
+    // count — check_if_object_can_trigger_switches is the same gate the
+    // switch uses.
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
         const Object& tch = ctx.mgr.object(obj.touching);
         uint8_t w = tch.weight();
-        touching_trigger = (w >= 2);
+        uint8_t t = static_cast<uint8_t>(tch.type);
+        bool heavy = (w >= 2);
+        bool blacklisted =
+            t == static_cast<uint8_t>(ObjectType::INVISIBLE_DEBRIS) ||
+            t == static_cast<uint8_t>(ObjectType::MAGENTA_CLAWED_ROBOT) ||
+            t == static_cast<uint8_t>(ObjectType::CYAN_CLAWED_ROBOT) ||
+            t == static_cast<uint8_t>(ObjectType::GREEN_CLAWED_ROBOT) ||
+            t == static_cast<uint8_t>(ObjectType::RED_CLAWED_ROBOT) ||
+            t == static_cast<uint8_t>(ObjectType::TRIAX);
+        if (!heavy || blacklisted) obj.touching = 0x80;
     }
+    bool touched = (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS);
 
-    // &4c8d: force vertical-flip clear (doors never render flipped).
+    // &4c8d: doors never render v-flipped.
     obj.flags &= ~ObjectFlags::FLIP_VERTICAL;
 
-    // &4cab-&4cad: re-read data and mark the door as MOVING by default.
+    // &4c8f-&4c97: pin axis_whole to state, seed axis_fraction to 0xff
+    // (will be overwritten after the move math below).
+    bool vertical = (obj.ty & 0x02) != 0;
+    if (vertical) {
+        obj.y.whole    = obj.state;
+        obj.y.fraction = 0xff;
+    } else {
+        obj.x.whole    = obj.state;
+        obj.x.fraction = 0xff;
+    }
+
+    // &4cab-&4cad: always re-set MOVING while the door is being ticked.
     uint8_t data = obj.tertiary_data_offset | DoorFlag::MOVING;
 
-    // &4cb0-&4cc3: split data into opening/locked flags and colour.
     bool opening = (data & DoorFlag::OPENING) != 0;
     bool locked  = (data & DoorFlag::LOCKED)  != 0;
     bool slow    = (data & DoorFlag::SLOW_OR_DESTROYED) != 0;
     uint8_t colour      = (data >> 4) & 0x07;
     uint8_t colour_pair = colour & 0x03;
 
-    // &4cbe-&4cd5: destruction / energy gating. If energy >= threshold,
-    // refill to 0xff. Else, if already SLOW_OR_DESTROYED, drop energy to 0
-    // so the main loop will remove the door. Otherwise set the slow bit.
+    // &4cbe-&4cd5: energy / destruction ladder.
     if (obj.energy >= doors_energy_table[colour_pair]) {
         obj.energy = 0xff;
     } else if (slow) {
@@ -66,78 +109,222 @@ void update_door(Object& obj, UpdateContext& ctx) {
         slow = true;
     }
 
-    // &4cd7-&4cec: pick a speed. Slow/destroyed doors always use 1.
-    // Closing halves the speed; a closing door touched by something
-    // crawls (speed 0xff, which is -1 in signed terms → almost no move).
+    // &4cd7-&4cec: door speed.
+    //   slow → 1
+    //   opening → table[colour_pair]
+    //   closing → halved-and-negated (EOR #&ff) table value
+    //   closing + touching → -1 (0xff)
     uint8_t speed = slow ? 1 : doors_speed_table[colour_pair];
     if (!opening) {
         speed >>= 1;
-        if (touching_trigger) speed = 0xff;
+        speed = static_cast<uint8_t>(~speed);
+        if (touched) speed = 0xff;
     }
 
-    // &4cee-&4d07: advance the open fraction. Subtract "speed" from
-    // fraction EOR 0x80 and watch for a signed-overflow (V flag) crossing,
-    // which signals we've hit an endpoint.
-    uint8_t prev = obj.tx;
-    // Work in signed 8-bit: start = (prev EOR 0x80), subtract speed (a
-    // signed step: positive when opening, since EOR 0x80 inverts sense).
-    int signed_start = static_cast<int8_t>(prev ^ 0x80);
-    int signed_step  = static_cast<int8_t>(speed);
-    int signed_next  = signed_start - signed_step;
-    bool at_end = signed_next < -128 || signed_next > 127;
+    // &4cee-&4cf5: step the fraction. tx is stored un-EOR'd (0xff closed,
+    // 0x00 open); the 6502 flips it to signed via EOR #&80 so the endpoint
+    // check is a V-flag crossing rather than an unsigned wrap.
+    uint8_t prev_tx = obj.tx;
+    int signed_start = static_cast<int8_t>(prev_tx ^ 0x80);
+    int signed_speed = static_cast<int8_t>(speed);
+    int wide_next    = signed_start - signed_speed;
+    bool at_end      = (wide_next > 127 || wide_next < -128);
 
     if (at_end) {
-        // Clamp and interpret (&4cf7-&4d0d).
-        if (signed_next >  127) signed_next =  127;
-        if (signed_next < -128) signed_next = -128;
-        bool fully_closed = signed_next > 0;
-        if (fully_closed) {
-            // Stop the door (&4d09): clear MOVING.
+        // &4cf7 prevent_overflow: clamp to the saturating signed endpoint.
+        if (wide_next >  127) wide_next =  127;
+        if (wide_next < -128) wide_next = -128;
+
+        // &4cfb BPL stop_door: positive clamp = door reached the closed
+        // end. Negative clamp = open end.
+        bool closed_end = (wide_next > 0);
+
+        if (closed_end) {
+            // &4d09 stop_door: clear MOVING (the default OR at step 1
+            // will re-set it next frame if something changes).
             data &= ~DoorFlag::MOVING;
-        }
-        // Type 0/4 (cyG metal, rmB stone): auto-toggle via obj.state timer.
-        bool auto_toggle = (colour_pair == 0);
-        if (auto_toggle) {
-            if (obj.state == 0 && !fully_closed) {
-                obj.state = 60; // prepare 60-frame auto-close
-            } else if (obj.state > 0) {
-                obj.state--;
-                if (obj.state == 0 && !touching_trigger && !locked) {
-                    // Flip opening direction, start moving again.
-                    data ^= DoorFlag::OPENING;
-                    data |= DoorFlag::MOVING;
-                }
+        } else if (colour_pair == 0) {
+            // &4cfd-&4d07: at open end for auto-cycling cyG/rmB doors.
+            // If door_timer is still above 20, leave the door open
+            // (skip_stopping_door); else fall through to toggle_door_opening.
+            if (ctx.mgr.door_timer_ < 20) {
+                data ^= DoorFlag::OPENING;   // start closing
+                opening = (data & DoorFlag::OPENING) != 0;
             }
         }
-        // If touching or unlocked-by-default, honour the direction as set.
+        // Non-zero colour_pair at the open end with no touch/unlock fall
+        // through to the touched-and-unlocked block below.
+
+        // &4d0d-&4d1f: touched + unlocked reactions.
+        if (touched && !locked) {
+            if (colour_pair != 0) {
+                // Immediately toggle direction on contact.
+                data ^= DoorFlag::OPENING;
+                opening = (data & DoorFlag::OPENING) != 0;
+            } else if (ctx.mgr.door_timer_ == 0) {
+                // cyG/rmB doors: arm the 60-frame hold-open timer and
+                // toggle direction (fallthrough from &4d1f into &4d22).
+                ctx.mgr.door_timer_ = 60;
+                data ^= DoorFlag::OPENING;
+                opening = (data & DoorFlag::OPENING) != 0;
+            }
+        }
     }
 
-    // &4d3b-&4d4e: commit the new fraction (un-EOR), compute a per-frame
-    // velocity byte from (new - old), and offset the door by 1 pixel along
-    // its axis so the rendered sprite lines up.
-    uint8_t new_frac = static_cast<uint8_t>(
-        static_cast<uint8_t>(signed_next) ^ 0x80);
-    obj.tx = new_frac;
+    // &4d3b-&4d46: write back the new fraction + a velocity byte derived
+    // from (new - old)/2 keeping sign. velocity feeds the non-door's
+    // physics when something rides / bumps the door (e.g. bullets).
+    uint8_t new_tx = static_cast<uint8_t>(
+        static_cast<uint8_t>(static_cast<int8_t>(wide_next)) ^ 0x80);
+    obj.tx = new_tx;
 
-    // &4d56-&4d5d: write updated data back. If being destroyed, force
-    // MOVING so the explosion animation runs.
+    int diff = static_cast<int>(new_tx) - static_cast<int>(prev_tx);
+    int8_t velocity = static_cast<int8_t>(diff / 2);
+
+    // &4d4b-&4d54: axis_fraction = new_tx + 0x10 (1 pixel offset), axis
+    // whole += carry from that addition. Lets the door sprite move past
+    // the end of its home tile when fully closed.
+    int fsum = static_cast<int>(new_tx) + 0x10;
+    uint8_t axis_frac = static_cast<uint8_t>(fsum & 0xff);
+    uint8_t axis_carry = (fsum > 0xff) ? 1 : 0;
+
+    if (vertical) {
+        obj.velocity_y = velocity;
+        obj.velocity_x = 0;
+        obj.y.fraction = axis_frac;
+        obj.y.whole    = static_cast<uint8_t>(obj.state + axis_carry);
+    } else {
+        obj.velocity_x = velocity;
+        obj.velocity_y = 0;
+        obj.x.fraction = axis_frac;
+        obj.x.whole    = static_cast<uint8_t>(obj.state + axis_carry);
+    }
+
+    // &4d56-&4d5d: if being destroyed, force MOVING so the explosion
+    // animation runs; write the data byte back.
     if (obj.energy == 0) data |= DoorFlag::MOVING;
     obj.tertiary_data_offset = data;
 
-    // &4d64-&4d6f: palette from colour; if unlocked, mask out colour-3
+    // Mirror the live data to tertiary storage so a later switch effect
+    // reads (and XORs into) the current state rather than the original
+    // initial value. Bit 7 MUST stay clear here: it's the spawn gate, and
+    // setting it while the door is still primary would cause the tile-plot
+    // loop to spawn duplicate primaries every render tick. The 6502 does
+    // the same (&4d5f-&4d61 writes A = data without bit 7 set);
+    // return_to_tertiary re-applies bit 7 only on demote.
+    if (obj.tertiary_slot > 0) {
+        ctx.mgr.set_tertiary_data_byte(obj.tertiary_slot,
+                                        static_cast<uint8_t>(data & 0x7f));
+    }
+
+    // &4d64-&4d6f: palette from door colour. Unlocked doors strip colour 3
     // (the lock pip) by ANDing with 0x0f.
     uint8_t pal = doors_palette_table[colour];
     if (!locked) pal &= 0x0f;
     obj.palette = pal;
 }
 
+// Port of &4958 switch_effects_table. Each 0x00 byte delimits the start of
+// a group; the (effect_id+1)-th zero starts group `effect_id`. Each
+// subsequent non-zero byte is an offset into tertiary_objects_data that the
+// switch toggles bits in.
+static constexpr uint8_t switch_effects_table[] = {
+    0x00, 0xb0, 0xbb, 0x84,              // 0x00: switch at (&d5,&73)
+    0x00, 0x0f, 0x29,                    // 0x01: switch at (&9d,&3b)
+    0x00, 0xc5,                          // 0x02: switch at (&95,&5d)
+    0x00, 0xe7, 0x8f,                    // 0x03: switch at (&29,&c8)
+    0x00, 0x8a,                          // 0x04: switch at (&7c,&c0)
+    0x00, 0x13,                          // 0x05: switch at (&4d,&80)
+    0x00, 0x8e, 0x32,                    // 0x06: switch at (&a1,&58)
+    0x00, 0xc2,                          // 0x07: switch at (&6a,&de)
+    0x00, 0x11, 0xaa, 0xbd,              // 0x08: switches at (&46,&56),(&8b,&71)
+    0x00, 0x58, 0xcc, 0x55, 0xbc,        // 0x09: switch at (&ab,&6b)
+    0x00, 0x55,                          // 0x0a: invisible switch at (&a8,&69)
+    0x00, 0x46, 0xa9,                    // 0x0b: switches at (&d4,&6f),(&d5,&73)
+    0x00, 0x6a, 0x8b,                    // 0x0c: switch at (&e3,&9c)/(&e3,&bc)
+    0x00, 0xe6, 0x85, 0xd8,              // 0x0d: switch at (&67,&cb)
+    0x00, 0xc7, 0x88,                    // 0x0e: invisible+visible at (&b4,&c2)
+    0x00, 0x68,                          // 0x0f: switch at (&c4,&c4)
+    0x00, 0x14,                          // 0x10: invisible switch at (&c1,&7c)
+    0x00, 0x28, 0x4c,                    // 0x11: invisible switch at (&9b,&3b)
+    0x00, 0x65,                          // 0x12: invisible switch at (&c6,&7c)
+    0x00, 0x89,                          // 0x13: invisible switch at (&80,&c2)
+    0x00, 0x8d,                          // 0x14: invisible switch at (&67,&da)
+    0x00, 0x64, 0x2a,                    // 0x15: invisible switch at (&a9,&9c)
+    0x00, 0x6b,                          // 0x16: invisible switch at (&eb,&bc)
+    0x00, 0xa7, 0xb9, 0x10,              // 0x17: invisible switches at (&87..)
+    0x00,                                // end sentinel
+};
+
+// Port of &49db process_switch_effects. Decodes (effect_id, toggle, mask)
+// from the switch's data byte and applies the toggle to every tertiary
+// target listed in the matching switch_effects_table group.
+//
+// Our primaries hold a live copy of the data byte (bit 7 stripped) and only
+// write back to tertiary_data_ on demote, so the tertiary copy is stale
+// while an object is onscreen. To avoid toggling a stale bit, read the
+// authoritative value from the primary when one owns the slot, and write
+// through to both stores when toggling.
+static void process_switch_effects(ObjectManager& mgr, uint8_t effect_id,
+                                    uint8_t mask, uint8_t toggle) {
+    const int N = static_cast<int>(sizeof(switch_effects_table));
+    int zeros_seen = 0;
+    const int required = static_cast<int>(effect_id) + 1;
+    for (int idx = 0; idx < N; ++idx) {
+        uint8_t b = switch_effects_table[idx];
+        if (b == 0) {
+            ++zeros_seen;
+            if (zeros_seen > required) return; // end of our group
+            continue;
+        }
+        if (zeros_seen != required) continue;  // in an earlier group
+
+        // Find the first primary that owns this tertiary slot (the live
+        // copy of the state is in its tertiary_data_offset). If the slot
+        // is currently unattached, fall back to the tertiary store.
+        int first_owner = -1;
+        for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
+            const Object& p = mgr.object(i);
+            if (p.is_active() && p.tertiary_slot == b) {
+                first_owner = i;
+                break;
+            }
+        }
+        uint8_t prev = (first_owner >= 0)
+            ? mgr.object(first_owner).tertiary_data_offset
+            : static_cast<uint8_t>(mgr.tertiary_data_byte(b) & 0x7f);
+        uint8_t newv = static_cast<uint8_t>((prev & mask) ^ toggle);
+
+        if (first_owner >= 0) {
+            // Update every primary tied to this slot — normally there's
+            // exactly one, but if a stray duplicate ever leaked through
+            // (old bug) we want both copies animating in lockstep rather
+            // than one stuck at the original state. Tertiary copy gets
+            // the live value without the spawn gate; return_to_tertiary
+            // re-applies bit 7 when a primary is demoted.
+            for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
+                Object& p = mgr.object(i);
+                if (p.is_active() && p.tertiary_slot == b) {
+                    p.tertiary_data_offset = newv;
+                }
+            }
+            mgr.set_tertiary_data_byte(b, newv);
+        } else {
+            // Not currently primary — preserve the spawn gate so the tile
+            // still spawns the object next time it comes into view.
+            mgr.set_tertiary_data_byte(b, static_cast<uint8_t>(newv | 0x80));
+        }
+    }
+}
+
 // &499D-&49C2: Switch. `tx` is a rolling 8-frame press-history register:
 // each frame we ROR the "triggered this frame" carry into its bit 7. We
 // fire the toggle only when bit 7 is set AND bits 0-6 are all clear —
 // i.e. the first frame of a fresh press, suppressing auto-repeat for 7
-// frames afterwards. Port of:
-//   CLC; BMI not_touched; JSR check_if_object_can_trigger_switches
-//   ROR tx; BPL skip; LDA tx; ASL A; BNE skip; ROL A; EOR data; STA data
+// frames afterwards. On the leading edge we toggle bit 0 of the switch's
+// data byte (switch state) and call process_switch_effects, which XORs
+// bits 1-2 (the toggle mask) into every target listed in the switch's
+// effect-id group.
 void update_switch(Object& obj, UpdateContext& ctx) {
     // Carry-in = "triggered this frame". Touching with a trigger-capable
     // object sets it; check_if_object_can_trigger_switches filters out
@@ -164,14 +351,27 @@ void update_switch(Object& obj, UpdateContext& ctx) {
     if (triggered) new_tx |= 0x80;
     obj.tx = new_tx;
 
-    // Fire only if this is the leading edge of a press: bit 7 set AND all
-    // other bits clear. (bit 7 → bit 7 of new_tx, rest was old bits 7..1.)
+    // Leading-edge of press: bit 7 set AND all other bits clear.
     if (obj.tx == 0x80) {
-        // ROL A with A=0, carry=1 → A=1. EOR data; STA data toggles bit 0.
-        obj.state ^= 0x01;
-        obj.flags ^= ObjectFlags::FLIP_HORIZONTAL;
-        // TODO: process_switch_effects, play_sound (&49b3, &49b6).
+        // &49ac-&49af: toggle bit 0 of data (switch state), then call
+        // process_switch_effects with the NEW data value.
+        obj.tertiary_data_offset ^= 0x01;
+        uint8_t data   = obj.tertiary_data_offset;
+        uint8_t toggle = static_cast<uint8_t>((data >> 1) & 0x03);
+        uint8_t effect = static_cast<uint8_t>(data >> 3);
+        // Mirror the change into the tertiary slot too.
+        if (obj.tertiary_slot > 0) {
+            ctx.mgr.set_tertiary_data_byte(obj.tertiary_slot, data);
+        }
+        process_switch_effects(ctx.mgr, effect, /*mask=*/0xff, toggle);
+        // TODO(&49b6): play_sound.
+
+        ctx.mgr.debug_switch_presses_++;
     }
+
+    // &49bd-&49c1: sprite flips horizontally based on bit 0 of the data.
+    if (obj.tertiary_data_offset & 0x01) obj.flags |=  ObjectFlags::FLIP_HORIZONTAL;
+    else                                 obj.flags &= ~ObjectFlags::FLIP_HORIZONTAL;
 
     // &49c2: minimum energy 30 (gain_energy_and_flash_if_damaged).
     NPC::enforce_minimum_energy(obj, 0x1e);
@@ -227,21 +427,29 @@ void update_transporter_beam(Object& obj, UpdateContext& ctx) {
             }
         }
 
-        // &4dad-&4dbb: unless NEWLY_CREATED, step the beam y-fraction by
-        // 0x20 and wrap 0xb1..0xff back to 0x01..0x4f.
+        // &4dad-&4dbb: unless NEWLY_CREATED, advance the beam y-fraction.
+        // The original adds 0x20 and wraps at 0xb1 which produces two
+        // interlaced sweeps (0x20,0x40,…,0xa0,0x10,0x30,…,0xb0); BBC CRT
+        // persistence + the 2-px sprite blend these into one pulse, but on
+        // a progressive LCD it reads as a flick every half-cycle. Step by
+        // 0x10 and wrap at 0xb0 so the beam visits all 11 positions in
+        // monotonic order — same range, same 11-frame cycle, smooth visual.
         if (!(obj.flags & ObjectFlags::NEWLY_CREATED)) {
-            uint8_t next = static_cast<uint8_t>(obj.state + 0x20);
-            if (next >= 0xb1) next = static_cast<uint8_t>(next - 0xb0);
+            uint8_t next = static_cast<uint8_t>(obj.state + 0x10);
+            if (next > 0xb0) next = 0x00;
             obj.state = next;
         }
     }
     // Stationary or newly-created: state keeps its current value.
 
     // &4dbd-&4dc6: the rendered y_fraction is either the state itself
-    // (beam points down from a ceiling mount) or its invert_if_positive
-    // (points up from a floor mount), then minus 1.
+    // (ceiling-mounted base — beam extends downward) or its negation
+    // (floor-mounted base — beam extends upward), minus one. The 6502's
+    // `BIT y_flip / invert_if_positive` pair negates when y_flip's bit 7 is
+    // CLEAR (not flipped), so the sign condition is the opposite of a
+    // naive is_flipped_v() test.
     uint8_t beam = obj.state;
-    uint8_t y_frac = obj.is_flipped_v() ? static_cast<uint8_t>(-beam) : beam;
+    uint8_t y_frac = obj.is_flipped_v() ? beam : static_cast<uint8_t>(-beam);
     obj.y.fraction = static_cast<uint8_t>(y_frac - 1);
 
     // &4dc8-&4dd1: remote-control hit toggles the transporter lock bits.
@@ -253,29 +461,100 @@ void update_transporter_beam(Object& obj, UpdateContext& ctx) {
     obj.palette = transporter_palette_table[idx];
 }
 
-// &4BAF: Hive update (small and large)
+// &4BAF: Hive update (small and large). Port of update_hive.
+//
+// Tertiary data byte layout from the disassembly comment at &4baf:
+//   8....... hive needs primary object creating (bit 7)
+//   .42184.. spawn object type (bits 6-2 — LSR twice and you have a
+//            5-bit type id)
+//   ......21 non-zero → hive inactive (bits 1-0)
+//
+// So the spawn TYPE lives in the data byte, NOT in obj.type. LARGE_HIVE
+// vs SMALL_HIVE is just the graphic / collision shape — whether it
+// produces wasps or piranhas depends on the designer-specified data
+// byte. Our previous version keyed off obj.type and produced piranhas
+// from LARGE_HIVEs whose data byte said "wasp".
 void update_hive(Object& obj, UpdateContext& ctx) {
+    // &4baf-&4bb1: extract bits 6-2 of the data byte as spawn type, cache
+    // in obj.state. The 6502 caches it as this_object_state (hive spawn
+    // type) so later logic and the spawned creature's target setup can
+    // read it cheaply.
+    uint8_t spawn_type_id = (obj.tertiary_data_offset >> 2) & 0x1f;
+    obj.state = spawn_type_id;
+
+    // &4bb3: consider_absorbing_object_touched — hives absorb any of
+    // their own spawn they touch. TODO: full port.
+
+    // &4bb6: minimum energy 0x46 (70).
     NPC::enforce_minimum_energy(obj, 0x46);
 
-    // Spawn creatures every N frames
+    // &4bbb: gate spawn on every-four-frames.
     if (!ctx.every_four_frames) return;
 
-    // Determine spawn type from data
-    ObjectType spawn_type = ObjectType::WASP;
-    if (obj.type == ObjectType::SMALL_HIVE) {
-        spawn_type = ObjectType::PIRANHA;
+    // &4bbf-&4bc3: bits 1-0 of the data byte mean "inactive"; if set,
+    // the hive shouldn't spawn.
+    if ((obj.tertiary_data_offset & 0x03) != 0) return;
+
+    // &4bc5-&4bd5: probability depends on how many of this spawn type
+    // already exist in primaries — more alive → less likely to spawn.
+    //   rnd & rnd & rnd & 7  gives a value biased toward 0.
+    //   BCC leave if value < existing_count.
+    // We approximate existing_count with a linear scan over primaries.
+    int count = 0;
+    for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+        const Object& p = ctx.mgr.object(i);
+        if (p.is_active() &&
+            static_cast<uint8_t>(p.type) == spawn_type_id) {
+            count++;
+        }
+    }
+    uint8_t roll = ctx.rng.next() & ctx.rng.next() & ctx.rng.next() & 0x07;
+    if (roll < count) return;
+
+    // &4bd7-&4bde: don't spawn if a BIG_FISH or any OBJECT_RANGE_FLYING_
+    // ENEMIES is already present. TODO: full port (needs find_object and
+    // the object-range tables at &3c2a).
+
+    // Range-check the spawn type before we commit.
+    if (spawn_type_id >= static_cast<uint8_t>(ObjectType::COUNT)) return;
+
+    // &4be0-&4bf4: create the spawn, emit it left/right depending on
+    // the hive's x_flip. In the 6502 this calls create_child_object which
+    // also copies the hive's position; create_object_at mirrors that.
+    int slot = ctx.mgr.create_object_at(
+        static_cast<ObjectType>(spawn_type_id), 4, obj);
+    if (slot < 0) return;
+
+    Object& spawn = ctx.mgr.object(slot);
+    // angle &80 = leftward, &00 = rightward. Magnitude 0x20 → translate
+    // to velocity_x ≈ ±0x20 with no y component (calculate_vector_from_
+    // magnitude_and_angle returns a vector whose x-axis component is
+    // +magnitude for angle 0 and -magnitude for angle 0x80).
+    spawn.velocity_x = obj.is_flipped_h() ? -0x20 : 0x20;
+    spawn.velocity_y = 0;
+
+    // &4bf9-&4c06: aggressiveness lives in the spawn's state. Flipped
+    // hives produce less aggressive spawns (0x20 / 1-in-8 target the
+    // player), non-flipped hives produce more aggressive ones (0xa0 /
+    // 5-in-8 target the player).
+    uint8_t aggressiveness = obj.is_flipped_h() ? 0x20 : 0xa0;
+    spawn.state            = aggressiveness;
+    // Target the hive so the spawn returns home when wandering.
+    // target_and_flags low bits = target slot index.
+    int hive_slot = -1;
+    for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+        if (&ctx.mgr.object(i) == &obj) { hive_slot = i; break; }
+    }
+    if (hive_slot > 0) {
+        spawn.target_and_flags =
+            static_cast<uint8_t>((spawn.target_and_flags & 0xe0) | hive_slot);
     }
 
-    // Random chance to spawn
-    if (ctx.rng.next() > 0x20) return;
-
-    // Create spawn
-    int slot = ctx.mgr.create_object_at(spawn_type, 4, obj);
-    if (slot >= 0) {
-        Object& spawn = ctx.mgr.object(slot);
-        // Set initial velocity away from hive
-        spawn.velocity_x = obj.is_flipped_h() ? -4 : 4;
-        spawn.velocity_y = -2;
+    // &4c0c-&4c11: more-aggressive spawns get an alternate palette
+    // (XOR their palette with 0x3b). Yellow-white wasps and green-cyan
+    // piranhas are the visible tells.
+    if (aggressiveness & 0x80) {
+        spawn.palette = static_cast<uint8_t>(spawn.palette ^ 0x3b);
     }
 }
 
@@ -438,9 +717,54 @@ void update_engine_fire(Object& obj, UpdateContext& ctx) {
     obj.x.fraction = static_cast<uint8_t>(xf + 0x90);
 }
 
-// &4B64: Placeholder - does nothing
+// &4B64: Placeholder — invisible proxy for tertiary objects spawned from
+// TILE_SPACE_WITH_OBJECT_FROM_DATA (tile type 0x02). The data byte's low 7
+// bits hold the ACTUAL object type (rolling robot, inactive chatter, boulder,
+// collectable, …). The placeholder sits still (INTANGIBLE flag blocks
+// gravity, update zeroes any velocity that snuck in) until the player gets
+// a clear line of sight or physically touches it — at which point the
+// placeholder's type is overwritten with the real type and it takes over.
+//
+// Port of &4B64 update_placeholder_object + &4B7F convert_placeholder_object.
+// The "obstruction-free line of sight within 0x80 range" check is approximated
+// with a simple Chebyshev-distance test for now (no raycast through tiles).
 void update_placeholder(Object& obj, UpdateContext& ctx) {
-    // Placeholder objects have no behavior
+    // Keep the placeholder pinned — zero velocity every frame so an errant
+    // stream from physics / wind / water can't drift it off its tile.
+    obj.velocity_x = 0;
+    obj.velocity_y = 0;
+
+    // Convert on physical contact (touching != 0x80 means something's there).
+    bool touched = obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS;
+
+    // Or when the anchor (normally the player, optionally the camera in
+    // map-scroll mode) is close enough. The 6502 at &359a uses
+    // `A = &80 (128 &20 fractions = 16 tiles)` for this exact test, so
+    // the box needs to be ~16 tiles wide — the viewport is ~20 wide, so
+    // anything less leaves the edges of the screen uncovered and
+    // placeholders sitting in plain sight refuse to convert.
+    uint8_t anchor_x = ctx.mgr.activation_anchor_x();
+    uint8_t anchor_y = ctx.mgr.activation_anchor_y();
+    int8_t dx = static_cast<int8_t>(anchor_x - obj.x.whole);
+    int8_t dy = static_cast<int8_t>(anchor_y - obj.y.whole);
+    uint8_t adx = static_cast<uint8_t>(dx < 0 ? -dx : dx);
+    uint8_t ady = static_cast<uint8_t>(dy < 0 ? -dy : dy);
+    bool visible = (adx <= 16 && ady <= 16);
+
+    if (!touched && !visible) return;
+
+    // Pull the real object type out of the tertiary data byte that
+    // spawn_tertiary_object copied into obj.tertiary_data_offset (with the
+    // spawn bit already stripped).
+    uint8_t real_type = obj.tertiary_data_offset & 0x7f;
+    if (real_type == 0 ||
+        real_type >= static_cast<uint8_t>(ObjectType::COUNT)) {
+        return;  // Nothing to convert to; stay a placeholder.
+    }
+    obj.type = static_cast<ObjectType>(real_type);
+    obj.sprite = object_types_sprite[real_type];
+    obj.palette = object_types_palette_and_pickup[real_type] & 0x7f;
+    obj.energy = 0xff;  // matches &4b83 LDA #&ff / STA energy
 }
 
 } // namespace Behaviors

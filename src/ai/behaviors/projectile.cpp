@@ -1,9 +1,11 @@
 #include "ai/behaviors/projectile.h"
 #include "ai/mood.h"
 #include "core/types.h"
+#include "objects/object_data.h"
 #include "world/water.h"
 #include "particles/particle_system.h"
 #include <algorithm>
+#include <cstdlib>
 
 namespace Behaviors {
 
@@ -29,23 +31,153 @@ static void add_to_player_mushroom_timer(UpdateContext& ctx, int which, bool ext
     // else: overflow — original "skip_ceiling" leaves value unchanged.
 }
 
-// Common bullet behavior: decrement energy (lifespan), face direction of travel
+// Port of &1faf check_if_object_Y_damaged_by_projectiles. Returns the
+// touched slot if damageable, or -1 if not touching / target is immune.
+// Explosions, bushes, and (red clawed robot..Triax) are immune per &1fb6-&1fc3.
+static int bullet_touching_damageable(const Object& obj, ObjectManager& mgr) {
+    uint8_t t = obj.touching;
+    if (t >= GameConstants::PRIMARY_OBJECT_SLOTS) return -1;
+    const Object& target = mgr.object(t);
+    ObjectType tt = target.type;
+    if (tt == ObjectType::EXPLOSION) return -1;
+    if (tt == ObjectType::BUSH)      return -1;
+    uint8_t ti = static_cast<uint8_t>(tt);
+    uint8_t rc = static_cast<uint8_t>(ObjectType::RED_CLAWED_ROBOT);
+    if (ti >= rc && ti <= rc + 1) return -1; // red clawed robot, triax
+    return t;
+}
+
+// Port of &22cc calculate_angle_from_this_object_velocities. Returns the
+// same 8-bit angle byte the 6502 produces, using the same divide-based
+// recipe: 0x00 = +x (right), 0x40 = +y (down), 0x80 = -x (left),
+// 0xc0 = -y (up). The 5-bit quotient + 3-bit octant index gives 32 steps.
+static uint8_t calculate_angle_from_velocities(int8_t vx, int8_t vy) {
+    // get_absolute_vector_component (&2346): CMP #&7f sets carry iff value
+    // is 0x00..0x7f (i.e. non-negative as the 6502 treats it). For &80..&ff
+    // it negates via EOR #&ff / ADC #&01. Carry is rotated into
+    // vector_signs after each component is processed.
+    auto is_positive_6502 = [](int8_t v) -> bool {
+        return static_cast<uint8_t>(v) <= 0x7f;
+    };
+    auto abs_6502 = [](int8_t v) -> uint8_t {
+        uint8_t u = static_cast<uint8_t>(v);
+        return (u <= 0x7f) ? u : static_cast<uint8_t>((~u) + 1);
+    };
+
+    uint8_t abs_x = abs_6502(vx);
+    uint8_t abs_y = abs_6502(vy);
+
+    // Two ROLs: first rotates vy_positive into bit 0, then vx_positive
+    // replaces it and the old value moves up to bit 1.
+    uint8_t vector_signs = 0;
+    vector_signs = static_cast<uint8_t>((vector_signs << 1) | (is_positive_6502(vy) ? 1 : 0));
+    vector_signs = static_cast<uint8_t>((vector_signs << 1) | (is_positive_6502(vx) ? 1 : 0));
+
+    // &22d7-&22e0: swap so A = min(abs_x, abs_y), B = max; ROL the swap
+    // carry into vector_signs bit 0. After this, vector_signs low 3 bits
+    // are { bit 0 = abs_x_ge_abs_y, bit 1 = vx_pos, bit 2 = vy_pos }.
+    uint8_t A = abs_x;
+    uint8_t B = abs_y;
+    bool abs_x_ge_abs_y = (abs_x >= abs_y);
+    if (abs_x_ge_abs_y) { uint8_t t = A; A = B; B = t; }
+    vector_signs = static_cast<uint8_t>((vector_signs << 1) | (abs_x_ge_abs_y ? 1 : 0));
+
+    // &22e2-&22ef division loop. The 0x08 sentinel shifts through the
+    // angle byte, exiting when it falls out of bit 7. Produces a 5-bit
+    // quotient of min/max in the low 5 bits of angle.
+    uint8_t angle = 0x08;
+    for (;;) {
+        // ASL A on the 6502 puts old bit 7 into carry; a subsequent CMP B
+        // doesn't see that extended bit directly, but SBC B (taken when
+        // CMP set carry) does. We model this by working in 16 bits for the
+        // compare-and-subtract step.
+        uint16_t A16 = static_cast<uint16_t>(A) << 1;
+        bool cmp_carry = (A16 >= B); // 6502 CMP sets carry iff A >= operand
+        if (cmp_carry) {
+            A = static_cast<uint8_t>(A16 - B);
+        } else {
+            A = static_cast<uint8_t>(A16 & 0xff);
+        }
+        bool angle_out_bit7 = (angle & 0x80) != 0;
+        angle = static_cast<uint8_t>((angle << 1) | (cmp_carry ? 1 : 0));
+        if (angle_out_bit7) break;
+    }
+
+    // &22f1-&22fb: EOR with half-quadrants table to steer the raw quotient
+    // into the correct octant of the 0x00..0xff angle space.
+    static constexpr uint8_t ANGLE_HALF_QUADRANTS[8] = {
+        0xbf, 0x80, 0xc0, 0xff, 0x40, 0x7f, 0x3f, 0x00,
+    };
+    return static_cast<uint8_t>(angle ^ ANGLE_HALF_QUADRANTS[vector_signs & 0x07]);
+}
+
+// Port of move_bullet's tail (&4447-&4460). Given the bullet's computed
+// angle, set flip_h / flip_v and pick one of six SPRITE_BULLET_* sprites
+// relative to the type's base (0x08 = SPRITE_BULLET_HORIZONTAL).
+static void orient_bullet_to_angle(Object& obj, uint8_t angle) {
+    // &444a: STA &39 (y_flip). Sprite v-flip is bit 7 of the raw angle
+    // (set when bullet is moving up, i.e. angle in 0x80..0xff).
+    if (angle & 0x80) obj.flags |=  ObjectFlags::FLIP_VERTICAL;
+    else              obj.flags &= ~ObjectFlags::FLIP_VERTICAL;
+
+    // &444c-&4452: BIT &39 tests bit 6; if set, EOR #&ff before continuing
+    // (the "moving left" branch in the disassembly comment). The result is
+    // stored as x_flip, with its bit 7 driving horizontal flip.
+    uint8_t x_flip = (angle & 0x40) ? static_cast<uint8_t>(~angle) : angle;
+    if (x_flip & 0x80) obj.flags |=  ObjectFlags::FLIP_HORIZONTAL;
+    else               obj.flags &= ~ObjectFlags::FLIP_HORIZONTAL;
+
+    // &4454-&445e: AND #&7f, LSR×3 (16 buckets of 22.5°); then for buckets
+    // 4..15 fold down via (A >> 1) ^ 6 so we end up with 6 sprite indices.
+    uint8_t a = static_cast<uint8_t>((x_flip & 0x7f) >> 3);
+    uint8_t offset = (a < 4) ? a : static_cast<uint8_t>((a >> 1) ^ 6);
+
+    // &4460 change_object_sprite_to_base_plus_A. Only meaningful for types
+    // whose base sprite is the bullet strip (0x08..0x0d). Balls and other
+    // projectiles also run move_bullet but use different base sprites that
+    // wouldn't make sense indexed as angles.
+    uint8_t idx = static_cast<uint8_t>(obj.type);
+    if (idx < static_cast<uint8_t>(ObjectType::COUNT)) {
+        uint8_t base = object_types_sprite[idx];
+        if (base == 0x08) {
+            obj.sprite = static_cast<uint8_t>(base + offset);
+        }
+    }
+}
+
+// Port of &441b / &46bf bullet main body. Explodes if:
+//   - touching a damageable object (damages it first)
+//   - hit a solid tile (tile_collision was flagged during last physics step)
+//   - lifespan timer hit zero
+// Otherwise just face the direction of travel.
 static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage) {
-    // Lifespan countdown
-    if (obj.timer > 0) obj.timer--;
-    if (obj.timer == 0) {
-        obj.energy = 0; // Trigger explosion
+    // &1faf: touching a damageable target?
+    int tgt = bullet_touching_damageable(obj, ctx.mgr);
+    if (tgt >= 0) {
+        Object& target = ctx.mgr.object(tgt);
+        if (target.energy > damage) target.energy -= damage;
+        else                        target.energy = 0;
+        obj.energy = 0; // explode_bullet
         return;
     }
 
-    // Face direction of travel
-    NPC::face_movement_direction(obj);
-
-    // Damage on contact
-    if (obj.touching == 0) { // Touching player
-        NPC::damage_player_if_touching(obj, ctx.mgr.player(), damage);
-        obj.energy = 0; // Explode on contact
+    // &4434: reduce_energy_by_one (lifespan).
+    if (obj.timer > 0) obj.timer--;
+    if (obj.timer == 0) {
+        obj.energy = 0;
+        return;
     }
+
+    // &4439: tile collision → explode. The 6502's SBC #&14 / distance check
+    // isn't ported yet; we just explode on any solid-tile collision.
+    if (obj.tile_collision) {
+        obj.energy = 0;
+        return;
+    }
+
+    // &4447-&4460: orient bullet to its current velocity.
+    uint8_t angle = calculate_angle_from_velocities(obj.velocity_x, obj.velocity_y);
+    orient_bullet_to_angle(obj, angle);
 }
 
 // &42F7: Active grenade — 96-frame fuse; palette rotates through 4 colours;
@@ -323,13 +455,17 @@ void update_moving_fireball(Object& obj, UpdateContext& ctx) {
 
 // &4F9C: Explosion - expanding damage area
 void update_explosion(Object& obj, UpdateContext& ctx) {
-    // Duration stored in tertiary_data_offset
-    if (obj.tertiary_data_offset > 0) {
-        obj.tertiary_data_offset--;
-    } else {
-        obj.energy = 0; // Explosion finished
+    // Duration stored in tertiary_data_offset. Matches &4fca-&4fce: if
+    // the counter has hit zero the explosion is finished — flag for
+    // removal (set_object_for_removal &2516 ORA #&20) and return. The
+    // main update loop's PENDING_REMOVAL step reaps the slot next frame.
+    if (obj.tertiary_data_offset == 0) {
+        obj.flags |= ObjectFlags::PENDING_REMOVAL;
         return;
     }
+    obj.tertiary_data_offset--;
+    // Explosions are INTANGIBLE, so the main loop's physics gate already
+    // skips the gravity tick for them — no explicit cancel_gravity needed.
 
     // Random palette for visual effect
     obj.palette = ctx.rng.next() & 0x0f;

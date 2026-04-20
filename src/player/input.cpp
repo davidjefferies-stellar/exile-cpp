@@ -15,6 +15,18 @@ void InputHandler::process_key(int key) {
         case 'x': case 'X': state_.fire         = true; break;
         case '\n': case '\r': case InputKey::ENTER:
             state_.pickup_drop = true; break;
+        case ',': case '<': state_.pickup    = true; break;
+        case 'm': case 'M': state_.drop      = true; break;
+        // 'm' is now drop; the map-activation toggle moved to '\\' so the
+        // pickup/drop/throw cluster (, m .) sits naturally under one hand.
+        case '.': case '>': state_.throw_obj = true; break;
+        case 's': case 'S': state_.store        = true; break;
+        case 'r': case 'R': state_.retrieve     = true; break;
+        case 'i': case 'I': state_.aim_centre   = true; break;
+        case 'k': case 'K': state_.aim_down     = true; break;
+        case 'o': case 'O': state_.aim_up       = true; break;
+        case '\\': case '|': state_.toggle_map_activation = true; break;
+        case 'p': case 'P': state_.toggle_pause          = true; break;
         case 'y': case 'Y': state_.whistle_one   = true; break;
         case 'u': case 'U': state_.whistle_two   = true; break;
         case 'q': case 'Q': state_.quit         = true; break;
