@@ -12,3 +12,7 @@ Release/
 # Prebuilt/extracted dependencies (re-fetchable)
 deps/pdcurses.zip
 deps/PDCurses-3.9/
+
+# Per-developer Claude Code context. Kept local so everyone can have
+# their own standing instructions without polluting the repo.
+CLAUDE.md

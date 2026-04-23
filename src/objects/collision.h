@@ -25,6 +25,21 @@ TileCollisionResult check_tile_collision(const Landscape& landscape, const Objec
 // Check if a tile position is solid (simplified check, no sub-tile precision).
 bool is_tile_solid(const Landscape& landscape, uint8_t tile_x, uint8_t tile_y);
 
+// Per-section obstruction check: is the point at (x_frac, y_frac) inside the
+// current tile's obstruction pattern? Used by the line-of-sight raycast to
+// walk a tile-by-tile trace and catch rays grazing slopes. Mirrors the 6502's
+// LDA (&7c),Y + CMP y_fraction + EOR v-flip at &3652-&365f.
+bool point_in_tile_solid(const Landscape& landscape,
+                         uint8_t tile_x, uint8_t tile_y,
+                         uint8_t x_frac, uint8_t y_frac);
+
+// Same pattern check, but operates on an explicit tile_and_flip byte rather
+// than reading from landscape. Useful after substitute_door_for_obstruction:
+// the caller gets the live door tile (STONE_SLOPE_78 / SPACE) back and wants
+// to probe that, not the raw METAL_DOOR / STONE_DOOR type.
+bool tile_and_flip_obstructs_point(uint8_t tile_and_flip,
+                                    uint8_t x_frac, uint8_t y_frac);
+
 // Same, but operates on a tile type directly. Useful when you already have
 // the tile byte (e.g. post-tertiary resolution) and don't want another
 // landscape lookup.
@@ -40,7 +55,7 @@ struct ObjectCollisionResult {
 
 ObjectCollisionResult check_object_collision(
     const Object& obj, int slot,
-    const std::array<Object, 16>& all_objects);
+    const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects);
 
 // Pixel-precise AABB overlap check against any weight-7 non-INTANGIBLE
 // static object (doors, switches, etc.). Returns true if `obj`'s AABB
@@ -54,7 +69,32 @@ ObjectCollisionResult check_object_collision(
 // whereas the door sprite spans ~half the tile, so tile obstruction
 // alone would let the player fall through parts of the door sprite.
 bool overlaps_solid_object(const Object& obj, int self_slot,
-                           const std::array<Object, 16>& all_objects);
+                           const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects);
+
+// Port of calculate_transfer_velocities (&2bee-&2c14) +
+// apply_collision_to_object_velocity (&2bc6-&2bed). Given two objects'
+// velocity components on one axis and their weights, returns the new
+// velocities after an elastic(-ish) mass-ratio collision.
+//
+// The 6502 computes:
+//   half_diff = (this_v - other_v) / 2
+//   transfer  = half_diff / 2^|weight_diff|     (rounded toward -inf)
+//   lesser    = transfer        (applied to heavier side)
+//   greater   = half_diff - transfer (applied to lighter side)
+// Each is then halved and, depending on whether this side was "hit
+// from" that direction, doubled. Signs flip for the heavier side so
+// the two objects end up moving apart.
+//
+// We expose it as a simple "velocity-in, velocity-out" helper so the
+// player-motion block path can use it in place of "velocity = 0".
+struct VelocityTransfer {
+    int8_t this_v;
+    int8_t other_v;
+};
+VelocityTransfer apply_mass_ratio_velocity(
+    int8_t this_v_in, int8_t other_v_in,
+    uint8_t this_weight, uint8_t other_weight,
+    bool hit_from_this_side);
 
 // Port of &3ebd-&3ec2 door_tiles_table substitution. Given a tile+flip
 // byte and the data_offset of the tertiary entry it came from, returns
@@ -68,7 +108,7 @@ bool overlaps_solid_object(const Object& obj, int self_slot,
 // tertiary slot (preferred), falling back to the stored tertiary byte.
 uint8_t substitute_door_for_obstruction(
     uint8_t tile_and_flip, int data_offset,
-    const std::array<Object, 16>& all_objects,
+    const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects,
     uint8_t tertiary_byte_fallback);
 
 } // namespace Collision

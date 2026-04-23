@@ -1,10 +1,10 @@
 #include "game/game.h"
-#include "rendering/fenster/fenster_renderer.h"
+#include "rendering/pixel_renderer.h"
 #include <memory>
 #include <cstdio>
 
 int main() {
-    auto renderer = std::make_unique<FensterRenderer>();
+    auto renderer = std::make_unique<PixelRenderer>();
     Game game(std::move(renderer));
 
     if (!game.init()) {

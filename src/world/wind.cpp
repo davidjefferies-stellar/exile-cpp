@@ -84,4 +84,32 @@ void apply_surface_wind(Object& obj) {
     }
 }
 
+// Compute the bigger of the two axis strengths from the same distance
+// table apply_surface_wind uses. Callers use this to gate side effects
+// like particle emission. Returning the max (not sum) mirrors the
+// 6502, which only produces one particle per frame regardless of how
+// many axes of wind are active.
+uint8_t surface_wind_magnitude(const Object& obj) {
+    if (obj.y.whole >= 0x4f) return 0;
+
+    struct { uint8_t center; uint8_t pos; } axes[2] = {
+        {0x4e, obj.y.whole},
+        {GameConstants::WIND_CENTER_X, obj.x.whole},
+    };
+
+    uint8_t best = 0;
+    for (int i = 0; i < 2; i++) {
+        int16_t dist_signed = static_cast<int16_t>(axes[i].pos) -
+                              static_cast<int16_t>(axes[i].center);
+        uint8_t dist = dist_signed < 0
+            ? static_cast<uint8_t>(-dist_signed)
+            : static_cast<uint8_t>(dist_signed);
+        if (dist < 0x1e) continue;
+        int strength = 2 * (static_cast<int>(dist) - 0x08);
+        if (strength > 0x7f) strength = 0x7f;
+        if (strength > best) best = static_cast<uint8_t>(strength);
+    }
+    return best;
+}
+
 } // namespace Wind

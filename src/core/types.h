@@ -255,8 +255,15 @@ enum class GameColor : uint8_t {
 // Game Constants
 // ============================================================================
 namespace GameConstants {
-    constexpr int PRIMARY_OBJECT_SLOTS   = 16;
-    constexpr int SECONDARY_OBJECT_SLOTS = 32;
+    // Compile-time UPPER BOUNDS on the primary / secondary caches. The
+    // 6502 used 16 and 32; we bump these so exile.ini's [caches] section
+    // can dial runtime sizes up without having to recompile. Loops still
+    // iterate the full backing array and skip inactive slots, so any
+    // unused slots above the runtime active size are effectively free.
+    // Raising the ceiling costs ~22 bytes per primary slot and ~4 per
+    // secondary — negligible at these sizes.
+    constexpr int PRIMARY_OBJECT_SLOTS   = 64;   // 6502 ROM: 16
+    constexpr int SECONDARY_OBJECT_SLOTS = 128;  // 6502 ROM: 32
     constexpr int TERTIARY_OBJECT_SLOTS  = 254;
 
     constexpr int WORLD_WIDTH  = 256;

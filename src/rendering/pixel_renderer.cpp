@@ -7,7 +7,7 @@
 #undef _UNICODE
 #endif
 
-#include "rendering/fenster/fenster_renderer.h"
+#include "rendering/pixel_renderer.h"
 #include "rendering/sprite_atlas.h"
 #include "rendering/sprite_data.h"
 #include "rendering/palette.h"
@@ -42,7 +42,36 @@ static constexpr uint32_t COL_MAGENTA = 0xCC00CC;
 static constexpr uint32_t COL_CYAN    = 0x00CCCC;
 static constexpr uint32_t COL_WHITE   = 0xCCCCCC;
 
-struct FensterRenderer::Impl {
+// --- Debug-panel layout -----------------------------------------------------
+//
+// Three checkboxes laid out left-to-right across the bottom HUD strip,
+// replacing the earlier energy-bar + weapon-colour swatch. Each entry is
+// a small box with a text label to its right. The geometry is computed
+// from constants so the same layout is used by both the renderer and
+// the click hit-test, keeping them in lockstep.
+static constexpr int CHECKBOX_SIZE = 10;
+static constexpr int CHECKBOX_PAD  = 4;
+static constexpr int CHECKBOX_LABEL_GAP = 4;
+static constexpr int CHECKBOX_SLOT_W = 110;   // box + gap + label room
+
+struct DebugCheckbox {
+    const char* label;
+    // Pointer into Impl state — set by compute_checkboxes when laying
+    // out the strip. The click-in-rect test toggles *state when hit.
+    bool* state;
+};
+
+// Compute x-pixel offset of the Nth checkbox. Keeps render + hit-test
+// in sync without storing a layout struct.
+static int checkbox_slot_x(int idx) {
+    return 10 + idx * CHECKBOX_SLOT_W;
+}
+
+static int checkbox_slot_y(int hud_y_px) {
+    return hud_y_px + (16 - CHECKBOX_SIZE) / 2;
+}
+
+struct PixelRenderer::Impl {
     std::vector<uint32_t> buf;
     // Parallel per-pixel foreground mask. Bit set = a tile wrote a BBC
     // logical-colour-8..15 pixel here, which the 6502 marks by leaving
@@ -57,19 +86,29 @@ struct FensterRenderer::Impl {
     uint8_t vp_center_y = 0;
     uint8_t vp_frac_x   = 0;   // sub-tile fractional position of the view centre
     uint8_t vp_frac_y   = 0;   // (0-255, same units as Fixed8_8 fraction)
-    bool tile_outline_on = false;    // debug: draw tile cell borders
-    bool tile_outline_key_prev = false;
+    // Debug-overlay toggles — exposed through IRenderer::*_enabled() so
+    // the game layer reads them each frame. Driven by the checkbox
+    // strip at the bottom of the window (see render_debug_panel); the
+    // keyboard shortcuts that used to flip these were removed when the
+    // 6502-faithful G/T/W key bindings took over those letters.
+    bool tile_outline_on = false;    // "Grid" checkbox
+    bool object_tiers_on = false;    // "Object tiers" checkbox
+    bool map_mode_on     = false;    // "Map mode" checkbox
+    // Separate "Debug" checkbox gating the debug-text overlays (selected
+    // tile-info string, map-mode banner). Grid-line drawing and camera-
+    // anchored map mode stay on their own switches above; this just
+    // controls whether their associated text panels are drawn.
+    bool debug_text_on   = false;
+    bool switches_on     = false;    // "Switches" checkbox — draws
+                                     // green switch→door wires.
+    bool transports_on   = false;    // "Transports" checkbox — draws
+                                     // cyan transporter→destination wires.
+    bool aabb_overlay_on = false;    // still keyboard-toggled via 'B'.
+    bool aabb_key_prev = false;
     // Highlighted tile — drawn only while the tile grid is on.
     bool has_highlight = false;
     uint8_t highlight_x = 0;
     uint8_t highlight_y = 0;
-    // Debug: colour-code primary/secondary/tertiary objects when on.
-    bool object_tiers_on = false;
-    bool object_tiers_key_prev = false;
-    // Debug: draw pixel-precise AABBs used by object-object collision.
-    // Toggled with 'B'.
-    bool aabb_overlay_on = false;
-    bool aabb_key_prev = false;
     int key_scan_idx = 0;
     bool events_processed = false;
     bool should_close = false;
@@ -178,7 +217,9 @@ struct FensterRenderer::Impl {
     // blit_sprite signature.
     void blit_sprite(int dst_x, int dst_y, uint8_t sprite_id,
                      bool flip_h, bool flip_v, const uint32_t lut[4],
-                     const uint8_t fg[4] = nullptr, bool is_tile = false) {
+                     const uint8_t fg[4] = nullptr, bool is_tile = false,
+                     uint8_t shrink_shift_x = 0,
+                     uint8_t shrink_shift_y = 0) {
         if (sprite_id > 0x7c) return;
         const SpriteAtlasEntry& e = sprite_atlas[sprite_id];
         const int hud_y = hud_y_px();
@@ -191,6 +232,11 @@ struct FensterRenderer::Impl {
         // show at least one pixel instead of vanishing entirely.
         int w_screen = e.w * PX_SCALE_X * scale / zoom_den;
         int h_screen = e.h * PX_SCALE_Y * scale / zoom_den;
+        // 6502 &0d21 teleport shrink: reduce the rendered extent so the
+        // sprite fizzes down. Caller is responsible for centring via
+        // dst_x / dst_y so the sprite shrinks toward its middle.
+        if (shrink_shift_x) w_screen >>= shrink_shift_x;
+        if (shrink_shift_y) h_screen >>= shrink_shift_y;
         if (w_screen < 1) w_screen = 1;
         if (h_screen < 1) h_screen = 1;
 
@@ -367,12 +413,41 @@ struct FensterRenderer::Impl {
         }
         right_was_down = right_down;
 
-        // Left-click edge detection
+        // Left-click edge detection. Debug-checkbox hits are intercepted
+        // here so they don't get forwarded to Game::render as a world-
+        // tile click. See the DebugCheckbox layout above for geometry.
         bool left_down = (f.mouse & 1) != 0;
         if (left_down && !left_was_down) {
-            has_pending_click = true;
-            pending_click_x = f.x;
-            pending_click_y = f.y;
+            DebugCheckbox boxes[6] = {
+                { "Grid",       &tile_outline_on },
+                { "Map mode",   &map_mode_on     },
+                { "Debug",      &debug_text_on   },
+                { "Object lbl", &object_tiers_on },
+                { "Switches",   &switches_on     },
+                { "Transports", &transports_on   },
+            };
+            int hud_y = hud_y_px();
+            int cy    = checkbox_slot_y(hud_y);
+            bool consumed = false;
+            for (int i = 0; i < 6; i++) {
+                int cx = checkbox_slot_x(i);
+                // Generous hit-area: the whole label's slot width, not
+                // just the little box, so users can click the text too.
+                int hx_end = cx + CHECKBOX_SLOT_W;
+                int hy_end = hud_y + 16;
+                if (f.x >= cx && f.x < hx_end &&
+                    f.y >= hud_y && f.y < hy_end) {
+                    *boxes[i].state = !*boxes[i].state;
+                    consumed = true;
+                    break;
+                }
+            }
+            (void)cy;
+            if (!consumed) {
+                has_pending_click = true;
+                pending_click_x = f.x;
+                pending_click_y = f.y;
+            }
         }
         left_was_down = left_down;
 
@@ -423,24 +498,30 @@ static uint32_t object_color(ObjectType type) {
     }
 }
 
-FensterRenderer::FensterRenderer() : impl_(std::make_unique<Impl>()) {}
-FensterRenderer::~FensterRenderer() { shutdown(); }
+PixelRenderer::PixelRenderer() : impl_(std::make_unique<Impl>()) {}
+PixelRenderer::~PixelRenderer() { shutdown(); }
 
-bool FensterRenderer::init() {
+bool PixelRenderer::init() {
     if (impl_->initialized) return true;
     if (fenster_open(&impl_->f) != 0) return false;
+    // fenster.h's WNDCLASSEX leaves hCursor = NULL, which makes Windows
+    // fall back to the "busy" cursor whenever the OS decides this is a
+    // fresh app. Force the arrow on our window class so the pointer is
+    // normal from the first frame.
+    SetClassLongPtrA(impl_->f.hwnd, GCLP_HCURSOR,
+                     reinterpret_cast<LONG_PTR>(LoadCursorA(NULL, IDC_ARROW)));
     impl_->initialized = true;
     return true;
 }
 
-void FensterRenderer::shutdown() {
+void PixelRenderer::shutdown() {
     if (impl_->initialized) {
         fenster_close(&impl_->f);
         impl_->initialized = false;
     }
 }
 
-void FensterRenderer::begin_frame() {
+void PixelRenderer::begin_frame() {
     // Pump pending Windows messages first so mouse/size state is current.
     if (fenster_loop(&impl_->f) != 0) impl_->should_close = true;
     impl_->events_processed = true;
@@ -500,20 +581,10 @@ void FensterRenderer::begin_frame() {
 
     impl_->process_mouse();
 
-    // Debug: toggle tile-outline overlay on rising edge of 'G'.
-    bool g_down = impl_->f.keys['G'] != 0;
-    if (g_down && !impl_->tile_outline_key_prev) {
-        impl_->tile_outline_on = !impl_->tile_outline_on;
-    }
-    impl_->tile_outline_key_prev = g_down;
-
-    // Debug: toggle primary/secondary/tertiary tier overlay on rising edge 'T'.
-    // (Moved off 'O' so that key is free for aim-raise, matching the original.)
-    bool t_down = impl_->f.keys['T'] != 0;
-    if (t_down && !impl_->object_tiers_key_prev) {
-        impl_->object_tiers_on = !impl_->object_tiers_on;
-    }
-    impl_->object_tiers_key_prev = t_down;
+    // Debug checkboxes in the bottom HUD strip handle grid / object
+    // tiers / map-mode toggles (was G / T / W key-edges). Those letters
+    // are now used by the 6502-faithful player actions (G=retrieve,
+    // T=teleport, W = free). See render_debug_panel + hit-test below.
 
     // Debug: toggle AABB overlay on rising edge 'B'. Draws pixel-precise
     // bounding boxes (sprite w × h in sub-tile units) for each primary so
@@ -528,9 +599,12 @@ void FensterRenderer::begin_frame() {
     std::fill(impl_->fg_mask.begin(), impl_->fg_mask.end(), 0u);
 }
 
-void FensterRenderer::end_frame() {
-    // Draw overlay text in top-right corner.
-    if (!impl_->overlay.empty()) {
+void PixelRenderer::end_frame() {
+    // Draw overlay text in top-right corner. Gated on the "Debug"
+    // checkbox — Game still feeds overlay strings via set_overlay_text
+    // (tile-info banner, map-mode diagnostics, etc.) but they only
+    // actually get drawn when the Debug box is checked.
+    if (impl_->debug_text_on && !impl_->overlay.empty()) {
         int line_count = 1;
         int max_line_w = 0;
         int cur_w = 0;
@@ -560,7 +634,7 @@ void FensterRenderer::end_frame() {
     UpdateWindow(impl_->f.hwnd);
 }
 
-void FensterRenderer::set_viewport(uint8_t center_x, uint8_t center_y,
+void PixelRenderer::set_viewport(uint8_t center_x, uint8_t center_y,
                                     uint8_t frac_x, uint8_t frac_y) {
     impl_->vp_center_x = center_x;
     impl_->vp_center_y = center_y;
@@ -568,7 +642,7 @@ void FensterRenderer::set_viewport(uint8_t center_x, uint8_t center_y,
     impl_->vp_frac_y   = frac_y;
 }
 
-void FensterRenderer::render_tile(uint8_t world_x, uint8_t world_y,
+void PixelRenderer::render_tile(uint8_t world_x, uint8_t world_y,
                                    const TileRenderInfo& info) {
     int sx, sy;
     if (!impl_->world_to_screen(world_x, world_y, sx, sy)) return;
@@ -631,7 +705,7 @@ void FensterRenderer::render_tile(uint8_t world_x, uint8_t world_y,
 //                      delay_loop wait in the IRQ handler.
 // Below the waterline: blue (=&04) all the way to the bottom of this
 //                      tile row.
-void FensterRenderer::render_water_column(uint8_t world_x,
+void PixelRenderer::render_water_column(uint8_t world_x,
                                           uint8_t waterline_y) {
     int tpx = impl_->tile_px_x();
 
@@ -687,7 +761,7 @@ void FensterRenderer::render_water_column(uint8_t world_x,
     // cleared to 0 already).
 }
 
-void FensterRenderer::render_object(Fixed8_8 world_x, Fixed8_8 world_y,
+void PixelRenderer::render_object(Fixed8_8 world_x, Fixed8_8 world_y,
                                      const SpriteRenderInfo& info) {
     if (!info.visible) return;
     int sx, sy;
@@ -710,9 +784,35 @@ void FensterRenderer::render_object(Fixed8_8 world_x, Fixed8_8 world_y,
         uint32_t lut[4];
         uint8_t  fg[4] = {0, 0, 0, 0};
         resolve_palette(info.palette, /*is_tile=*/false, lut);
-        impl_->blit_sprite(sx, sy, info.sprite_id,
+
+        // Port of &0cfe reduce_sprite_if_teleporting. Y uses (timer & 7) as
+        // shift count; X uses ((timer * 5/4) & 7). With timer counting down
+        // from 0x20 across 32 frames this strobes the sprite between full
+        // size (shift=0) and nearly invisible (shift=7), which on the BBC
+        // reads as a "fizzing out" effect. Centre the shrunk sprite on the
+        // original footprint so it doesn't drift.
+        uint8_t shrink_x = 0, shrink_y = 0;
+        int dx_shrink = 0, dy_shrink = 0;
+        if (info.teleport_timer != 0 && info.sprite_id <= 0x7c) {
+            uint8_t t = info.teleport_timer;
+            shrink_y = static_cast<uint8_t>(t & 0x07);
+            uint8_t t_x = static_cast<uint8_t>(t + (t >> 2));
+            shrink_x = static_cast<uint8_t>(t_x & 0x07);
+            const SpriteAtlasEntry& e = sprite_atlas[info.sprite_id];
+            int tpx = impl_->tile_px_x();
+            int tpy = impl_->tile_px_y();
+            int w_full = e.w * tpx / 16;  // 1 tile = 16 atlas-px wide
+            int h_full = e.h * tpy / 8;   // 1 tile = 8  atlas-px tall
+            int w_shr  = w_full >> shrink_x; if (w_shr < 1) w_shr = 1;
+            int h_shr  = h_full >> shrink_y; if (h_shr < 1) h_shr = 1;
+            dx_shrink = (w_full - w_shr) / 2;
+            dy_shrink = (h_full - h_shr) / 2;
+        }
+
+        impl_->blit_sprite(sx + dx_shrink, sy + dy_shrink, info.sprite_id,
                            info.flip_h, info.flip_v, lut, fg,
-                           /*is_tile=*/false);
+                           /*is_tile=*/false,
+                           shrink_x, shrink_y);
     } else {
         uint32_t col = object_color(info.type);
         int tx = impl_->tile_px_x();
@@ -721,15 +821,41 @@ void FensterRenderer::render_object(Fixed8_8 world_x, Fixed8_8 world_y,
     }
 }
 
-void FensterRenderer::render_hud(const PlayerState& player) {
+void PixelRenderer::render_hud(const PlayerState& player) {
     int hud_y = impl_->hud_y_px();
-    int bar_width = (player.energy * (impl_->f.width - 20)) / 255;
-    impl_->fill_rect(10, hud_y + 2, bar_width, 6, COL_GREEN);
 
-    uint32_t weapon_colors[] = {COL_CYAN, COL_WHITE, 0x88CCFF, COL_MAGENTA, 0xFF00FF, COL_RED};
-    int wi = player.weapon;
-    if (wi > 5) wi = 0;
-    impl_->fill_rect(impl_->f.width - 40, hud_y + 2, 30, 6, weapon_colors[wi]);
+    // Debug-panel strip across the bottom — replaces the old energy bar /
+    // weapon swatch with three click-to-toggle checkboxes. Geometry lives
+    // in the CHECKBOX_* constants + checkbox_slot_x/y so the click hit-
+    // test in process_mouse uses the same layout.
+    impl_->fill_rect(0, hud_y, impl_->f.width, 16, 0x151515);
+    DebugCheckbox boxes[6] = {
+        { "Grid",       &impl_->tile_outline_on },
+        { "Map mode",   &impl_->map_mode_on     },
+        { "Debug",      &impl_->debug_text_on   },
+        { "Object lbl", &impl_->object_tiers_on },
+        { "Switches",   &impl_->switches_on     },
+        { "Transports", &impl_->transports_on   },
+    };
+    int cy = checkbox_slot_y(hud_y);
+    for (int i = 0; i < 6; i++) {
+        int cx = checkbox_slot_x(i);
+        uint32_t border = *boxes[i].state ? 0xffffff : 0x666666;
+        impl_->stroke_rect(cx, cy, CHECKBOX_SIZE, CHECKBOX_SIZE, border);
+        if (*boxes[i].state) {
+            impl_->fill_rect(cx + 2, cy + 2,
+                             CHECKBOX_SIZE - 4, CHECKBOX_SIZE - 4,
+                             0x44CC44);
+        }
+        impl_->draw_text(cx + CHECKBOX_SIZE + CHECKBOX_LABEL_GAP,
+                         cy + (CHECKBOX_SIZE - 8) / 2,
+                         boxes[i].label, 0xdddddd, 0x000000);
+    }
+
+    // Player-state HUD fields the user still wants visible (energy +
+    // selected weapon) are now suppressed in the debug-panel build.
+    // Reinstate here later if gameplay needs the energy bar back.
+    (void)player;
 
     // Top-left pockets panel. One cell per pocket, slot 0 (the "top" of the
     // stack — i.e. next to retrieve) drawn leftmost. Sprites render at a
@@ -777,7 +903,7 @@ void FensterRenderer::render_hud(const PlayerState& player) {
     }
 }
 
-void FensterRenderer::render_particle(uint8_t wx, uint8_t wx_frac,
+void PixelRenderer::render_particle(uint8_t wx, uint8_t wx_frac,
                                        uint8_t wy, uint8_t wy_frac,
                                        uint8_t colour) {
     // Particles use the same 16-slot logical palette as sprites/tiles, keyed
@@ -791,10 +917,10 @@ void FensterRenderer::render_particle(uint8_t wx, uint8_t wx_frac,
     impl_->fill_rect(sx, sy, s, s, col);
 }
 
-int FensterRenderer::viewport_width_tiles() const { return impl_->vp_w_tiles(); }
-int FensterRenderer::viewport_height_tiles() const { return impl_->vp_h_tiles(); }
+int PixelRenderer::viewport_width_tiles() const { return impl_->vp_w_tiles(); }
+int PixelRenderer::viewport_height_tiles() const { return impl_->vp_h_tiles(); }
 
-bool FensterRenderer::consume_pan_tiles(int& dx, int& dy) {
+bool PixelRenderer::consume_pan_tiles(int& dx, int& dy) {
     dx = impl_->pending_pan_tiles_x;
     dy = impl_->pending_pan_tiles_y;
     impl_->pending_pan_tiles_x = 0;
@@ -802,7 +928,7 @@ bool FensterRenderer::consume_pan_tiles(int& dx, int& dy) {
     return dx != 0 || dy != 0;
 }
 
-bool FensterRenderer::consume_left_click(int& tile_dx, int& tile_dy) {
+bool PixelRenderer::consume_left_click(int& tile_dx, int& tile_dy) {
     if (!impl_->has_pending_click) { tile_dx = 0; tile_dy = 0; return false; }
     impl_->has_pending_click = false;
     impl_->screen_to_tile_offset(impl_->pending_click_x,
@@ -811,17 +937,17 @@ bool FensterRenderer::consume_left_click(int& tile_dx, int& tile_dy) {
     return true;
 }
 
-void FensterRenderer::set_overlay_text(const char* text) {
+void PixelRenderer::set_overlay_text(const char* text) {
     impl_->overlay = text ? text : "";
 }
 
-void FensterRenderer::set_highlighted_tile(uint8_t world_x, uint8_t world_y) {
+void PixelRenderer::set_highlighted_tile(uint8_t world_x, uint8_t world_y) {
     impl_->has_highlight = true;
     impl_->highlight_x = world_x;
     impl_->highlight_y = world_y;
 }
 
-void FensterRenderer::render_activation_overlay(uint8_t anchor_x,
+void PixelRenderer::render_activation_overlay(uint8_t anchor_x,
                                                  uint8_t anchor_y) {
     // Piggyback on the tile-grid toggle (G) so all the debug overlays share
     // one key. Nothing to draw otherwise.
@@ -867,11 +993,63 @@ void FensterRenderer::render_activation_overlay(uint8_t anchor_x,
     impl_->fill_rect(sx_anchor, sy_anchor + tpy / 2 - 1, tpx, 2, 0xFFFFFF);
 }
 
-bool FensterRenderer::aabb_overlay_enabled() const {
+bool PixelRenderer::aabb_overlay_enabled() const {
     return impl_->aabb_overlay_on;
 }
 
-void FensterRenderer::render_aabb(Fixed8_8 world_x, Fixed8_8 world_y,
+bool PixelRenderer::tile_grid_enabled()    const { return impl_->tile_outline_on; }
+bool PixelRenderer::object_tiers_enabled() const { return impl_->object_tiers_on; }
+bool PixelRenderer::map_mode_enabled()     const { return impl_->map_mode_on;     }
+bool PixelRenderer::switches_enabled()     const { return impl_->switches_on;     }
+bool PixelRenderer::transports_enabled()   const { return impl_->transports_on;   }
+
+// Bresenham between the centres of two world tiles, plus a small
+// arrowhead at (x2, y2). Tile-whole inputs only — game layer decides
+// which tile each endpoint sits on.
+void PixelRenderer::render_wire(uint8_t x1, uint8_t y1,
+                                uint8_t x2, uint8_t y2, uint32_t rgb) {
+    int tpx = impl_->tile_px_x();
+    int tpy = impl_->tile_px_y();
+    int sx1, sy1, sx2, sy2;
+    // world_to_screen returns false when the point is off-screen, but we
+    // still want to draw lines whose endpoints are off-screen as long as
+    // the line crosses the visible area. Use the raw screen mapping and
+    // rely on per-pixel clipping in put_pixel.
+    (void)impl_->world_to_screen(x1, y1, sx1, sy1);
+    (void)impl_->world_to_screen(x2, y2, sx2, sy2);
+    int cx1 = sx1 + tpx / 2;
+    int cy1 = sy1 + tpy / 2;
+    int cx2 = sx2 + tpx / 2;
+    int cy2 = sy2 + tpy / 2;
+
+    int hud_y = impl_->hud_y_px();
+    int dx = std::abs(cx2 - cx1);
+    int dy = -std::abs(cy2 - cy1);
+    int sx_step = (cx1 < cx2) ? 1 : -1;
+    int sy_step = (cy1 < cy2) ? 1 : -1;
+    int err = dx + dy;
+    int x = cx1, y = cy1;
+    // Safety ceiling so a badly scaled wire can't spin here forever.
+    int budget = impl_->f.width + hud_y + 4;
+    while (budget-- > 0) {
+        if (x >= 0 && x < impl_->f.width && y >= 0 && y < hud_y) {
+            impl_->put_pixel(x,     y,     rgb);
+            impl_->put_pixel(x + 1, y,     rgb);
+            impl_->put_pixel(x,     y + 1, rgb);
+        }
+        if (x == cx2 && y == cy2) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x += sx_step; }
+        if (e2 <= dx) { err += dx; y += sy_step; }
+    }
+
+    // Small square at the destination makes switch → door pairs easy to
+    // read when several wires overlap.
+    int hs = 3;
+    impl_->fill_rect(cx2 - hs, cy2 - hs, 2 * hs + 1, 2 * hs + 1, rgb);
+}
+
+void PixelRenderer::render_aabb(Fixed8_8 world_x, Fixed8_8 world_y,
                                   int w_units, int h_units, uint32_t rgb) {
     // w_units / h_units are in 1/256 of a tile (matches x.fraction /
     // y.fraction arithmetic). The top-left lives at (world_x, world_y);
@@ -890,7 +1068,7 @@ void FensterRenderer::render_aabb(Fixed8_8 world_x, Fixed8_8 world_y,
     impl_->stroke_rect(sx0 + 1, sy0 + 1, w_px - 2, h_px - 2, rgb);
 }
 
-void FensterRenderer::render_debug_marker(uint8_t world_x, uint8_t world_y,
+void PixelRenderer::render_debug_marker(uint8_t world_x, uint8_t world_y,
                                           uint32_t rgb, const char* label) {
     if (!impl_->object_tiers_on) return;
     int sx, sy;
@@ -906,25 +1084,61 @@ void FensterRenderer::render_debug_marker(uint8_t world_x, uint8_t world_y,
     }
 }
 
-int FensterRenderer::get_key() {
+int PixelRenderer::get_key() {
     if (impl_->should_close) return 'q';
-    // begin_frame already pumped messages; just scan key state.
-    while (impl_->key_scan_idx < 256) {
-        int i = impl_->key_scan_idx++;
-        if (!impl_->f.keys[i]) continue;
 
-        switch (i) {
-            case 17: return InputKey::UP;
-            case 18: return InputKey::DOWN;
-            case 19: return InputKey::RIGHT;
-            case 20: return InputKey::LEFT;
-            case 10: return InputKey::ENTER;
-            case 27: return 'q';
-            default:
-                if (i >= 'A' && i <= 'Z') return i + 32;
-                if (i >= '0' && i <= '9') return i;
-                break;
+    // Fenster's key scan uses indices 0..256 where keys[9] is Tab and
+    // modifiers land in f.mod (bit 0 = ctrl). The mod bitmask doesn't
+    // distinguish left vs right ctrl, so when ctrl is flagged we probe
+    // the OS directly to emit CTRL_LEFT or CTRL_RIGHT separately.
+    //
+    // Indices 256..258 are synthetic sentinels for those three keys so
+    // the caller's polling loop can receive each independently in a
+    // single frame without colliding with a real keys[] entry.
+    while (impl_->key_scan_idx < 259) {
+        int i = impl_->key_scan_idx++;
+
+        if (i < 256) {
+            if (!impl_->f.keys[i]) continue;
+            switch (i) {
+                case 9:  return InputKey::TAB;
+                case 17: return InputKey::UP;
+                case 18: return InputKey::DOWN;
+                case 19: return InputKey::RIGHT;
+                case 20: return InputKey::LEFT;
+                case 10: return InputKey::ENTER;
+                case 27: return 'q';
+                default:
+                    // Letters: lowercase so input.cpp's 'a'-case is hit.
+                    if (i >= 'A' && i <= 'Z') return i + 32;
+                    // Every other printable ASCII character passes
+                    // through unchanged. input.cpp handles specific
+                    // punctuation (`,` `.` `'` `;` `\` etc.); dropping
+                    // them here silently loses drop/throw/save/load/
+                    // map-toggle keys.
+                    if (i >= 0x20 && i <= 0x7e) return i;
+                    break;
+            }
+            continue;
         }
+
+        // Synthetic slots — poll OS for left/right ctrl separately.
+        // GetAsyncKeyState's high bit is set while the key is down.
+#if defined(_WIN32)
+        if (i == 256) {
+            if (GetAsyncKeyState(VK_LCONTROL) & 0x8000)
+                return InputKey::CTRL_LEFT;
+        } else if (i == 257) {
+            if (GetAsyncKeyState(VK_RCONTROL) & 0x8000)
+                return InputKey::CTRL_RIGHT;
+        }
+        // Slot 258 reserved for future modifier.
+#else
+        // Non-Windows: fall back to the generic ctrl bit via fenster's
+        // mod mask (emit CTRL_LEFT for either ctrl; right-ctrl boost
+        // only works on Windows for now).
+        if (i == 256 && (impl_->f.mod & 1)) return InputKey::CTRL_LEFT;
+#endif
     }
     return InputKey::NONE;
 }

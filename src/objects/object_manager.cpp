@@ -41,6 +41,11 @@ void ObjectManager::init_object_from_type(Object& obj, ObjectType type) {
     uint8_t idx = static_cast<uint8_t>(type);
     if (idx >= static_cast<uint8_t>(ObjectType::COUNT)) idx = 0;
 
+    // Slots are reused; every mutable field needs resetting or stale
+    // state leaks from the previous occupant into the new object. The
+    // tile_collision flag is the worst offender — a bullet slot reused
+    // after the previous bullet exploded inherits `tile_collision = true`
+    // and the new bullet immediately re-explodes on frame 1.
     obj.type = type;
     obj.sprite = object_types_sprite[idx];
     obj.palette = object_types_palette_and_pickup[idx] & 0x7f;
@@ -52,8 +57,11 @@ void ObjectManager::init_object_from_type(Object& obj, ObjectType type) {
     obj.tertiary_slot = 0;
     obj.state = 0;
     obj.timer = 0;
+    obj.tx = 0;
+    obj.ty = 0;
     obj.velocity_x = 0;
     obj.velocity_y = 0;
+    obj.tile_collision = false;
 }
 
 int ObjectManager::create_object(ObjectType type, int min_free_slots,
@@ -62,10 +70,12 @@ int ObjectManager::create_object(ObjectType type, int min_free_slots,
     int slot = -1;
 
     if (min_free_slots > 0) {
-        // Port of &1eb5: search slots 1-15, count free slots.
-        // The Nth free slot found (where N = min_free_slots) is used.
+        // Port of &1eb5: search active primary slots, count free ones. The
+        // Nth free slot found (where N = min_free_slots) is used. Capped
+        // at active_primary_slots_ so exile.ini's primary_slots limit is
+        // honoured.
         int remaining = min_free_slots;
-        for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+        for (int i = 1; i < active_primary_slots_; i++) {
             if (!primary_[i].is_active()) {
                 remaining--;
                 if (remaining == 0) {
@@ -81,7 +91,7 @@ int ObjectManager::create_object(ObjectType type, int min_free_slots,
         if (slot < 0) {
             // No free slot: find the most distant replaceable object
             uint8_t max_dist = 0;
-            for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+            for (int i = 1; i < active_primary_slots_; i++) {
                 const Object& obj = primary_[i];
                 if (!obj.is_active()) continue;
 
@@ -255,17 +265,23 @@ void ObjectManager::promote_selective(Random& rng) {
     if (secondary_update_next_ == 0xff) {
         // Wrapped: reshuffle
         secondary_update_shuffle_ = rng.next();
-        secondary_update_next_ = GameConstants::SECONDARY_OBJECT_SLOTS - 1;
+        secondary_update_next_ =
+            static_cast<uint8_t>(active_secondary_slots_ - 1);
     }
 
-    uint8_t check_slot = secondary_update_next_ ^ secondary_update_shuffle_;
-    check_slot &= (GameConstants::SECONDARY_OBJECT_SLOTS - 1); // Mask to valid range
+    // The 6502 uses an XOR-shuffle then AND with (size-1); that relied on
+    // a power-of-2 size. exile.ini lets the user pick any size up to the
+    // compile-time max, so fall back to modulo which handles the
+    // non-power-of-2 case correctly.
+    int check_slot =
+        (secondary_update_next_ ^ secondary_update_shuffle_) %
+        active_secondary_slots_;
 
-    if (check_slot < GameConstants::SECONDARY_OBJECT_SLOTS) {
+    if (check_slot < active_secondary_slots_) {
         const SecondaryObject& sec = secondary_[check_slot];
         if (sec.y != 0) {
-            // Check if within 4 tiles of player
-            if (!is_far_from_anchor(sec.x, sec.y, 4)) {
+            // Within promote_distance_ tiles → bring back to primary.
+            if (!is_far_from_anchor(sec.x, sec.y, promote_distance_)) {
                 promote_from_secondary(check_slot, 4);
             }
         }
@@ -274,11 +290,11 @@ void ObjectManager::promote_selective(Random& rng) {
 
 void ObjectManager::promote_distance_check() {
     // Port of &0c4e-&0c6d: check all secondary objects
-    for (int i = GameConstants::SECONDARY_OBJECT_SLOTS - 1; i >= 0; i--) {
+    for (int i = active_secondary_slots_ - 1; i >= 0; i--) {
         const SecondaryObject& sec = secondary_[i];
         if (sec.y == 0) continue;
 
-        if (!is_far_from_anchor(sec.x, sec.y, 4)) {
+        if (!is_far_from_anchor(sec.x, sec.y, promote_distance_)) {
             promote_from_secondary(i, 1);
         }
     }
@@ -365,19 +381,21 @@ bool ObjectManager::check_demotion(int primary_slot, uint8_t frame_counter) {
         if (slow && supported) x = 0x03;
     }
 
-    // &1bdb: distances_to_remove_objects_table[X-1] = {1, 12, 4}.
+    // &1bdb: distances_to_remove_objects_table[X-1]. 6502 ROM was
+    // {1, 12, 4}; our port exposes these as demote_distances_ so
+    // exile.ini's [distances] section can tune each independently — see
+    // StartupConfig::demote_tertiary / demote_moving / demote_settled.
     //
-    // Port hazard: in the 6502, tertiary objects only spawned while a tile
-    // was being plotted — i.e. inside the ~4-tile visible window — so the
-    // 1-tile demote radius for KEEP_AS_TERTIARY statics (doors, switches)
-    // bordered the spawn edge and churn was rare. Our port's viewport can
-    // be much larger, so spawn_tertiary_object gates on 12 tiles from the
-    // anchor. A 1-tile demote radius inside that 12-tile spawn radius
-    // produces constant churn: 1-in-4 frames the object demotes; the next
-    // render tick re-spawns it. Raise the KEEP_AS_TERTIARY radius to the
-    // same 12 tiles so spawn and demote share a single boundary.
-    static constexpr uint8_t distances[3] = { 12, 12, 4 };
-    uint8_t check_distance = distances[x - 1];
+    // Port hazard: in the 6502, tertiary objects only spawned while a
+    // tile was being plotted — i.e. inside the ~4-tile visible window —
+    // so the 1-tile demote radius for KEEP_AS_TERTIARY statics (doors,
+    // switches) bordered the spawn edge and churn was rare. Our port's
+    // viewport can be much larger, so spawn_tertiary_object gates on a
+    // larger radius. A small demote distance inside the spawn radius
+    // would cause 1-in-4-frame churn: the object demotes, next render
+    // tick re-spawns it. Keep demote_distances_[0] ≥ the spawn radius
+    // so the two boundaries coincide.
+    uint8_t check_distance = demote_distances_[x - 1];
 
     // &1bde-&1be4: gate on (per-object frame counter & 3) == 3. We don't
     // have per-object staggering so use the global counter; still fires
@@ -428,14 +446,17 @@ int ObjectManager::count_active_primary() const {
 }
 
 int ObjectManager::find_free_primary_slot() const {
-    for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+    // Cap at the runtime active size — slots above it are off-limits so
+    // exile.ini's [caches] primary_slots setting actually constrains how
+    // many primaries exist at once, regardless of the backing array size.
+    for (int i = 1; i < active_primary_slots_; i++) {
         if (!primary_[i].is_active()) return i;
     }
     return -1;
 }
 
 int ObjectManager::find_free_secondary_slot() const {
-    for (int i = 0; i < GameConstants::SECONDARY_OBJECT_SLOTS; i++) {
+    for (int i = 0; i < active_secondary_slots_; i++) {
         if (secondary_[i].y == 0) return i;
     }
     return -1;

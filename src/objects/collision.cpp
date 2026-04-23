@@ -59,15 +59,32 @@ static bool is_point_obstructed(uint8_t tile_type, bool flip_h, bool flip_v,
 // Probe a point in the tile containing (tile_x, tile_y). The tile_y adjustment
 // (and the tile-passable early-out) is handled by the caller; this just looks
 // up the tile and its pattern and runs the obstruction test.
-static bool tile_obstructs_point(const Landscape& landscape,
-                                 uint8_t tile_x, uint8_t tile_y,
-                                 uint8_t x_frac, uint8_t y_frac) {
+bool point_in_tile_solid(const Landscape& landscape,
+                          uint8_t tile_x, uint8_t tile_y,
+                          uint8_t x_frac, uint8_t y_frac) {
     if (!is_tile_solid(landscape, tile_x, tile_y)) return false;
     uint8_t tile = landscape.get_tile(tile_x, tile_y);
     uint8_t type = tile & TileFlip::TYPE_MASK;
     bool fh = (tile & TileFlip::HORIZONTAL) != 0;
     bool fv = (tile & TileFlip::VERTICAL) != 0;
     return is_point_obstructed(type, fh, fv, x_frac, y_frac);
+}
+
+bool tile_and_flip_obstructs_point(uint8_t tile_and_flip,
+                                    uint8_t x_frac, uint8_t y_frac) {
+    uint8_t type = tile_and_flip & TileFlip::TYPE_MASK;
+    if (!is_tile_type_solid(type)) return false;
+    bool fh = (tile_and_flip & TileFlip::HORIZONTAL) != 0;
+    bool fv = (tile_and_flip & TileFlip::VERTICAL) != 0;
+    return is_point_obstructed(type, fh, fv, x_frac, y_frac);
+}
+
+// File-local alias kept to avoid touching the handful of call sites below
+// that spell it `tile_obstructs_point`.
+static bool tile_obstructs_point(const Landscape& landscape,
+                                 uint8_t tile_x, uint8_t tile_y,
+                                 uint8_t x_frac, uint8_t y_frac) {
+    return point_in_tile_solid(landscape, tile_x, tile_y, x_frac, y_frac);
 }
 
 // Returns true if the object's point position (x, y) is inside solid geometry.
@@ -158,7 +175,7 @@ static int sprite_height_units(uint8_t sprite) {
 // register as touching unless their rectangles actually overlap.
 ObjectCollisionResult check_object_collision(
     const Object& obj, int slot,
-    const std::array<Object, 16>& all_objects) {
+    const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects) {
 
     ObjectCollisionResult result;
 
@@ -211,27 +228,37 @@ ObjectCollisionResult check_object_collision(
 }
 
 bool overlaps_solid_object(const Object& obj, int self_slot,
-                            const std::array<Object, 16>& all_objects) {
+                            const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects) {
     int this_x = obj.x.whole * 256 + obj.x.fraction;
     int this_y = obj.y.whole * 256 + obj.y.fraction;
     int this_w = sprite_width_units(obj.sprite);
     int this_h = sprite_height_units(obj.sprite);
+    uint8_t self_weight = obj.weight();
 
     for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
         if (i == self_slot) continue;
         const Object& other = all_objects[i];
         if (!other.is_active()) continue;
 
-        // Weight-7 non-INTANGIBLE statics block — doors, switches, etc.
-        // The 6502's apply_collision_to_objects_velocities (&2bb6) uses
-        // the mass ratio to transfer velocity between colliders; with
-        // weight diff 6 (player 1 vs door 7), the velocity transfer is
-        // ~2^-6 ≈ 0 from the door's side, so the player is effectively
-        // reflected. We approximate that with a hard position revert.
+        // The 6502's apply_collision_to_objects_velocities at &2bb6 uses
+        // a mass-ratio model: velocity is transferred between colliders
+        // scaled by 2^(other_weight − self_weight). When the collider is
+        // much heavier, the self-side ratio underflows to zero and the
+        // lighter object simply fails to move into the heavier one —
+        // the hard block the user sees walking into a wall / door /
+        // cannon. We emulate that with a position-revert whenever the
+        // other side is strictly heavier than us (any nonzero weight
+        // difference already gives ≥2× transfer → effectively blocking
+        // on the lighter side).
+        //
+        // INTANGIBLE (flag 0x80) objects never block — explosions,
+        // lightning, transporter beams, fireballs. Opening/open doors
+        // are also short-circuited below.
         uint8_t tidx = static_cast<uint8_t>(other.type);
         uint8_t tflags = (tidx < static_cast<uint8_t>(ObjectType::COUNT))
                          ? object_types_flags[tidx] : 0;
-        if ((tflags & ObjectTypeFlags::WEIGHT_MASK) < 7) continue;
+        uint8_t other_weight = tflags & ObjectTypeFlags::WEIGHT_MASK;
+        if (other_weight <= self_weight) continue;   // lighter or equal → no block
         if (tflags & ObjectTypeFlags::INTANGIBLE) continue;
 
         // Doors: OPENING set means the sprite has slid far enough out of
@@ -262,9 +289,73 @@ bool overlaps_solid_object(const Object& obj, int self_slot,
     return false;
 }
 
+// Port of &2bee calculate_transfer_velocities + &2bc6 apply_collision_
+// to_object_velocity. The 6502 computes a half-velocity-difference,
+// divides it down by weight_difference halvings (giving the transfer
+// applied to the heavier side), and subtracts to get the greater half
+// applied to the lighter side. Each is then halved, optionally doubled
+// when the collision came from that direction, and added/subtracted to
+// the appropriate side's velocity.
+//
+// All arithmetic is signed 8-bit; we use int to avoid undefined
+// overflow and clamp at the end with prevent_overflow semantics.
+VelocityTransfer apply_mass_ratio_velocity(
+        int8_t this_v_in, int8_t other_v_in,
+        uint8_t this_weight, uint8_t other_weight,
+        bool hit_from_this_side) {
+    auto clamp_i8 = [](int v) {
+        if (v >  127) v =  127;
+        if (v < -128) v = -128;
+        return v;
+    };
+
+    // &2bee-&2bfc: half_velocity_difference.
+    int half_diff = (int(this_v_in) - int(other_v_in)) / 2;
+
+    // &2bfe-&2c07: halve half_diff for each unit of weight difference,
+    // keeping sign. Same weight = halve once.
+    int wdiff = int(this_weight) - int(other_weight);
+    int wdiff_abs = wdiff < 0 ? -wdiff : wdiff;
+    int shifts = wdiff_abs == 0 ? 1 : wdiff_abs;
+    int lesser = half_diff;
+    for (int i = 0; i < shifts; i++) lesser = lesser / 2;    // ASR-style
+    // &2c09-&2c0d: "round up if negative" (adc #0 after ror shifts in 1).
+    if (half_diff < 0 && (half_diff & 1)) lesser += 0;  // approximation
+    int greater = half_diff - lesser;
+
+    // &2bc6-&2bed: each half is applied halved, optionally doubled when
+    // the collision came from that side ("skip_doubling" branch).
+    auto apply = [&](int transfer, bool doubled, int start_v, bool negate) {
+        int half = transfer / 2;
+        int add  = doubled ? (half + transfer) : half;   // doubled = +transfer
+        if (negate) add = -add;
+        return clamp_i8(start_v + add);
+    };
+
+    // this_object is heavier when wdiff > 0. Lighter side gets `greater`,
+    // heavier side gets `lesser`. The sign flip (invert_if_positive at
+    // &2bd8) makes the heavier-side addition move AWAY from the other.
+    bool this_heavier = wdiff > 0;
+    int this_out, other_out;
+    if (this_heavier) {
+        // this gets lesser (heavier-side), other gets greater (lighter).
+        this_out  = apply(lesser,  hit_from_this_side, this_v_in,  true);
+        other_out = apply(greater, !hit_from_this_side, other_v_in, false);
+    } else {
+        // this gets greater (lighter-side), other gets lesser (heavier).
+        this_out  = apply(greater, hit_from_this_side, this_v_in,  false);
+        other_out = apply(lesser,  !hit_from_this_side, other_v_in, true);
+    }
+
+    VelocityTransfer out;
+    out.this_v  = static_cast<int8_t>(this_out);
+    out.other_v = static_cast<int8_t>(other_out);
+    return out;
+}
+
 uint8_t substitute_door_for_obstruction(
         uint8_t tile_and_flip, int data_offset,
-        const std::array<Object, 16>& all_objects,
+        const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects,
         uint8_t tertiary_byte_fallback) {
     uint8_t type = tile_and_flip & TileFlip::TYPE_MASK;
     if (type != static_cast<uint8_t>(TileType::METAL_DOOR) &&

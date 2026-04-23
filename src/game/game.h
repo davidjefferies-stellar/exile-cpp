@@ -45,6 +45,12 @@ private:
     uint8_t player_angle_  = 0xc0;  // &de: current body angle (0xc0 = upright head-up)
     uint8_t player_facing_ = 0x00;  // &df: facing as an x_flip byte (0x00 right, 0x80 left)
     uint8_t held_object_slot_ = 0x80; // 0x80+ = no object held
+    // &29d7 player_object_fired: set to the held object's slot when the
+    // player presses fire while holding something; 0xff when nothing was
+    // fired this frame. update_remote_control_device (&4351) and doors /
+    // transporters (&4c9e / &4dc8) read it via check_if_object_fired.
+    // Reset to 0xff at the end of each tick.
+    uint8_t player_object_fired_ = 0xff;
     uint16_t weapon_energy_[6] = {0x0800, 0, 0, 0, 0, 0}; // Jetpack starts with energy
     bool jetpack_active_ = false;
 
@@ -66,6 +72,33 @@ private:
     // Decremented each frame, added to when player contacts mushroom balls/tiles.
     uint8_t player_mushroom_timers_[2] = {0, 0};
     bool mushroom_immunity_collected_ = false;  // &0815
+
+    // Global event state (all ports of 6502 bytes at &081e-&0846).
+    //   flooding_state_      &081e  negative → endgame flood in progress
+    //   earthquake_state_    &081f  negative → earthquake running; gradually
+    //                               worsens via update_events (&25e7).
+    //   clawed_robot_availability_[4]        &083f
+    //       ff (negative) = dormant
+    //       00            = ready to respawn (teleport-energy building)
+    //       01 (positive) = already primary in the world
+    //   clawed_robot_teleport_energy_[4]     &0843
+    //       Counter that ticks up while the robot is dormant; once it
+    //       overflows past 0x80 the robot can rejoin the game (&2725).
+    uint8_t flooding_state_   = 0;
+    uint8_t earthquake_state_ = 0;
+    uint8_t clawed_robot_availability_[4]   = {0, 0, 0, 0};
+    uint8_t clawed_robot_teleport_energy_[4] = {0, 0, 0, 0};
+
+    // Player teleport tables (&0821-&082c). Slots 0-3 are rewritten by
+    // handle_remembering_position; slot 4 is the fallback used when no
+    // positions are remembered. Initial values match the 6502 ROM state:
+    // slot 4 = (&99, &3c), the player's spawn tile.
+    uint8_t player_next_teleport_        = 0;
+    uint8_t player_teleports_remembered_ = 0;
+    uint8_t player_teleports_x_[5] = {0x32, 0x8e, 0xd2, 0x63, 0x99};
+    uint8_t player_teleports_y_[5] = {0x98, 0xc0, 0xc0, 0xc7, 0x3c};
+    uint16_t player_deaths_ = 0;  // port of &080d game_time deaths counter
+    bool player_is_completely_dematerialised_ = false;  // &19b5
 
     // Debug overlay: text displayed in top-right, set when left-click picks a tile.
     std::string selected_tile_info_;
@@ -95,12 +128,35 @@ private:
     bool drop_key_prev_        = false;
     bool throw_key_prev_       = false;
     bool store_key_prev_       = false;
+    bool turn_around_key_prev_ = false;
+    bool lie_down_prev_        = false;
+    // SPACE (fire) is `repeat = no` in the 6502 action table (&0d at
+    // line 3572 of the disassembly), i.e. one press = one bullet. Without
+    // the edge gate, holding space empties the weapon in a few frames.
+    bool fire_key_prev_        = false;
+
+    // Lying-down state (&05 bit 6-ish): true while the player is prone.
+    // Tab flips facing; Left Ctrl toggles lying. Right Ctrl feeds into
+    // the jetpack booster path so motion accelerates faster.
+    bool player_lying_down_ = false;
     bool retrieve_key_prev_    = false;
+    // Edge triggers for the 6502 teleport + remember keys.
+    //   R → handle_remembering_position (&2c3c)
+    //   T → handle_teleporting          (&0cc1)
+    bool remember_key_prev_    = false;
+    bool teleport_key_prev_    = false;
 
     // Spawn diagnostics — incremented from spawn_tertiary_object so the
     // map-mode HUD banner can show whether spawns are actually firing.
     uint32_t spawn_attempts_ = 0;
     uint32_t spawn_created_  = 0;
+
+    // Tertiary → primary spawn-gate radius (in tiles). Set from
+    // exile.ini [distances] spawn_tertiary during Game::init; default
+    // 4 matches the KEEP_AS_PRIMARY_FOR_LONGER slow+supported demote
+    // ring so settled tertiary objects don't oscillate between
+    // "spawned" and "demoted" each frame.
+    uint8_t spawn_tertiary_distance_ = 4;
 
     // Particle pool (max 32). Updated each frame; rendered in Game::render.
     ParticleSystem particles_;
@@ -126,6 +182,49 @@ private:
     void integrate_player_motion(Object& player,
                                  int8_t accel_x, int8_t accel_y);
     void update_player_sprite(int8_t accel_x, int8_t accel_y);
+
+    // Port of &34b4 store_object: pocket the currently-held primary (or
+    // drain it into the jetpack if it's a power pod). Returns true if the
+    // object was consumed. No-op + false if nothing is held, the object
+    // is too tall (>= 8 rows) to fit a pocket, or pockets are full.
+    bool try_store_held(Object& player);
+
+    // Port of &32c8 handle_dropping_object: release the currently-held
+    // primary (if any) back into the world.
+    void drop_held_object(Object& player);
+
+    // Port of &4096 consider_teleporting_damaged_player. Called when the
+    // player's energy would hit zero; short-circuits the explosion path
+    // by bumping energy back to 1 and either auto-teleporting the player
+    // to a remembered position, or (1/4 chance) retrieving a pocket item.
+    void consider_teleporting_damaged_player(Object& player);
+
+    // Port of &0cc1 handle_teleporting. Sets OBJECT_FLAG_TELEPORTING +
+    // timer and picks the target tile from the teleport tables.
+    void handle_player_teleporting(Object& player);
+
+    // Drive the 32-frame teleport animation for the player. Called from
+    // update_player before the input / motion chain. Mirrors the section
+    // of the 6502 object loop at &1bfd-&1c44 that the player slot skips.
+    // Returns true if the teleport animation consumed this frame (so the
+    // caller should skip the normal input / motion update).
+    bool advance_player_teleport(Object& player);
+
+    // Port of &2c3c handle_remembering_position. Record the player's
+    // current centre into the teleport tables (if energy >= 8).
+    void handle_remembering_position(Object& player);
+
+    // Save / restore. Human-readable text format — see save_load.cpp for
+    // the schema. The landscape is regenerated from seed on load, so the
+    // save only has to capture mutable state (player, objects, events,
+    // rng, tertiary data bytes). Both return true on success.
+    bool save_game(const std::string& path) const;
+    bool load_game(const std::string& path);
+
+    // Rising-edge state for save/load keys. Without these, holding down
+    // ';' would overwrite the save every frame.
+    bool save_key_prev_ = false;
+    bool load_key_prev_ = false;
 
     // Spawn a primary object from a tertiary when its tile comes into view.
     // Port of create_primary_object_from_tertiary (&4042) plus the per-tile

@@ -17,6 +17,9 @@ struct SpriteRenderInfo {
     bool    flip_v;
     bool    visible;
     ObjectType type;
+    // 6502 &0cfe reduce_sprite_if_teleporting. When non-zero, render shrinks
+    // the sprite based on (timer & 7) — zero means no teleport effect.
+    uint8_t teleport_timer = 0;
 };
 
 struct PlayerState {
@@ -32,12 +35,15 @@ struct PlayerState {
 };
 
 namespace InputKey {
-    constexpr int NONE  = -1;
-    constexpr int LEFT  = 0x100;
-    constexpr int RIGHT = 0x101;
-    constexpr int UP    = 0x102;
-    constexpr int DOWN  = 0x103;
-    constexpr int ENTER = 0x104;
+    constexpr int NONE       = -1;
+    constexpr int LEFT       = 0x100;
+    constexpr int RIGHT      = 0x101;
+    constexpr int UP         = 0x102;
+    constexpr int DOWN       = 0x103;
+    constexpr int ENTER      = 0x104;
+    constexpr int TAB        = 0x105;
+    constexpr int CTRL_LEFT  = 0x106;
+    constexpr int CTRL_RIGHT = 0x107;
 }
 
 class IRenderer {
@@ -139,5 +145,25 @@ public:
     virtual bool aabb_overlay_enabled() const { return false; }
     virtual void render_aabb(Fixed8_8 /*world_x*/, Fixed8_8 /*world_y*/,
                              int /*w_units*/, int /*h_units*/,
+                             uint32_t /*rgb*/) {}
+
+    // --- Debug-overlay checkbox state, driven by the HUD-strip checkboxes.
+    //     Game reads these each frame to decide whether to render the
+    //     tile grid / tier labels / activation rings and whether the
+    //     camera, not the player, drives the activation anchor.
+    virtual bool tile_grid_enabled()    const { return false; }
+    virtual bool object_tiers_enabled() const { return false; }
+    virtual bool map_mode_enabled()     const { return false; }
+    // Split wiring overlay into two toggles so users can focus on one
+    // relation at a time. Game reads each gate independently.
+    virtual bool switches_enabled()     const { return false; }
+    virtual bool transports_enabled()   const { return false; }
+
+    // Draw a thin line between two world-tile positions in the given RGB.
+    // Coordinates are tile-whole; game code picks the tile each end sits
+    // on. Default no-op so only renderers with overlay support need to
+    // implement it.
+    virtual void render_wire(uint8_t /*x1*/, uint8_t /*y1*/,
+                             uint8_t /*x2*/, uint8_t /*y2*/,
                              uint32_t /*rgb*/) {}
 };

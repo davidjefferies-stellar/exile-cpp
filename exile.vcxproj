@@ -98,23 +98,25 @@
     <ClCompile Include="src\objects\collision.cpp" />
     <ClCompile Include="src\objects\held_object.cpp" />
     <ClCompile Include="src\objects\weapon.cpp" />
-    <ClCompile Include="src\ai\npc_helpers.cpp" />
-    <ClCompile Include="src\ai\mood.cpp" />
-    <ClCompile Include="src\ai\behavior_dispatch.cpp" />
-    <ClCompile Include="src\ai\behaviors\projectile.cpp" />
-    <ClCompile Include="src\ai\behaviors\creature.cpp" />
-    <ClCompile Include="src\ai\behaviors\robot.cpp" />
-    <ClCompile Include="src\ai\behaviors\environment.cpp" />
-    <ClCompile Include="src\ai\behaviors\collectable.cpp" />
+    <ClCompile Include="src\behaviours\npc_helpers.cpp" />
+    <ClCompile Include="src\behaviours\path.cpp" />
+    <ClCompile Include="src\behaviours\mood.cpp" />
+    <ClCompile Include="src\behaviours\behavior_dispatch.cpp" />
+    <ClCompile Include="src\behaviours\projectile.cpp" />
+    <ClCompile Include="src\behaviours\creature.cpp" />
+    <ClCompile Include="src\behaviours\robot.cpp" />
+    <ClCompile Include="src\behaviours\environment.cpp" />
+    <ClCompile Include="src\behaviours\collectable.cpp" />
     <ClCompile Include="src\player\input.cpp" />
     <ClCompile Include="src\rendering\camera.cpp" />
-    <ClCompile Include="src\rendering\fenster\fenster_renderer.cpp" />
+    <ClCompile Include="src\rendering\pixel_renderer.cpp" />
     <ClCompile Include="src\rendering\sprite_atlas.cpp" />
     <ClCompile Include="src\rendering\sprite_data.cpp" />
     <ClCompile Include="src\rendering\palette.cpp" />
     <ClCompile Include="src\particles\particle_system.cpp" />
     <ClCompile Include="src\game\game.cpp" />
     <ClCompile Include="src\game\config.cpp" />
+    <ClCompile Include="src\game\save_load.cpp" />
     <ClCompile Include="src\game\tertiary_spawn.cpp" />
     <ClCompile Include="src\game\player_actions.cpp" />
     <ClCompile Include="src\game\player_motion.cpp" />
@@ -143,7 +145,7 @@
     <ClInclude Include="src\objects\collision.h" />
     <ClInclude Include="src\rendering\renderer.h" />
     <ClInclude Include="src\rendering\camera.h" />
-    <ClInclude Include="src\rendering\fenster\fenster_renderer.h" />
+    <ClInclude Include="src\rendering\pixel_renderer.h" />
     <ClInclude Include="src\rendering\sprite_atlas.h" />
     <ClInclude Include="src\rendering\sprite_data.h" />
     <ClInclude Include="src\rendering\palette.h" />
@@ -151,23 +153,25 @@
     <ClInclude Include="src\rendering\debug_names.h" />
     <ClInclude Include="src\particles\particle_system.h" />
     <ClInclude Include="deps\fenster.h" />
-    <ClInclude Include="src\ai\npc_helpers.h" />
-    <ClInclude Include="src\ai\mood.h" />
-    <ClInclude Include="src\ai\behavior_dispatch.h" />
-    <ClInclude Include="src\ai\behaviors\projectile.h" />
-    <ClInclude Include="src\ai\behaviors\creature.h" />
-    <ClInclude Include="src\ai\behaviors\robot.h" />
-    <ClInclude Include="src\ai\behaviors\environment.h" />
-    <ClInclude Include="src\ai\behaviors\collectable.h" />
+    <ClInclude Include="src\behaviours\npc_helpers.h" />
+    <ClInclude Include="src\behaviours\path.h" />
+    <ClInclude Include="src\behaviours\mood.h" />
+    <ClInclude Include="src\behaviours\behavior_dispatch.h" />
+    <ClInclude Include="src\behaviours\projectile.h" />
+    <ClInclude Include="src\behaviours\creature.h" />
+    <ClInclude Include="src\behaviours\robot.h" />
+    <ClInclude Include="src\behaviours\environment.h" />
+    <ClInclude Include="src\behaviours\collectable.h" />
     <ClInclude Include="src\player\input.h" />
     <ClInclude Include="src\game\game.h" />
     <ClInclude Include="src\game\config.h" />
   </ItemGroup>
   <ItemGroup>
     <!-- Non-code files surfaced in Solution Explorer for easy editing.
-         <None> means "track but don't compile" — no build action. -->
+         <None> means "track but don't compile" — no build action.
+         CLAUDE.md is intentionally absent — it's per-developer and
+         .gitignore'd, so it shouldn't live in a tracked project file. -->
     <None Include="exile.ini" />
-    <None Include="CLAUDE.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

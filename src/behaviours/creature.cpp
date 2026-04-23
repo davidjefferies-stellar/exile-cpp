@@ -1,5 +1,7 @@
-#include "ai/behaviors/creature.h"
-#include "ai/mood.h"
+#include "behaviours/creature.h"
+#include "behaviours/mood.h"
+#include "behaviours/path.h"
+#include "world/water.h"
 #include "core/types.h"
 #include <cstdlib>
 
@@ -82,6 +84,7 @@ void update_active_chatter(Object& obj, UpdateContext& ctx) {
                     Object& bolt = ctx.mgr.object(slot);
                     bolt.velocity_x = (tdx > 0) ? 0x20 : -0x20;
                     bolt.velocity_y = tdy;
+                    NPC::offset_child_from_parent(bolt, obj);
                     obj.timer = 8; // Chattering animation timer
                 }
                 break;
@@ -110,6 +113,7 @@ void update_active_chatter(Object& obj, UpdateContext& ctx) {
                 Object& pod = ctx.mgr.object(slot);
                 pod.velocity_x = (sdx > 0) ? 0x10 : -0x10;
                 pod.velocity_y = (sdy > 0) ? 0x10 : -0x10;
+                NPC::offset_child_from_parent(pod, obj);
                 obj.energy = 0; // Deactivate chatter after producing power pod
             }
         }
@@ -325,11 +329,33 @@ void update_imp(Object& obj, UpdateContext& ctx) {
     // update_mood covers the same purpose.
     Mood::update_mood(obj, ctx);
 
-    // &455a-&455f: NPC path update + walking physics. We don't have
-    // those helpers, so approximate: if the imp has an angry mood, walk
-    // towards the player; neutral mood wanders.
+    // &455a-&455f: NPC path update + walking physics. The 6502 feeds
+    // walking_speed into update_walking_npc (&3b08), which subtracts the
+    // current velocity from the speed target and runs that difference
+    // through apply_weight_and_limit_to_acceleration — so walking_speed
+    // is a TARGET velocity, approached gradually via capped acceleration.
+    //
+    // Our previous port called seek_player, which SETS velocity to ±speed
+    // every frame. With speed=0x28 (=40/256 tile/frame) applied instantly
+    // to both axes, imps teleported around the map at 8 tiles/sec in all
+    // directions. Fix: only touch velocity_x (6502 walking leaves y to
+    // gravity), and accelerate toward target instead of snapping to it.
     if (mood == NPCMood::MINUS_TWO || mood == NPCMood::MINUS_ONE) {
-        NPC::seek_player(obj, ctx.mgr.player(), speed);
+        int8_t dx = static_cast<int8_t>(
+            ctx.mgr.player().x.whole - obj.x.whole);
+        int8_t target_vx = (dx > 0) ? speed
+                         : (dx < 0) ? static_cast<int8_t>(-speed)
+                         : 0;
+        constexpr int kAccel = 2;
+        if (obj.velocity_x < target_vx) {
+            int nv = obj.velocity_x + kAccel;
+            if (nv > target_vx) nv = target_vx;
+            obj.velocity_x = static_cast<int8_t>(nv);
+        } else if (obj.velocity_x > target_vx) {
+            int nv = obj.velocity_x - kAccel;
+            if (nv < target_vx) nv = target_vx;
+            obj.velocity_x = static_cast<int8_t>(nv);
+        }
     } else if (ctx.every_sixteen_frames) {
         // &31da-ish wander: jitter velocity_x every 16 frames.
         obj.velocity_x = static_cast<int8_t>((ctx.rng.next() & 0x0f) - 7);
@@ -358,6 +384,7 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                 int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);
                 b.velocity_x = (dx > 0) ?  0x18 : -0x18;
                 b.velocity_y = (dy > 0) ?  0x10 : -0x10;
+                NPC::offset_child_from_parent(b, obj);
             }
         }
     }
@@ -570,8 +597,16 @@ void update_piranha_or_wasp(Object& obj, UpdateContext& ctx) {
     // &4f6b-&4f73: if not colliding with tiles top/bottom AND out of
     // element (piranha above water OR wasp below water), leave — they
     // don't move outside their medium.
-    bool out_of_element = is_wasp ? NPC::is_underwater(obj)
-                                  : !NPC::is_underwater(obj);
+    //
+    // Important: use the per-column waterline, not NPC::is_underwater
+    // which tests against the fixed upper-world SURFACE_Y (0x4e). Wasps
+    // spawn in the lower world well below SURFACE_Y but in air pockets,
+    // not in water — the SURFACE_Y shortcut flagged every wasp as
+    // "in water", so they hit this `return` before their seek/jitter
+    // could produce any motion and got stuck next to the hive.
+    bool in_water =
+        Water::is_underwater(obj.x.whole, obj.y.whole);
+    bool out_of_element = is_wasp ? in_water : !in_water;
     if (!obj.tile_collision && out_of_element) return;
 
     // &4f75-&4f7e: move towards current target with magnitude 0x30, max
@@ -728,6 +763,7 @@ void update_gargoyle(Object& obj, UpdateContext& ctx) {
                 Object& fireball = ctx.mgr.object(slot);
                 fireball.velocity_x = (dx > 0) ? 8 : -8;
                 fireball.velocity_y = -4;
+                NPC::offset_child_from_parent(fireball, obj);
             }
         }
     }
@@ -735,34 +771,70 @@ void update_gargoyle(Object& obj, UpdateContext& ctx) {
 
 // &4704: Triax - the boss, teleports and attacks
 void update_triax(Object& obj, UpdateContext& ctx) {
-    Mood::update_mood(obj, ctx);
-
-    // Triax is always aggressive
-    const Object& player = ctx.mgr.player();
-
-    // Teleport if far from player
-    int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
-    int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);
-
-    if (std::abs(dx) > 20 || std::abs(dy) > 20) {
-        // Teleport near player
-        if (ctx.rng.next() < 0x10) {
-            obj.x.whole = player.x.whole + (ctx.rng.next() & 0x0f) - 8;
-            obj.y.whole = player.y.whole + (ctx.rng.next() & 0x0f) - 8;
-            obj.velocity_x = 0;
-            obj.velocity_y = 0;
+    // &4704-&4710: if Triax is touching a destinator, absorb it and
+    // teleport away. This is what produces the intro beat — Triax starts
+    // in primary slot 1 next to the destinator tertiary, so on the first
+    // frame he touches it, eats it, and teleports to y=0 (removed).
+    //
+    // `&0a23` (tertiary_objects_data + &9d) is the destinator's tertiary
+    // slot at Triax's lab (&64, &d6). Setting bit 7 re-arms the
+    // needs-creating flag so the destinator respawns there next time the
+    // player visits, which is where the player must retrieve it from.
+    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
+        Object& target = ctx.mgr.object(obj.touching);
+        if (target.type == ObjectType::DESTINATOR) {
+            target.flags |= ObjectFlags::PENDING_REMOVAL; // &3bef set_object_for_removal
+            ctx.mgr.set_tertiary_data_byte(0x9d, 0x80);
+            // &475c make_triax_teleport_away: ty=0 + set teleport flag.
+            obj.ty = 0;
+            obj.flags |= ObjectFlags::TELEPORTING;
+            obj.timer = 0x20;
+            return;
         }
     }
 
-    // Attack: fire icer bullets toward player
-    if (ctx.every_eight_frames) {
-        NPC::seek_player(obj, ctx.mgr.player(), 8);
+    Mood::update_mood(obj, ctx);
+
+    // LOS-gated behaviour. update_npc_path raycasts once every 16 frames and
+    // updates directness bits + (tx, ty). Triax chases the player directly
+    // only while the line of sight is clear; otherwise his directness decays
+    // and he wanders via the relaxed-path branch — matches &4712 not_absorbed
+    // which gates most action on `target_object_and_flags & 0x80`.
+    NPC::update_npc_path(obj, ctx);
+
+    const Object& player = ctx.mgr.player();
+    int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
+    int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);
+
+    // &4714-&4718: if Triax can't see the player (DIRECTNESS_TWO bit of
+    // target_and_flags clear), 1-in-256 frames he gives up and teleports
+    // away (ty=0, which the step-8 teleport handler interprets as
+    // "remove"). The 6502 only teleports *toward* the player via
+    // consider_teleporting_to_random_tile_near_player (&488b), and that
+    // routine gates on `this_object_surrounded_by_tiles`. We don't track
+    // that flag, so skip the teleport-to-player path entirely — otherwise
+    // Triax spawns at y=0xfe during the lower-world event, the player
+    // flies up to the surface, and Triax warps to the surface to chase.
+    uint8_t lvl = NPC::directness_level(obj);
+    if (lvl < 2 && ctx.rng.next() == 0) {
+        obj.ty = 0;
+        obj.flags |= ObjectFlags::TELEPORTING;
+        obj.timer = 0x20;
+        return;
+    }
+
+    // Fire only when target is visible or recently visible. &4714-&4718:
+    // if directness < 2 (bit 7 clear), only act 1-in-256 frames. Here we
+    // skip firing entirely — Triax shouldn't shoot through walls.
+    if (ctx.every_eight_frames && lvl >= 2) {
+        NPC::seek_player(obj, player, 8);
         if (ctx.rng.next() < 0x40) {
             int slot = NPC::fire_projectile(obj, ObjectType::ICER_BULLET, ctx);
             if (slot >= 0) {
                 Object& bullet = ctx.mgr.object(slot);
                 bullet.velocity_x = (dx > 0) ? 0x20 : -0x20;
                 bullet.velocity_y = (dy > 0) ? 0x10 : -0x10;
+                NPC::offset_child_from_parent(bullet, obj);
             }
         }
     }

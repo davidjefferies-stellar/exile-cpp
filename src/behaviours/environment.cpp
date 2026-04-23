@@ -1,4 +1,4 @@
-#include "ai/behaviors/environment.h"
+#include "behaviours/environment.h"
 #include "core/types.h"
 #include "objects/object_data.h"
 #include "particles/particle_system.h"
@@ -463,17 +463,6 @@ void update_transporter_beam(Object& obj, UpdateContext& ctx) {
 
 // &4BAF: Hive update (small and large). Port of update_hive.
 //
-// Tertiary data byte layout from the disassembly comment at &4baf:
-//   8....... hive needs primary object creating (bit 7)
-//   .42184.. spawn object type (bits 6-2 — LSR twice and you have a
-//            5-bit type id)
-//   ......21 non-zero → hive inactive (bits 1-0)
-//
-// So the spawn TYPE lives in the data byte, NOT in obj.type. LARGE_HIVE
-// vs SMALL_HIVE is just the graphic / collision shape — whether it
-// produces wasps or piranhas depends on the designer-specified data
-// byte. Our previous version keyed off obj.type and produced piranhas
-// from LARGE_HIVEs whose data byte said "wasp".
 void update_hive(Object& obj, UpdateContext& ctx) {
     // &4baf-&4bb1: extract bits 6-2 of the data byte as spawn type, cache
     // in obj.state. The 6502 caches it as this_object_state (hive spawn
@@ -617,6 +606,7 @@ void update_cannon(Object& obj, UpdateContext& ctx) {
             Object& ball = ctx.mgr.object(slot);
             ball.velocity_x = obj.is_flipped_h() ? -0x18 : 0x18;
             ball.velocity_y = -0x08;
+            NPC::offset_child_from_parent(ball, obj);
             ball.timer = 64;
         }
     }
@@ -765,6 +755,35 @@ void update_placeholder(Object& obj, UpdateContext& ctx) {
     obj.sprite = object_types_sprite[real_type];
     obj.palette = object_types_palette_and_pickup[real_type] & 0x7f;
     obj.energy = 0xff;  // matches &4b83 LDA #&ff / STA energy
+}
+
+// Debug-only exports for the "Wiring" overlay. Re-walks the same
+// switch_effects_table group scan process_switch_effects does, but only
+// records the tertiary_data_offset targets without mutating state.
+int switch_effect_targets(uint8_t effect_id, uint8_t* out, int max_out) {
+    const int N = static_cast<int>(sizeof(switch_effects_table));
+    int zeros_seen = 0;
+    const int required = static_cast<int>(effect_id) + 1;
+    int written = 0;
+    for (int idx = 0; idx < N && written < max_out; ++idx) {
+        uint8_t b = switch_effects_table[idx];
+        if (b == 0) {
+            ++zeros_seen;
+            if (zeros_seen > required) break;
+            continue;
+        }
+        if (zeros_seen != required) continue;
+        out[written++] = b;
+    }
+    return written;
+}
+
+bool transporter_destination(uint8_t destination,
+                             uint8_t& out_x, uint8_t& out_y) {
+    if (destination >= 16) return false;
+    out_x = transporter_destinations_x[destination];
+    out_y = transporter_destinations_y[destination];
+    return true;
 }
 
 } // namespace Behaviors

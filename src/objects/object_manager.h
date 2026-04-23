@@ -76,8 +76,16 @@ public:
     int find_free_primary_slot() const;
     int find_free_secondary_slot() const;
 
-    // Read-only view of the secondary slot array (for debug overlays etc.).
+    // View of the secondary slot array. The mutable overload is used by
+    // save/load to rewrite the whole pool.
     const SecondaryObject& secondary(int slot) const { return secondary_[slot]; }
+    SecondaryObject&       secondary(int slot)       { return secondary_[slot]; }
+
+    // Direct access to the tertiary data byte array for save/load. Size is
+    // fixed at 235 bytes (see the array member below).
+    uint8_t* tertiary_data_ptr()       { return tertiary_data_; }
+    const uint8_t* tertiary_data_ptr() const { return tertiary_data_; }
+    static constexpr int TERTIARY_DATA_SIZE = 235;
 
     // Check if an object is far from the activation anchor (see below).
     bool is_far_from_anchor(uint8_t obj_x, uint8_t obj_y, uint8_t distance) const;
@@ -97,6 +105,49 @@ public:
     }
     uint8_t activation_anchor_x() const { return activation_anchor_x_; }
     uint8_t activation_anchor_y() const { return activation_anchor_y_; }
+
+    // ========================================================================
+    // Cache-range radii (settable from exile.ini — see StartupConfig).
+    // ========================================================================
+    // check_demotion reads demote_distances_[x-1] (x in {1,2,3}); mapping:
+    //   [0] KEEP_AS_TERTIARY (statics — doors, switches)
+    //   [1] KEEP_AS_PRIMARY_FOR_LONGER, moving/airborne
+    //   [2] KEEP_AS_PRIMARY_FOR_LONGER, slow + supported
+    // promote_distance_ is used by promote_selective / promote_distance_check
+    // to decide whether a secondary is close enough to repromote.
+    void set_demote_distances(uint8_t tertiary, uint8_t moving,
+                               uint8_t settled) {
+        demote_distances_[0] = tertiary;
+        demote_distances_[1] = moving;
+        demote_distances_[2] = settled;
+    }
+    void set_promote_distance(uint8_t d) { promote_distance_ = d; }
+    uint8_t promote_distance() const { return promote_distance_; }
+
+    // ========================================================================
+    // Cache sizes (settable from exile.ini — see StartupConfig).
+    // ========================================================================
+    // The backing arrays are sized at compile time to the generous upper
+    // bounds in GameConstants; these setters dial down the effective
+    // "active size" used by create_object's slot search and promote_
+    // selective's shuffle. Iteration in collision and update loops still
+    // walks the whole backing array but skips inactive slots, so raising
+    // the active size above the 6502's 16 / 32 just makes more simultaneous
+    // primaries / secondaries possible without code changes.
+    void set_active_primary_slots(int n) {
+        if (n < 1) n = 1;  // need at least slot 0 (the player)
+        if (n > GameConstants::PRIMARY_OBJECT_SLOTS)
+            n = GameConstants::PRIMARY_OBJECT_SLOTS;
+        active_primary_slots_ = n;
+    }
+    void set_active_secondary_slots(int n) {
+        if (n < 1) n = 1;
+        if (n > GameConstants::SECONDARY_OBJECT_SLOTS)
+            n = GameConstants::SECONDARY_OBJECT_SLOTS;
+        active_secondary_slots_ = n;
+    }
+    int active_primary_slots()   const { return active_primary_slots_; }
+    int active_secondary_slots() const { return active_secondary_slots_; }
 
     // ========================================================================
     // Tertiary data byte access (used by the tile update routines)
@@ -144,6 +195,12 @@ public:
         debug_demotes_ = 0;
     }
 
+    // Initialise a primary-slot Object from the 6502 type tables. Used by
+    // `Game::init` to place the initial ROM-defined objects (TRIAX at
+    // slot 1, etc.) into specific slots, and by `create_object` /
+    // `promote_from_secondary` internally.
+    void init_object_from_type(Object& obj, ObjectType type);
+
 private:
     std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS> primary_;
     std::array<SecondaryObject, GameConstants::SECONDARY_OBJECT_SLOTS> secondary_;
@@ -163,8 +220,16 @@ private:
     uint8_t activation_anchor_x_ = 0;
     uint8_t activation_anchor_y_ = 0;
 
-    // Initialize object from type tables
-    void init_object_from_type(Object& obj, ObjectType type);
+    // Cache-range radii (settable via exile.ini through set_*). Defaults
+    // match the values we used to have hard-coded; see check_demotion /
+    // promote_selective in object_manager.cpp for how they're applied.
+    uint8_t demote_distances_[3] = { 12, 12, 4 };
+    uint8_t promote_distance_    = 4;
+
+    // Runtime cache sizes. Default to the 6502 ROM values so behaviour
+    // matches the original unless exile.ini raises them.
+    int active_primary_slots_   = 16;
+    int active_secondary_slots_ = 32;
 
     // Pack/unpack secondary compact format
     static uint8_t pack_energy_fractions(uint8_t energy, uint8_t x_frac, uint8_t y_frac);

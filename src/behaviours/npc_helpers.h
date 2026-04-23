@@ -20,6 +20,14 @@ struct UpdateContext {
     // Whistle state
     bool whistle_one_active;       // Whistle one played this frame
     uint8_t whistle_two_activator; // Slot of object that played whistle two (0xff = none)
+    // Per-whistle "collected" flags (ports of &0816 / &0817). update_
+    // collectable sets these to true when the corresponding WHISTLE_ONE /
+    // WHISTLE_TWO primary ends up in the player's held slot — mirrors the
+    // 6502's DEC player_collected[whistle_type] at &4b90. Game::apply_
+    // player_input then gates Y / U playback on these flags so an
+    // uncollected whistle is silent.
+    bool* whistle_one_collected;
+    bool* whistle_two_collected;
     // Pointer to Game::player_mushroom_timers_ [0]=red, [1]=blue. May be null.
     uint8_t* player_mushroom_timers;
     // Particle pool. Behaviors that want to spawn particles call
@@ -31,6 +39,11 @@ struct UpdateContext {
     // update_collectable consults this to know "the player is carrying me
     // right now → mark me collected and remove" (port of &4b88).
     uint8_t held_object_slot;
+    // &29d7 player_object_fired — slot the player fired (or 0xff when no
+    // object fired this frame). update_remote_control_device (&4351)
+    // reads this to emit aim particles; doors and transporters (&4c9e /
+    // &4dc8) compare against it via check_if_object_hit_by_remote_control.
+    uint8_t player_object_fired;
     // Slot index of the object whose update routine is currently running
     // (the 6502's &aa this_object). update_collectable compares against
     // held_object_slot to decide whether the player is carrying it.
@@ -70,8 +83,63 @@ void flee_player(Object& obj, const Object& player, int8_t speed);
 // Flip sprite to face movement direction
 void face_movement_direction(Object& obj);
 
-// Create a child projectile from this object
+// Create a child projectile from this object. Spawns at the parent's
+// position; caller must set velocity then call `offset_child_from_parent`
+// to push the bullet past the parent's AABB (skipping that step makes
+// the bullet spawn inside the parent's tile and explode on impact).
 int fire_projectile(Object& obj, ObjectType bullet_type, UpdateContext& ctx);
+
+// Port of create_child_object (&33b8-&342f) X/Y offset. Shifts `child`
+// from the parent's origin to the correct spawn point on the firing side
+// of the parent, with a relative-velocity pre-compensation so the next
+// frame's position is "past the edge". Must be called **after** setting
+// child velocity. No-op for non-atlas sprites.
+void offset_child_from_parent(Object& child, const Object& parent);
+
+// Produce a firing velocity toward `target` using the 6502's "diamond"
+// metric (|vx| + |vy| ≈ speed), so the direction stays proportional to
+// the delta rather than snapping to the 8 cardinals. Approximates
+// calculate_vector_from_magnitude_and_angle (&2357) via the angle from
+// `from` to `target` — good enough for turrets / robots aiming at the
+// player without pulling in the full firing-vector chain (&3355).
+void aim_toward(int8_t& vel_x, int8_t& vel_y,
+                const Object& from, const Object& target, uint8_t speed);
+
+// Port of &22cc calculate_angle_from_velocities. Converts a signed
+// (dx, dy) byte pair into the 6502's 8-bit angle convention
+// (0x00 = +x, 0x40 = +y, 0x80 = -x, 0xc0 = -y).
+uint8_t angle_from_deltas(int8_t dx, int8_t dy);
+
+// Port of &2357 calculate_vector_from_magnitude_and_angle. Produces a
+// signed (vx, vy) pair at the given angle with diamond magnitude — i.e.
+// |vx| + |vy| ranges from magnitude (at cardinals) to 2*magnitude (at
+// 45° angles). Matches the 6502's 5-iteration multiply-by-angle-bits.
+void vector_from_magnitude_and_angle(uint8_t magnitude, uint8_t angle,
+                                     int8_t& vx, int8_t& vy);
+
+// Port of &3355 calculate_firing_vector_from_distance. The full firing
+// chain — produces (vx, vy) aimed at `target` from `from`, with:
+//   * angle computed from source/target centres (&22a0)
+//   * gravity compensation proportional to flight time (&3362-&338c)
+//   * target-velocity leading (&3392-&339a)
+//
+// `firing_velocity_times_four` is the 6502's packed parameter; the
+// effective firing magnitude is velocity/4 and the *4 form is kept for
+// the final "not too fast" sanity check (&33a2).
+//
+// Returns true if the shot is viable. Returns false (leaving vx/vy
+// untouched) if the target is >=16 tiles away (&335c out-of-range) or
+// the final speed exceeds the cap (&33a2).
+bool compute_firing_vector(const Object& from, const Object& target,
+                           uint8_t firing_velocity_times_four,
+                           int8_t& vx, int8_t& vy);
+
+// Top-level firing helper matching &278a fire_at_target: picks a random
+// firing velocity in the 6502's `[0xb4, 0xf3]/4` range, then calls
+// compute_firing_vector. Returns true if the shot was computed; false
+// if RNG chose not to fire or the target is unreachable.
+bool fire_at_target(const Object& from, const Object& target,
+                    Random& rng, int8_t& vx, int8_t& vy);
 
 // Port of &2555 update_sprite_offset_using_velocities. Picks the larger
 // of |velocity_x|/|velocity_y|, divides by 16, adds 1 + obj.timer, and

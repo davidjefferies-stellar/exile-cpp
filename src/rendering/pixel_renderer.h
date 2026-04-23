@@ -3,10 +3,10 @@
 #include <cstdint>
 #include <memory>
 
-class FensterRenderer : public IRenderer {
+class PixelRenderer : public IRenderer {
 public:
-    FensterRenderer();
-    ~FensterRenderer() override;
+    PixelRenderer();
+    ~PixelRenderer() override;
 
     bool init() override;
     void shutdown() override;
@@ -37,6 +37,13 @@ public:
     bool aabb_overlay_enabled() const override;
     void render_aabb(Fixed8_8 world_x, Fixed8_8 world_y,
                      int w_units, int h_units, uint32_t rgb) override;
+    bool tile_grid_enabled()    const override;
+    bool object_tiers_enabled() const override;
+    bool map_mode_enabled()     const override;
+    bool switches_enabled()     const override;
+    bool transports_enabled()   const override;
+    void render_wire(uint8_t x1, uint8_t y1,
+                     uint8_t x2, uint8_t y2, uint32_t rgb) override;
 
 private:
     struct Impl;

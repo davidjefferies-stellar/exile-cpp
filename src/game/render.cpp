@@ -1,4 +1,5 @@
 #include "game/game.h"
+#include "behaviours/environment.h"
 #include "objects/object_data.h"
 #include "objects/object_tables.h"
 #include "rendering/debug_names.h"
@@ -7,6 +8,24 @@
 #include "world/tile_data.h"
 #include "world/water.h"
 #include <cstdio>
+
+// Find a live primary whose tertiary_slot matches `slot`. Returns the
+// primary's tile position via out params. Used by the Wiring overlay so
+// an animating door is wired from its current position, not its home
+// tile. The linear scan is fine here — PRIMARY_OBJECT_SLOTS is small
+// and the overlay is off by default.
+static bool find_primary_at_slot(const ObjectManager& mgr, uint8_t slot,
+                                 uint8_t& out_x, uint8_t& out_y) {
+    for (int j = 1; j < GameConstants::PRIMARY_OBJECT_SLOTS; j++) {
+        const Object& dst = mgr.object(j);
+        if (!dst.is_active()) continue;
+        if (dst.tertiary_slot != slot) continue;
+        out_x = dst.x.whole;
+        out_y = dst.y.whole;
+        return true;
+    }
+    return false;
+}
 
 void Game::render() {
     renderer_->begin_frame();
@@ -253,6 +272,8 @@ void Game::render() {
         info.flip_v = obj.is_flipped_v();
         info.visible = true;
         info.type = obj.type;
+        info.teleport_timer = (obj.flags & ObjectFlags::TELEPORTING)
+                              ? obj.timer : 0;
 
         renderer_->render_object(obj.x, obj.y, info);
     }
@@ -360,9 +381,129 @@ void Game::render() {
                 if (obj_type < static_cast<uint8_t>(ObjectType::COUNT)) {
                     label = object_type_name(static_cast<ObjectType>(obj_type));
                 } else {
+                    // Skip common environmental tile types — they'd flood
+                    // the overlay with POSSIBLE_LEAF / CONSTANT_WIND on
+                    // nearly every tile and drown out the interesting
+                    // tertiary entries (doors, switches, pipes, etc.).
+                    if (ttype == static_cast<uint8_t>(TileType::POSSIBLE_LEAF) ||
+                        ttype == static_cast<uint8_t>(TileType::CONSTANT_WIND)) {
+                        continue;
+                    }
                     label = tile_type_name(ttype);
                 }
                 renderer_->render_debug_marker(wx, wy, 0xDD3333, label);
+            }
+        }
+    }
+
+    // Wiring overlay: enumerate every switch / transporter in the level
+    // (tertiary + primary) and draw a wire from each to its target(s).
+    // Sources come from two places:
+    //  - Active primaries of type SWITCH / TRANSPORTER_BEAM (live
+    //    position, tracks motion).
+    //  - Tertiary entries of tile-type SWITCH (0x08) or TRANSPORTER (0x01)
+    //    whose slot isn't currently owned by a primary; we recover
+    //    tile_y by scanning the landscape column for the matching type.
+    // Targets resolve the same way via resolve_data_offset_to_tile.
+    // Green = switch→door, cyan = transporter→destination. The lookup is
+    // O(n * 256) per frame but only runs when the checkbox is on.
+    {
+        bool show_switches   = renderer_->switches_enabled();
+        bool show_transports = renderer_->transports_enabled();
+        if (show_switches || show_transports) {
+            // --- Sources from active primaries ---------------------------
+            for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+                const Object& src = object_mgr_.object(i);
+                if (!src.is_active()) continue;
+
+                if (show_switches && src.type == ObjectType::SWITCH) {
+                    uint8_t effect_id = static_cast<uint8_t>(
+                        src.tertiary_data_offset >> 3);
+                    uint8_t targets[8];
+                    int n = Behaviors::switch_effect_targets(
+                        effect_id, targets, 8);
+                    for (int t = 0; t < n; t++) {
+                        uint8_t dx, dy;
+                        if (find_primary_at_slot(object_mgr_, targets[t],
+                                                  dx, dy) ||
+                            resolve_data_offset_to_tile(
+                                landscape_, targets[t], dx, dy)) {
+                            renderer_->render_wire(src.x.whole, src.y.whole,
+                                                   dx, dy, 0x33DD33);
+                        }
+                    }
+                } else if (show_transports &&
+                           src.type == ObjectType::TRANSPORTER_BEAM) {
+                    uint8_t dest = static_cast<uint8_t>(
+                        (src.tertiary_data_offset >> 1) & 0x0f);
+                    uint8_t dx, dy;
+                    if (Behaviors::transporter_destination(dest, dx, dy)) {
+                        renderer_->render_wire(src.x.whole, src.y.whole,
+                                               dx, dy, 0x33CCDD);
+                    }
+                }
+            }
+
+            // --- Sources still in tertiary storage -----------------------
+            // Walk tertiary ranges for SWITCH (0x08) and TRANSPORTER
+            // (0x01). Each is gated on its own checkbox — skip the range
+            // entirely when the checkbox is off to avoid useless landscape
+            // scans. For entries whose slot is already primary (handled
+            // above) we skip here; otherwise recover tile_y from a column
+            // scan and read the live data byte from tertiary storage.
+            struct SourceType {
+                int tile_type; uint32_t rgb; bool enabled;
+            };
+            const SourceType SOURCES[] = {
+                { 0x08, 0x33DD33, show_switches   },   // SWITCH
+                { 0x01, 0x33CCDD, show_transports },   // TRANSPORTER
+            };
+            for (const SourceType& st : SOURCES) {
+                if (!st.enabled) continue;
+                int range_start = tertiary_ranges[st.tile_type];
+                int range_end   = tertiary_ranges[st.tile_type + 1];
+                for (int i = range_start; i < range_end; i++) {
+                    uint8_t data_offset = static_cast<uint8_t>(
+                        i + static_cast<int8_t>(
+                                tertiary_data_offset[st.tile_type]));
+
+                    uint8_t sx_primary, sy_primary;
+                    if (find_primary_at_slot(object_mgr_, data_offset,
+                                              sx_primary, sy_primary)) continue;
+
+                    uint8_t sx, sy;
+                    if (!find_tertiary_tile(landscape_, st.tile_type, i,
+                                             sx, sy)) continue;
+
+                    uint8_t data = static_cast<uint8_t>(
+                        object_mgr_.tertiary_data_byte(data_offset) & 0x7f);
+
+                    if (st.tile_type == 0x08) {
+                        uint8_t effect_id = static_cast<uint8_t>(data >> 3);
+                        uint8_t targets[8];
+                        int n = Behaviors::switch_effect_targets(
+                            effect_id, targets, 8);
+                        for (int t = 0; t < n; t++) {
+                            uint8_t dx, dy;
+                            if (find_primary_at_slot(object_mgr_,
+                                                      targets[t],
+                                                      dx, dy) ||
+                                resolve_data_offset_to_tile(
+                                    landscape_, targets[t], dx, dy)) {
+                                renderer_->render_wire(sx, sy, dx, dy,
+                                                       st.rgb);
+                            }
+                        }
+                    } else {
+                        uint8_t dest =
+                            static_cast<uint8_t>((data >> 1) & 0x0f);
+                        uint8_t dx, dy;
+                        if (Behaviors::transporter_destination(
+                                dest, dx, dy)) {
+                            renderer_->render_wire(sx, sy, dx, dy, st.rgb);
+                        }
+                    }
+                }
             }
         }
     }

@@ -155,7 +155,7 @@ inline const char* object_type_name(ObjectType t) {
         case ObjectType::POWER_POD: return "POWER_POD";
         case ObjectType::EMPTY_FLASK: return "EMPTY_FLASK";
         case ObjectType::FULL_FLASK: return "FULL_FLASK";
-        case ObjectType::REMOTE_CONTROL_DEVICE: return "REMOTE_CTRL";
+        case ObjectType::REMOTE_CONTROL_DEVICE: return "REMOTE_CONTROL_DEVICE";
         case ObjectType::CANNON_CONTROL_DEVICE: return "CANNON_CTRL";
         case ObjectType::INACTIVE_GRENADE: return "INACTIVE_GRENADE";
         case ObjectType::CYAN_YELLOW_GREEN_KEY: return "CYG_KEY";

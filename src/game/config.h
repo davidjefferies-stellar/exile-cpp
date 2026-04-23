@@ -28,6 +28,51 @@ struct StartupConfig {
     // are ObjectType enum values (0..0x64). 0xff means "empty".
     std::array<uint8_t, 5> pockets = { 0xff, 0xff, 0xff, 0xff, 0xff };
     uint8_t                pockets_used = 0;   // number of filled slots
+
+    // [whistles] — collected flags for the two whistles (ports of &0816 /
+    // &0817 player_whistle_one_collected / player_whistle_two_collected).
+    // When true, Y / U trigger whistle_one_active / whistle_two_activator
+    // immediately without requiring the player to pick up the primary
+    // whistle object. Default false (matches the 6502 ROM state — both
+    // whistles start uncollected); exile.ini overrides to true for
+    // convenience during development.
+    bool whistle_one_collected = false;
+    bool whistle_two_collected = false;
+
+    // [distances] — activation-ring radii (in tiles) for the primary /
+    // secondary / tertiary caches. Each field maps to a specific branch of
+    // the 6502 lifecycle machinery; see object_manager.cpp:check_demotion
+    // (&1bb7) and tertiary_spawn.cpp for details. The defaults below are
+    // our port's working values — the 6502 ROM values are noted in the
+    // comments but not all are faithful (KEEP_AS_TERTIARY bumped 1→12 to
+    // cope with our wider viewport).
+    //
+    //   demote_tertiary  : primary → tertiary for statics (doors, switches).
+    //                      6502: 1. Port: 12 to avoid spawn/demote churn.
+    //   demote_moving    : primary → (secondary | tertiary) for moving /
+    //                      airborne KEEP_AS_PRIMARY_FOR_LONGER objects.
+    //                      6502: 12. Port: 12.
+    //   demote_settled   : same flag but the object is slow AND supported.
+    //                      6502: 4. Port: 4.
+    //   promote_secondary: secondary → primary. 6502: 4. Port: 4.
+    //   spawn_tertiary   : tile tertiary → primary (render-time spawn
+    //                      gate in spawn_tertiary_object). Port: 4,
+    //                      matched to demote_settled so settled objects
+    //                      don't oscillate between the two states.
+    uint8_t demote_tertiary   = 12;
+    uint8_t demote_moving     = 12;
+    uint8_t demote_settled    = 4;
+    uint8_t promote_secondary = 4;
+    uint8_t spawn_tertiary    = 4;
+
+    // [caches] — how many primary and secondary slots the world is
+    // allowed to use at once. Defaults match the 6502 ROM (16 / 32);
+    // exile.ini can raise them up to the compile-time ceiling in
+    // GameConstants::PRIMARY_OBJECT_SLOTS / SECONDARY_OBJECT_SLOTS.
+    // Setting these lower than their defaults is legal but of course
+    // restricts how much stuff can be live simultaneously.
+    int primary_slots   = 16;
+    int secondary_slots = 32;
 };
 
 // Load the config from the given path. Returns the populated struct;

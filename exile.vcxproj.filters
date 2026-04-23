@@ -13,20 +13,14 @@
     <Filter Include="src\objects">
       <UniqueIdentifier>{a0010004-0000-0000-0000-00000000001a}</UniqueIdentifier>
     </Filter>
-    <Filter Include="src\ai">
+    <Filter Include="src\behaviours">
       <UniqueIdentifier>{a0010005-0000-0000-0000-00000000001a}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="src\ai\behaviors">
-      <UniqueIdentifier>{a0010006-0000-0000-0000-00000000001a}</UniqueIdentifier>
     </Filter>
     <Filter Include="src\player">
       <UniqueIdentifier>{a0010007-0000-0000-0000-00000000001a}</UniqueIdentifier>
     </Filter>
     <Filter Include="src\rendering">
       <UniqueIdentifier>{a0010008-0000-0000-0000-00000000001a}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="src\rendering\fenster">
-      <UniqueIdentifier>{a0010009-0000-0000-0000-00000000001a}</UniqueIdentifier>
     </Filter>
     <Filter Include="src\particles">
       <UniqueIdentifier>{a001000a-0000-0000-0000-00000000001a}</UniqueIdentifier>
@@ -63,17 +57,17 @@
     <ClCompile Include="src\objects\held_object.cpp">            <Filter>src\objects</Filter> </ClCompile>
     <ClCompile Include="src\objects\weapon.cpp">                 <Filter>src\objects</Filter> </ClCompile>
 
-    <!-- src\ai\ -->
-    <ClCompile Include="src\ai\npc_helpers.cpp">                 <Filter>src\ai</Filter> </ClCompile>
-    <ClCompile Include="src\ai\mood.cpp">                        <Filter>src\ai</Filter> </ClCompile>
-    <ClCompile Include="src\ai\behavior_dispatch.cpp">           <Filter>src\ai</Filter> </ClCompile>
+    <!-- src\behaviours\ -->
+    <ClCompile Include="src\behaviours\npc_helpers.cpp">                 <Filter>src\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\mood.cpp">                        <Filter>src\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\behavior_dispatch.cpp">           <Filter>src\behaviours</Filter> </ClCompile>
 
-    <!-- src\ai\behaviors\ -->
-    <ClCompile Include="src\ai\behaviors\projectile.cpp">        <Filter>src\ai\behaviors</Filter> </ClCompile>
-    <ClCompile Include="src\ai\behaviors\creature.cpp">          <Filter>src\ai\behaviors</Filter> </ClCompile>
-    <ClCompile Include="src\ai\behaviors\robot.cpp">             <Filter>src\ai\behaviors</Filter> </ClCompile>
-    <ClCompile Include="src\ai\behaviors\environment.cpp">       <Filter>src\ai\behaviors</Filter> </ClCompile>
-    <ClCompile Include="src\ai\behaviors\collectable.cpp">       <Filter>src\ai\behaviors</Filter> </ClCompile>
+    <!-- src\behaviours\ -->
+    <ClCompile Include="src\behaviours\projectile.cpp">        <Filter>src\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\creature.cpp">          <Filter>src\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\robot.cpp">             <Filter>src\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\environment.cpp">       <Filter>src\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\collectable.cpp">       <Filter>src\behaviours</Filter> </ClCompile>
 
     <!-- src\player\ -->
     <ClCompile Include="src\player\input.cpp">                   <Filter>src\player</Filter> </ClCompile>
@@ -83,10 +77,7 @@
     <ClCompile Include="src\rendering\sprite_atlas.cpp">         <Filter>src\rendering</Filter> </ClCompile>
     <ClCompile Include="src\rendering\sprite_data.cpp">          <Filter>src\rendering</Filter> </ClCompile>
     <ClCompile Include="src\rendering\palette.cpp">              <Filter>src\rendering</Filter> </ClCompile>
-
-    <!-- src\rendering\fenster\ -->
-    <ClCompile Include="src\rendering\fenster\fenster_renderer.cpp">
-                                                                 <Filter>src\rendering\fenster</Filter> </ClCompile>
+    <ClCompile Include="src\rendering\pixel_renderer.cpp">       <Filter>src\rendering</Filter> </ClCompile>
 
     <!-- src\particles\ -->
     <ClCompile Include="src\particles\particle_system.cpp">      <Filter>src\particles</Filter> </ClCompile>
@@ -136,10 +127,7 @@
     <ClInclude Include="src\rendering\palette.h">                <Filter>src\rendering</Filter> </ClInclude>
     <ClInclude Include="src\rendering\font8x8.h">                <Filter>src\rendering</Filter> </ClInclude>
     <ClInclude Include="src\rendering\debug_names.h">            <Filter>src\rendering</Filter> </ClInclude>
-
-    <!-- src\rendering\fenster\ -->
-    <ClInclude Include="src\rendering\fenster\fenster_renderer.h">
-                                                                 <Filter>src\rendering\fenster</Filter> </ClInclude>
+    <ClInclude Include="src\rendering\pixel_renderer.h">         <Filter>src\rendering</Filter> </ClInclude>
 
     <!-- src\particles\ -->
     <ClInclude Include="src\particles\particle_system.h">        <Filter>src\particles</Filter> </ClInclude>
@@ -147,17 +135,17 @@
     <!-- deps\ -->
     <ClInclude Include="deps\fenster.h">                         <Filter>deps</Filter> </ClInclude>
 
-    <!-- src\ai\ -->
-    <ClInclude Include="src\ai\npc_helpers.h">                   <Filter>src\ai</Filter> </ClInclude>
-    <ClInclude Include="src\ai\mood.h">                          <Filter>src\ai</Filter> </ClInclude>
-    <ClInclude Include="src\ai\behavior_dispatch.h">             <Filter>src\ai</Filter> </ClInclude>
+    <!-- src\behaviours\ -->
+    <ClInclude Include="src\behaviours\npc_helpers.h">                   <Filter>src\behaviours</Filter> </ClInclude>
+    <ClInclude Include="src\behaviours\mood.h">                          <Filter>src\behaviours</Filter> </ClInclude>
+    <ClInclude Include="src\behaviours\behavior_dispatch.h">             <Filter>src\behaviours</Filter> </ClInclude>
 
-    <!-- src\ai\behaviors\ -->
-    <ClInclude Include="src\ai\behaviors\projectile.h">          <Filter>src\ai\behaviors</Filter> </ClInclude>
-    <ClInclude Include="src\ai\behaviors\creature.h">            <Filter>src\ai\behaviors</Filter> </ClInclude>
-    <ClInclude Include="src\ai\behaviors\robot.h">               <Filter>src\ai\behaviors</Filter> </ClInclude>
-    <ClInclude Include="src\ai\behaviors\environment.h">         <Filter>src\ai\behaviors</Filter> </ClInclude>
-    <ClInclude Include="src\ai\behaviors\collectable.h">         <Filter>src\ai\behaviors</Filter> </ClInclude>
+    <!-- src\behaviours\ -->
+    <ClInclude Include="src\behaviours\projectile.h">          <Filter>src\behaviours</Filter> </ClInclude>
+    <ClInclude Include="src\behaviours\creature.h">            <Filter>src\behaviours</Filter> </ClInclude>
+    <ClInclude Include="src\behaviours\robot.h">               <Filter>src\behaviours</Filter> </ClInclude>
+    <ClInclude Include="src\behaviours\environment.h">         <Filter>src\behaviours</Filter> </ClInclude>
+    <ClInclude Include="src\behaviours\collectable.h">         <Filter>src\behaviours</Filter> </ClInclude>
 
     <!-- src\player\ -->
     <ClInclude Include="src\player\input.h">                     <Filter>src\player</Filter> </ClInclude>
@@ -168,8 +156,9 @@
   </ItemGroup>
   <ItemGroup>
     <!-- Non-code files at the project root — left without <Filter> so
-         they appear at the top level in Solution Explorer. -->
+         they appear at the top level in Solution Explorer. CLAUDE.md is
+         omitted on purpose: it's per-dev and .gitignore'd, not part of
+         the shared solution. -->
     <None Include="exile.ini" />
-    <None Include="CLAUDE.md" />
   </ItemGroup>
 </Project>

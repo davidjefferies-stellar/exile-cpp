@@ -4,6 +4,14 @@ This repo is a faithful port of the BBC Micro game **Exile** (6502) to C++.
 The 6502 disassembly at `../exile-standard-disassembly.txt` (one directory up
 from the project root) is the authoritative specification. Match it closely.
 
+**Keep faithful to the original 6502.** Before writing or changing any
+behaviour — movement, collision, AI, rendering, sound, events — find the
+equivalent routine in the disassembly and port it. If no 6502 routine
+exists for what I'm asking, say so and ask before inventing one. When a
+port would diverge from the 6502 for practical reasons (e.g. wider
+viewport, shared helper, C++ idiom) call it out explicitly in the code
+comment so we can tell 6502-derived behaviour from port-only code.
+
 ## 6502 porting rules
 
 - **Cite 6502 addresses** in ported code. Function comments should name the
@@ -31,12 +39,12 @@ src/
   world/        Landscape generation, tertiary resolution, water, tile data.
   objects/      Primary / secondary / tertiary object storage, physics,
                 collision. No AI, no rendering.
-  ai/
-    behaviors/  Per-type update routines (creature.cpp, robot.cpp,
-                projectile.cpp, environment.cpp). One .cpp per behaviour
-                family; dispatch lives in behavior_dispatch.cpp.
-    npc_helpers.{h,cpp}  Shared helpers used across behaviours
-                         (seek_player, cancel_gravity, …).
+  behaviours/   Per-type update routines (creature.cpp, robot.cpp,
+                projectile.cpp, environment.cpp, collectable.cpp),
+                shared helpers (npc_helpers.{h,cpp}, mood.{h,cpp})
+                and the dispatch table (behavior_dispatch.cpp). Flat —
+                no nested subdirectories. The `include` paths are
+                `"behaviours/xxx.h"`.
   game/         Top-level loop orchestration. game.cpp ≤ ~200 lines —
                 if it grows, split a concern into a sibling TU
                 (e.g. tertiary_spawn.cpp, player_motion.cpp, render.cpp).
@@ -46,7 +54,7 @@ src/
 ```
 
 Put new ported behaviour in the directory that matches the 6502 region
-(`ai/behaviors/*` for update routines, `world/*` for tile / landscape
+(`behaviours/*` for update routines, `world/*` for tile / landscape
 code, etc.). Don't stuff everything into `game/`.
 
 ## C++ style
@@ -55,6 +63,10 @@ code, etc.). Don't stuff everything into `game/`.
   comments for invariants, non-obvious 6502 references, workarounds, and
   the reason something was chosen over an alternative. One short line
   unless an invariant genuinely needs more.
+- **No lambdas.** Extract a helper into a `static` free function at TU
+  scope (or a method if it touches member state) instead. Lambdas shadow
+  the 6502 routine name, make grep harder, and hide the function's
+  signature in the middle of another routine.
 - Don't reformat or rename unrelated code in an edit. Minimal diffs.
 - Prefer editing existing files over creating new ones.
 - Don't create `README.md` / documentation files unless I ask.
@@ -80,30 +92,47 @@ Authoritative list lives in `src/player/input.cpp`. Current map:
 ```
 arrow keys   move (with jetpack engaged: thrust)
 Z            toggle jetpack
-X            fire selected weapon
+Space        fire selected weapon
+Tab          turn player around (swap facing)
+Left Ctrl    lie down (toggle)
+Right Ctrl   jetpack booster (held = 2x acceleration)
 ,            pick up touching object
 M            drop held object straight down
 .            throw held object (drop + horizontal kick)
 Enter        legacy pickup/drop toggle
 S            store held in pocket
-R            retrieve top of pocket stack
+G            retrieve top of pocket stack (6502 &0c handle_retrieving_object)
+R            remember current position   (6502 &1b handle_remembering_position)
+T            teleport to remembered pos  (6502 &1a handle_teleporting)
 I / K / O    aim centre / down / up
 1..5         select weapon slot
 Y / U        play whistle one / two
-\            toggle map-activation mode (camera centre vs player)
 P            pause world updates (input + render still run)
 Q            quit
 ```
 
-Renderer-level toggles handled in `fenster_renderer.cpp`:
+The debug HUD strip across the bottom of the window holds click-to-
+toggle checkboxes (renderer-local state, read via IRenderer::\*_enabled):
 
 ```
-G            tile grid + activation rings + tile-tier overlay
-T            object-tier swatches
+Grid        tile grid + activation rings + tile-tier overlay
+Map mode    activation anchor follows camera instead of player
+Debug       text overlays (tile-info banner, selected-tile diagnostics).
+            Independent of Grid / Map mode so the overlays can be
+            silenced without losing the visual debug rendering.
+Object lbl  primary / secondary / tertiary tier swatches
+Switches    switch→door wires (green)
+Transports  transporter→destination wires (cyan)
+```
+
+Other renderer toggles stay on keys:
+
+```
 B            pixel AABBs (collision boxes)
 mouse wheel  zoom
 right-drag   pan camera (map mode)
 left-click   select tile, populate top-right tile-info overlay
+             (click in bottom HUD toggles a checkbox instead)
 ```
 
 If you change a binding, update this section. If you're tempted to

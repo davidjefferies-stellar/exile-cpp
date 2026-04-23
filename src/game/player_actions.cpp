@@ -1,8 +1,37 @@
 #include "game/game.h"
 #include "objects/held_object.h"
 #include "objects/weapon.h"
+#include "behaviours/npc_helpers.h"
 #include "rendering/sprite_atlas.h"
 #include <algorithm>
+
+// Port of &34b4 store_object. Pocket the currently-held primary; drain
+// it into the jetpack instead if it's a power pod. Returns true if the
+// held slot was consumed. No-op if nothing is held, the sprite is too
+// tall (>= 8 rows, &34c4) to pocket, or all 5 pockets are already full.
+bool Game::try_store_held(Object& player) {
+    if (held_object_slot_ >= 0x80) return false;
+    int slot = held_object_slot_;
+    Object& held = object_mgr_.object(slot);
+    uint8_t sprite_id = held.sprite;
+    if (sprite_id > 0x7c || sprite_atlas[sprite_id].h >= 8) return false;
+    uint8_t ot = static_cast<uint8_t>(held.type);
+    if (ot == static_cast<uint8_t>(ObjectType::POWER_POD)) {
+        // &34cd not_power_pod: power pods feed the jetpack, not a pocket.
+        uint32_t e = static_cast<uint32_t>(weapon_energy_[0]) + 0x800u;
+        weapon_energy_[0] = (e > 0xFFFFu) ? 0xFFFFu
+                                          : static_cast<uint16_t>(e);
+    } else if (pockets_used_ < 5) {
+        for (int i = 4; i > 0; i--) pockets_[i] = pockets_[i - 1];
+        pockets_[0] = ot;
+        pockets_used_++;
+    } else {
+        return false;  // Pockets full — keep holding.
+    }
+    HeldObject::drop(held, player, held_object_slot_);
+    object_mgr_.remove_object(slot);
+    return true;
+}
 
 // Input-driven half of the original's update_player (&37xx…). Emits the
 // frame's acceleration vector (which integrate_player_motion will feed
@@ -13,14 +42,48 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     accel_x = 0;
     accel_y = 0;
 
-    if (inp.move_left)  accel_x = -4;
-    if (inp.move_right) accel_x = 4;
+    // Tab: turn the player around (port of &1e19 handle_swapping_
+    // direction — the 6502 action table's &17 entry). Edge-triggered so
+    // holding Tab doesn't spin the facing every frame.
+    {
+        bool down = inp.turn_around;
+        if (down && !turn_around_key_prev_) {
+            player.flags ^= ObjectFlags::FLIP_HORIZONTAL;
+        }
+        turn_around_key_prev_ = down;
+    }
+
+    // Left Ctrl: toggle lying down (port of &2c7a handle_lying_down, the
+    // 6502's &16 action). Edge-triggered.
+    {
+        bool down = inp.lie_down;
+        if (down && !lie_down_prev_) {
+            player_lying_down_ = !player_lying_down_;
+        }
+        lie_down_prev_ = down;
+    }
+
+    // Right Ctrl: jetpack booster (port of &2c81 handle_using_booster,
+    // the 6502's &15 action). Held-key — while down, acceleration gets
+    // a multiplier; the 6502 uses it in the jumping and jetpack-thrust
+    // paths to increase max velocity (&3ba1 LDA #&f0 / &3ba3 ADC weight).
+    const int accel_scale = inp.boost ? 2 : 1;
+
+    if (inp.move_left)  accel_x = static_cast<int8_t>(-4 * accel_scale);
+    if (inp.move_right) accel_x = static_cast<int8_t>( 4 * accel_scale);
 
     if (inp.jetpack || inp.move_up) {
-        accel_y = -6; // Thrust upward
+        accel_y = static_cast<int8_t>(-6 * accel_scale); // Thrust upward
     }
     if (inp.move_down) {
-        accel_y = 2;
+        accel_y = static_cast<int8_t>(2 * accel_scale);
+    }
+
+    // Lying down disables normal walking acceleration (the 6502 clears
+    // the walking state and lets gravity take over).
+    if (player_lying_down_) {
+        accel_x = 0;
+        if (accel_y < 0) accel_y = 0;  // can't stand up mid-jump
     }
 
     // Port of &1f3d add_jetpack_thrust_particles: emit one jetpack
@@ -77,11 +140,27 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         }
     }
 
-    // Weapon firing. Unlike "pickup/drop", firing isn't gated on holding an
-    // object — the selected weapon fires its own bullets regardless.
-    if (inp.fire) {
-        Weapon::fire(object_mgr_, player, player_weapon_, player_aim_angle_,
-                     weapon_energy_[player_weapon_]);
+    // &2d33 handle_firing with the &2d36-&2d3b "BPL leave" branch
+    // faithfully applied: firing while holding an object doesn't launch a
+    // bullet — it sets `player_object_fired = held_slot` instead. Doors,
+    // transporters and the RCD itself read that flag to detect "player
+    // aimed the RCD at me". The flag lives for one frame; Game::run
+    // clears it back to 0xff at the end of each tick.
+    //
+    // SPACE is `repeat = no` in the 6502 action table at &0d (line 3572
+    // of the disassembly) — one press fires one bullet. Gate on the
+    // 0→1 edge so holding the key doesn't spam bullets every frame
+    // and drain the weapon ammo in a tenth of a second.
+    bool fire_down = inp.fire;
+    bool fire_edge = fire_down && !fire_key_prev_;
+    fire_key_prev_ = fire_down;
+    if (fire_edge) {
+        if (held_object_slot_ < 0x80) {
+            player_object_fired_ = held_object_slot_;
+        } else {
+            Weapon::fire(object_mgr_, player, player_weapon_, player_aim_angle_,
+                         weapon_energy_[player_weapon_]);
+        }
     }
 
     // Inventory actions are split across three keys:
@@ -107,24 +186,78 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         // of the ASL/LSR at &4ba1).
         touched.energy &= 0x7f;
     };
-    auto drop_now = [&](int8_t throw_vx) {
+    auto drop_now = [&]() {
         if (held_object_slot_ >= 0x80) return;
         Object& held = object_mgr_.object(held_object_slot_);
         HeldObject::drop(held, player, held_object_slot_);
-        if (throw_vx != 0) {
-            // Throw: hand off the player's velocity plus the kick. A
-            // small upward bias (-3) gives the object enough air time
-            // to clear the player's sprite before landing.
-            int new_vx = int(player.velocity_x) + int(throw_vx);
-            if (new_vx >  127) new_vx =  127;
-            if (new_vx < -128) new_vx = -128;
-            held.velocity_x = static_cast<int8_t>(new_vx);
-            held.velocity_y = static_cast<int8_t>(
-                std::max(-30, int(player.velocity_y) - 3));
-            // Throwing also disturbs collectables so they don't snap
-            // back to the spawn position mid-flight.
-            held.energy &= 0x7f;
+    };
+
+    // Port of &32d9 handle_throwing_object. The throw goes in the
+    // player's current aim direction (with facing flip applied) at a
+    // magnitude that depends on the object's weight — lighter things
+    // fly further, heavy things barely clear the player. Plus a random
+    // 0-7 jitter on the magnitude. If the player is airborne, the
+    // player's own velocity is folded into the throw vector (both axes
+    // for vx, only when airborne for vy) so you can "throw while
+    // jumping" and the object inherits momentum.
+    auto throw_now = [&]() {
+        if (held_object_slot_ >= 0x80) return;
+        Object& held = object_mgr_.object(held_object_slot_);
+
+        // &32d9 — calculate_firing_vector is called first for side-
+        // effects (setting &b5 = angle), then immediately overridden
+        // below with a weight-based magnitude. We skip the side-effect
+        // call because our vector_from_magnitude_and_angle is pure.
+
+        // &311d player_aiming_angle_with_flip: mirror the aim angle
+        // across the vertical axis when facing left. Bit 7 is preserved
+        // by the EOR #&7f (only bits 0-6 flip), then +1 so 0x00 → 0x80
+        // exactly (right → left).
+        uint8_t angle = player_aim_angle_;
+        if (player.is_flipped_h()) {
+            angle = static_cast<uint8_t>((angle ^ 0x7f) + 1);
         }
+
+        // &32d2 throwing_velocities_by_weight_table: magnitude falls
+        // off for heavier objects. Indexed by the held item's weight.
+        static constexpr uint8_t THROW_MAG_BY_WEIGHT[7] = {
+            0x20, 0x20, 0x20, 0x20, 0x20, 0x10, 0x08,
+        };
+        uint8_t w = held.weight();
+        if (w > 6) w = 6;
+
+        // &32e9-&32ee: random 0..7 added to base magnitude.
+        uint8_t base = THROW_MAG_BY_WEIGHT[w];
+        uint8_t mag  = static_cast<uint8_t>(base + (rng_.next() & 0x07));
+
+        // &32f1 calculate_vector_from_magnitude_and_angle.
+        int8_t throw_vx = 0, throw_vy = 0;
+        NPC::vector_from_magnitude_and_angle(mag, angle, throw_vx, throw_vy);
+
+        HeldObject::drop(held, player, held_object_slot_);
+
+        // &32f4 BIT this_object_any_bottom_collision — if the player is
+        // airborne, add the player's velocity_y to the throw's y so the
+        // object carries the player's vertical momentum. If supported,
+        // use the throw's y alone.
+        int new_vy = int(throw_vy);
+        if (!(player.flags & ObjectFlags::SUPPORTED)) {
+            new_vy += int(player.velocity_y);
+        }
+        if (new_vy >  127) new_vy =  127;
+        if (new_vy < -128) new_vy = -128;
+        held.velocity_y = static_cast<int8_t>(new_vy);
+
+        // &3303 — always add the player's velocity_x to the throw's vx.
+        int new_vx = int(throw_vx) + int(player.velocity_x);
+        if (new_vx >  127) new_vx =  127;
+        if (new_vx < -128) new_vx = -128;
+        held.velocity_x = static_cast<int8_t>(new_vx);
+
+        // Throwing disturbs collectables so they don't snap back to
+        // spawn mid-flight (port of the &4ba1 ASL/LSR on energy's high
+        // bit, reused here for the thrown-object case).
+        held.energy &= 0x7f;
     };
 
     // ENTER kept as a backwards-compat toggle — pickup if not holding,
@@ -133,7 +266,7 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     bool pd_edge = pd_down && !pickup_drop_key_prev_;
     pickup_drop_key_prev_ = pd_down;
     if (pd_edge) {
-        if (held_object_slot_ < 0x80) drop_now(0);
+        if (held_object_slot_ < 0x80) drop_now();
         else                          pickup_now();
     }
 
@@ -145,61 +278,29 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     bool drop_down = inp.drop;
     bool drop_edge = drop_down && !drop_key_prev_;
     drop_key_prev_ = drop_down;
-    if (drop_edge) drop_now(0);
+    if (drop_edge) drop_now();
 
     bool throw_down = inp.throw_obj;
     bool throw_edge = throw_down && !throw_key_prev_;
     throw_key_prev_ = throw_down;
-    if (throw_edge) {
-        // Throw kick is signed in the player's facing direction. 0x40
-        // is roughly four pixels per frame in our fixed-point velocity
-        // units — fast enough to carry the object a few tiles before
-        // friction / collision stop it.
-        int8_t kick = player.is_flipped_h() ? -0x40 : 0x40;
-        drop_now(kick);
-    }
+    if (throw_edge) throw_now();
 
     // Pocket store/retrieve — port of &34b4 store_object and &34f8
     // handle_retrieving_object. Store: push held object type onto pockets[0],
     // shuffling existing entries down. Retrieve: store current held first
     // (so R cycles), then pull pockets[pockets_used-1] back as a new primary
     // and hold it.
-    auto try_store_held = [&]() -> bool {
-        if (held_object_slot_ >= 0x80) return false;
-        int slot = held_object_slot_;
-        Object& held = object_mgr_.object(slot);
-        // &34c4: objects with sprite height >= 8 rows can't be pocketed.
-        uint8_t sprite_id = held.sprite;
-        if (sprite_id > 0x7c || sprite_atlas[sprite_id].h >= 8) return false;
-        uint8_t ot = static_cast<uint8_t>(held.type);
-        if (ot == static_cast<uint8_t>(ObjectType::POWER_POD)) {
-            // &34cd not_power_pod: power pods feed the jetpack, not a pocket.
-            uint32_t e = static_cast<uint32_t>(weapon_energy_[0]) + 0x800u;
-            weapon_energy_[0] = (e > 0xFFFFu) ? 0xFFFFu
-                                              : static_cast<uint16_t>(e);
-        } else if (pockets_used_ < 5) {
-            for (int i = 4; i > 0; i--) pockets_[i] = pockets_[i - 1];
-            pockets_[0] = ot;
-            pockets_used_++;
-        } else {
-            return false;  // Pockets full — keep holding.
-        }
-        HeldObject::drop(held, player, held_object_slot_);
-        object_mgr_.remove_object(slot);
-        return true;
-    };
-
     bool store_down = inp.store;
     bool store_edge = store_down && !store_key_prev_;
     store_key_prev_ = store_down;
     if (store_edge) {
-        try_store_held();
+        try_store_held(player);
     }
     bool retrieve_down = inp.retrieve;
     bool retrieve_edge = retrieve_down && !retrieve_key_prev_;
     retrieve_key_prev_ = retrieve_down;
     if (retrieve_edge) {
-        try_store_held();  // Mirror &34f8: store first so R cycles pockets.
+        try_store_held(player);  // Mirror &34f8: store first so G cycles pockets.
         if (held_object_slot_ >= 0x80 && pockets_used_ > 0) {
             uint8_t ot = pockets_[pockets_used_ - 1];
             pockets_[pockets_used_ - 1] = 0xff;
@@ -219,6 +320,29 @@ void Game::apply_player_input(Object& player, const InputState& inp,
                 pockets_used_++;
             }
         }
+    }
+
+    // R → handle_remembering_position (&2c3c). Records the player's
+    // current tile position into the next teleport slot and rotates the
+    // cursor, so pressing R up to 4 times stores 4 recall points. Also
+    // increments the remembered count (capped at 4).
+    bool remember_down = inp.remember_pos;
+    bool remember_edge = remember_down && !remember_key_prev_;
+    remember_key_prev_ = remember_down;
+    if (remember_edge) {
+        handle_remembering_position(player);
+    }
+
+    // T → handle_teleporting (&0cc1). Pops the most recent remembered
+    // position (or the fallback at slot 4) and starts the 32-frame
+    // teleport animation that step-8 of update_objects drives. The
+    // method early-outs if the player is currently holding an object
+    // — the 6502 forbids voluntary teleporting while holding at &0cc3.
+    bool teleport_down = inp.teleport;
+    bool teleport_edge = teleport_down && !teleport_key_prev_;
+    teleport_key_prev_ = teleport_down;
+    if (teleport_edge) {
+        handle_player_teleporting(player);
     }
 
     // Weapon select

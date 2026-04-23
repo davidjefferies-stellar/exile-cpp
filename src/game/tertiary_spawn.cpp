@@ -118,7 +118,9 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
         int8_t dy = static_cast<int8_t>(tile_y - object_mgr_.activation_anchor_y());
         uint8_t adx = static_cast<uint8_t>(dx < 0 ? -dx : dx);
         uint8_t ady = static_cast<uint8_t>(dy < 0 ? -dy : dy);
-        if (adx > 4 || ady > 4) return;
+        // Settable via exile.ini [distances] spawn_tertiary. See Game::init.
+        if (adx > spawn_tertiary_distance_ ||
+            ady > spawn_tertiary_distance_) return;
     }
 
     // Diagnostic: only count attempts that passed both gates — i.e. visible

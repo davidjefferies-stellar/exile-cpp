@@ -58,6 +58,16 @@ int parse_weapon(const std::string& raw) {
     return -1;
 }
 
+// Accepts common boolean spellings used in INI files: "true"/"false",
+// "yes"/"no", "on"/"off", and numeric 0/1. Anything else leaves *out
+// untouched and returns false so the caller can warn.
+bool parse_bool(const std::string& raw, bool& out) {
+    std::string s = to_lower(raw);
+    if (s == "true" || s == "yes" || s == "on"  || s == "1") { out = true;  return true; }
+    if (s == "false"|| s == "no"  || s == "off" || s == "0") { out = false; return true; }
+    return false;
+}
+
 // Named object type → uint8_t. We reuse object_type_name's spelling
 // (uppercase with underscores) but match case-insensitively. Unknown
 // strings fall through to parse_uint so a config author can specify by
@@ -142,6 +152,41 @@ StartupConfig load_startup_config(const std::string& path) {
             if (slot >= 0 && parse_uint(value, v)) {
                 cfg.weapon_energy[static_cast<size_t>(slot)] =
                     static_cast<uint16_t>(v);
+            }
+        } else if (section == "caches") {
+            unsigned long v;
+            if (parse_uint(value, v)) {
+                // Clamp to [1, compile-time max]; the ObjectManager
+                // setters re-clamp too so an over-large ini value is
+                // harmless.
+                int n = static_cast<int>(v);
+                if (n < 1) n = 1;
+                if (key == "primary_slots") {
+                    if (n > GameConstants::PRIMARY_OBJECT_SLOTS)
+                        n = GameConstants::PRIMARY_OBJECT_SLOTS;
+                    cfg.primary_slots = n;
+                } else if (key == "secondary_slots") {
+                    if (n > GameConstants::SECONDARY_OBJECT_SLOTS)
+                        n = GameConstants::SECONDARY_OBJECT_SLOTS;
+                    cfg.secondary_slots = n;
+                }
+            }
+        } else if (section == "distances") {
+            unsigned long v;
+            if (parse_uint(value, v) && v <= 0xff) {
+                uint8_t u = static_cast<uint8_t>(v);
+                if      (key == "demote_tertiary")   cfg.demote_tertiary   = u;
+                else if (key == "demote_moving")     cfg.demote_moving     = u;
+                else if (key == "demote_settled")    cfg.demote_settled    = u;
+                else if (key == "promote_secondary") cfg.promote_secondary = u;
+                else if (key == "spawn_tertiary")    cfg.spawn_tertiary    = u;
+            }
+        } else if (section == "whistles") {
+            bool b;
+            if (key == "whistle_one_collected" && parse_bool(value, b)) {
+                cfg.whistle_one_collected = b;
+            } else if (key == "whistle_two_collected" && parse_bool(value, b)) {
+                cfg.whistle_two_collected = b;
             }
         } else if (section == "pockets") {
             // Keys are slot0..slot4. slot0 = top of stack.

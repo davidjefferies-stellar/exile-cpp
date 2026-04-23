@@ -1,9 +1,9 @@
-#include "ai/behavior_dispatch.h"
-#include "ai/behaviors/projectile.h"
-#include "ai/behaviors/creature.h"
-#include "ai/behaviors/robot.h"
-#include "ai/behaviors/environment.h"
-#include "ai/behaviors/collectable.h"
+#include "behaviours/behavior_dispatch.h"
+#include "behaviours/projectile.h"
+#include "behaviours/creature.h"
+#include "behaviours/robot.h"
+#include "behaviours/environment.h"
+#include "behaviours/collectable.h"
 
 namespace AI {
 

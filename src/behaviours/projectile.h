@@ -1,6 +1,6 @@
 #pragma once
 #include "objects/object.h"
-#include "ai/npc_helpers.h"
+#include "behaviours/npc_helpers.h"
 
 namespace Behaviors {
 

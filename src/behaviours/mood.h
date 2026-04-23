@@ -1,6 +1,6 @@
 #pragma once
 #include "objects/object.h"
-#include "ai/npc_helpers.h"
+#include "behaviours/npc_helpers.h"
 
 // NPC mood and stimuli system - port of &27c9-&2866, &316b-&31ab
 namespace Mood {

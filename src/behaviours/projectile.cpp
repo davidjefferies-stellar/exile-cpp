@@ -1,7 +1,9 @@
-#include "ai/behaviors/projectile.h"
-#include "ai/mood.h"
+#include "behaviours/projectile.h"
+#include "behaviours/mood.h"
 #include "core/types.h"
 #include "objects/object_data.h"
+#include "objects/object_tables.h"
+#include "rendering/sprite_atlas.h"
 #include "world/water.h"
 #include "particles/particle_system.h"
 #include <algorithm>
@@ -17,6 +19,72 @@ static uint8_t rotate_colour_from_A(Object& obj, uint8_t a) {
     uint8_t idx = (a >> 2) & 0x03;
     obj.palette = PALETTE_TABLE[idx];
     return idx;
+}
+
+// Port of explode_object_with_duration_A at &40db-&40ed.
+//
+// The 6502 mutates the current primary IN-PLACE into an EXPLOSION:
+//   STA this_object_tertiary_data_offset  ; duration counter
+//   LDA #&44 (OBJECT_EXPLOSION); STA this_object_type
+//   LDA #&ce; STA explosion_timer          ; -50 = active for 50 frames
+//
+// The slot keeps its position, its velocity, its (unused from here)
+// state, and every other field. update_explosion (ported to
+// projectile.cpp) then ticks the duration counter down each frame,
+// damages nearby objects, emits 2 PARTICLE_EXPLOSION per frame, and
+// eventually flags itself PENDING_REMOVAL.
+//
+// We intentionally DON'T go through "set energy=0 → step-12 spawns a
+// new explosion slot" in object_update.cpp, because that path allocates
+// a separate primary and leaves the original one to be removed — a
+// faithful port needs the mutation to happen in the original's slot so
+// chain reactions and target bookkeeping line up. Sound playback (&13f8)
+// is a TODO.
+static void explode_object_with_duration(Object& obj, uint8_t duration) {
+    // Remember the centre of the object BEFORE changing types. Our
+    // renderer anchors sprites by their top-left in world coords, so if
+    // we only swap type/sprite without touching x/y a grenade-sized
+    // source (SPRITE_BALL, ~4x4) turns into an explosion-sized one
+    // (SPRITE_EXPLOSION, much larger) rooted at the same top-left,
+    // which drags the explosion down-and-right of where the fuse
+    // visibly burned. The 6502's tile-granular display masks this; our
+    // sub-tile fractions make it obvious.
+    int old_w_frac = 0, old_h_frac = 0;
+    if (obj.sprite <= 0x7c) {
+        const SpriteAtlasEntry& e = sprite_atlas[obj.sprite];
+        old_w_frac = (e.w > 0 ? (e.w - 1) : 0) * 16;
+        old_h_frac = (e.h > 0 ? (e.h - 1) : 0) * 8;
+    }
+
+    obj.tertiary_data_offset = duration;
+    obj.type    = ObjectType::EXPLOSION;
+    obj.sprite  = object_types_sprite[
+        static_cast<uint8_t>(ObjectType::EXPLOSION)];
+    obj.palette = object_types_palette_and_pickup[
+        static_cast<uint8_t>(ObjectType::EXPLOSION)] & 0x7f;
+    obj.energy  = get_initial_energy(
+        static_cast<uint8_t>(ObjectType::EXPLOSION));
+    obj.timer   = 0;
+
+    // Recenter on the old sprite's centre. Shift = (old_size − new_size)
+    // / 2, applied to the position fraction + carry into whole.
+    int new_w_frac = 0, new_h_frac = 0;
+    if (obj.sprite <= 0x7c) {
+        const SpriteAtlasEntry& e = sprite_atlas[obj.sprite];
+        new_w_frac = (e.w > 0 ? (e.w - 1) : 0) * 16;
+        new_h_frac = (e.h > 0 ? (e.h - 1) : 0) * 8;
+    }
+    auto shift_axis = [](uint8_t& whole, uint8_t& frac, int delta) {
+        int sum = int(whole) * 0x100 + int(frac) + delta;
+        sum &= 0xffff;
+        whole = static_cast<uint8_t>((sum >> 8) & 0xff);
+        frac  = static_cast<uint8_t>(sum & 0xff);
+    };
+    shift_axis(obj.x.whole, obj.x.fraction, (old_w_frac - new_w_frac) / 2);
+    shift_axis(obj.y.whole, obj.y.fraction, (old_h_frac - new_h_frac) / 2);
+
+    // &40e8: global explosion_timer is used to drive the screen flash;
+    // we don't have that hooked up yet (TODO), so skip it here.
 }
 
 // Port of &4005 add_to_player_mushroom_timer. Adds 0x3f (+optional 1 from
@@ -180,30 +248,76 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
     orient_bullet_to_angle(obj, angle);
 }
 
-// &42F7: Active grenade — 96-frame fuse; palette rotates through 4 colours;
-// sound plays once per 16-frame cycle when the palette index wraps to 0.
-// TODO(&42f7): check_if_object_fired → revert to INACTIVE_GRENADE if the
-// player just threw this slot. Requires player_object_fired tracking.
+// &42F7 update_active_grenade. Port of the full detonation chain.
+//
+//   JSR check_if_object_fired (&0bbf) — if the player just threw this
+//     exact slot, un-activate: timer=0, type = INACTIVE_GRENADE. This
+//     lets the player cancel an accidental arm by re-pocketing the
+//     grenade before the fuse burns down. TODO: requires
+//     player_object_fired tracking; not yet wired.
+//
+//   Destroyed-mid-air path (&4305-&430d): if energy==0 (something
+//     damaged the grenade to death), explode_object_with_duration 10 —
+//     a short, weak explosion.
+//
+//   Fuse-expiry path (&430d-&4311): when timer hits 0x60 (96 frames),
+//     explode_object_with_duration 16 — the full grenade bang.
+//
+//   Otherwise (&4316-&4325): increment timer, rotate palette through the
+//     4-entry table at &4dd4, and play the "tick" sound once per 16
+//     frames when the palette index wraps to 0.
+//
+// We mutate the primary in-place on explosion so chain reactions and
+// bystander damage land on the original slot (see
+// explode_object_with_duration above).
 void update_active_grenade(Object& obj, UpdateContext& ctx) {
-    // &4305-&4309: if energy already 0, explode (duration 10). The main
-    // loop treats energy==0 as "remove me", so we just return.
-    if (obj.energy == 0) return;
-
-    // &430b-&4311: after 96 frames, explode with duration 16.
-    if (obj.timer >= 0x60) {
-        obj.energy = 0;
+    // &4305-&4309: destroyed → quick explosion (duration 10).
+    if (obj.energy == 0) {
+        explode_object_with_duration(obj, 0x0a);
+        // Immediately seed the explosion with its first burst of
+        // particles so the transition frame isn't silent.
+        if (ctx.particles) {
+            ctx.particles->emit(ParticleType::EXPLOSION, 8, obj, ctx.rng);
+        }
         return;
     }
 
-    // &4316: advance timer.
+    // &430d-&4311: fuse expired → full explosion (duration 16).
+    if (obj.timer >= 0x60) {
+        explode_object_with_duration(obj, 0x10);
+        if (ctx.particles) {
+            ctx.particles->emit(ParticleType::EXPLOSION, 10, obj, ctx.rng);
+        }
+        return;
+    }
+
+    // &4316: advance fuse.
     obj.timer++;
 
-    // &4318: animate palette; low bits are 0 once per 16 frames.
+    // &4318: palette cycle through the 4-colour table.
     uint8_t idx = rotate_colour_from_A(obj, obj.timer);
 
-    // &431b-&4325: play grenade sound when idx == 0 (once per 16 frames).
-    // TODO: wire sound when the audio system is ported.
+    // &431b-&4325: tick sound every 16 frames when idx wraps to 0.
+    // TODO: wire when audio is ported.
     (void)idx;
+}
+
+// Port of the trail emission at &46d9-&46e9 inside update_bullet_with_
+// particle_trail. The 6502 flips the bullet's angle by &80 (EOR) so the
+// particle leaves the rear of the bullet, overrides the PARTICLE_
+// PROJECTILE_TRAIL colour from a per-bullet table, and adds one
+// particle. Our particle code doesn't yet honour per-emit colour
+// overrides; we still emit the trail so the bullet has a visible
+// streak, just with the type's default colour.
+//
+// Colour table from &46ec:
+//   OBJECT_ICER_BULLET     (&13) → green or yellow (random 1 of 2)
+//   OBJECT_TRACER_BULLET   (&14) → blue or magenta
+//   OBJECT_CANNONBALL      (&15) → cycle all colours
+//   OBJECT_BLUE_DEATH_BALL (&16) → cycle all colours
+static void emit_projectile_trail(Object& obj, UpdateContext& ctx) {
+    if (!ctx.particles) return;
+    ctx.particles->emit(ParticleType::PROJECTILE_TRAIL, 1, obj, ctx.rng);
 }
 
 // &46BF: Icer bullet - freezes on contact, 2 frame explosion
@@ -213,6 +327,7 @@ void update_icer_bullet(Object& obj, UpdateContext& ctx) {
     if (obj.velocity_x != 0 || obj.velocity_y != 0) {
         if (obj.timer < 2) obj.timer = 2;
     }
+    emit_projectile_trail(obj, ctx);
 }
 
 // &4614: Tracer bullet - follows target, regenerates energy
@@ -228,6 +343,7 @@ void update_tracer_bullet(Object& obj, UpdateContext& ctx) {
     if (dy < 0 && obj.velocity_y > -0x20) obj.velocity_y--;
     // Tracer never expires (energy restored)
     if (obj.energy < 0x10) obj.energy++;
+    emit_projectile_trail(obj, ctx);
 }
 
 // &4326: Cannonball — 170 (&aa) damage, no gravity, no timer-based
@@ -242,6 +358,7 @@ void update_cannonball(Object& obj, UpdateContext& ctx) {
         else                     target.energy = 0;
         obj.energy = 0; // explode
     }
+    emit_projectile_trail(obj, ctx);
 }
 
 // &4332: Blue death ball - dangerous projectile
@@ -254,16 +371,19 @@ void update_blue_death_ball(Object& obj, UpdateContext& ctx) {
         if (dx > 0 && obj.velocity_x < 0x10) obj.velocity_x++;
         if (dx < 0 && obj.velocity_x > -0x10) obj.velocity_x--;
     }
+    emit_projectile_trail(obj, ctx);
 }
 
 // &434A: Red bullet - medium damage
 void update_red_bullet(Object& obj, UpdateContext& ctx) {
     common_bullet_update(obj, ctx, 30);
+    emit_projectile_trail(obj, ctx);
 }
 
 // &441B: Pistol bullet - standard
 void update_pistol_bullet(Object& obj, UpdateContext& ctx) {
     common_bullet_update(obj, ctx, 10);
+    emit_projectile_trail(obj, ctx);
 }
 
 // &4A88: Plasma ball — on object contact, turn it into a short fireball.
@@ -438,12 +558,32 @@ void update_red_drop(Object& obj, UpdateContext& ctx) {
     NPC::damage_player_if_touching(obj, ctx.mgr.player(), 5);
 }
 
-// &4AD6: Fireball - stationary fire
+// &4AD6: Fireball — stationary fire. Port of update_fireball.
+//
+// The 6502 also animates the palette by cycling through a small table,
+// flips the sprite randomly each frame, and — importantly — emits one
+// PARTICLE_FIREBALL per frame with angle=0xc0 (upward). Without the
+// particles the fire looks flat; our palette cycle was already in
+// place but the rising-ember effect was missing.
 void update_fireball(Object& obj, UpdateContext& ctx) {
     NPC::damage_player_if_touching(obj, ctx.mgr.player(), 8);
-    // Animate palette
+
     if (ctx.every_four_frames) {
         obj.palette = (obj.palette & 0x70) | (ctx.rng.next() & 0x07);
+    }
+
+    // &4b0b-&4b11: random horizontal/vertical flip every frame — keeps
+    // the flames looking chaotic.
+    uint8_t r = ctx.rng.next();
+    obj.flags = (obj.flags & ~(ObjectFlags::FLIP_HORIZONTAL |
+                               ObjectFlags::FLIP_VERTICAL)) |
+                (r & (ObjectFlags::FLIP_HORIZONTAL |
+                      ObjectFlags::FLIP_VERTICAL));
+
+    // &4b1d-&4b23: emit one PARTICLE_FIREBALL each frame. The 6502 sets
+    // angle=&c0 (straight up) so the ember rises out of the flame.
+    if (ctx.particles) {
+        ctx.particles->emit(ParticleType::FIREBALL, 1, obj, ctx.rng);
     }
 }
 
@@ -474,33 +614,101 @@ void update_explosion(Object& obj, UpdateContext& ctx) {
     if (ctx.particles)
         ctx.particles->emit(ParticleType::EXPLOSION, 2, obj, ctx.rng);
 
-    // Damage nearby objects (explosion radius based on remaining duration)
-    uint8_t power = obj.tertiary_data_offset * 4;
-    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS && obj.touching != 0) {
-        Object& target = ctx.mgr.object(obj.touching);
-        if (target.energy > power) {
-            target.energy -= power;
-        } else {
-            target.energy = 0;
-        }
-    }
+    // Port of &4fd8-&4fe2 + accelerate_all_objects (&343a-&34b0).
+    //
+    //   LDA duration; CMP #&08; ROR &28    — damages targets when
+    //     duration >= 8 (long explosions only). Cleared again at the
+    //     end of accelerate_all_objects (&34a7 LSR), so it's effectively
+    //     a per-frame flag re-evaluated from current duration.
+    //   LDA duration; ASL; ASL; STA &35    — acceleration_power =
+    //     duration * 4. 1 duration → 4 sub-tile units = 0.5 tile radius.
+    //
+    // accelerate_all_objects then iterates every slot (skipping self)
+    // and computes, for each target:
+    //   weight_factor = weight * 2 + 8          (heavier = less pushable)
+    //   remaining     = power − weight_factor − distance
+    //   if remaining < 0            → skip (too far / too heavy / static)
+    //   if damages && remaining >=4 → damage_object(remaining * 2)
+    //   if weight == 7              → skip push (static)
+    //   push magnitude = remaining / 2, direction = source → target
+    //   add push to target.velocity_x / velocity_y
+    //
+    // distance is measured in sub-tile units (1 tile = 8), using max of
+    // the two axes (Chebyshev) which matches the 6502's LOS raycast.
+    uint8_t duration = obj.tertiary_data_offset;
+    uint8_t power    = static_cast<uint8_t>(duration << 2);
+    bool    damages  = duration >= 8;
 
-    // Push nearby objects away
-    for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+    for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
         Object& other = ctx.mgr.object(i);
         if (!other.is_active()) continue;
-        int8_t dx = static_cast<int8_t>(other.x.whole - obj.x.whole);
-        int8_t dy = static_cast<int8_t>(other.y.whole - obj.y.whole);
-        uint8_t dist = (std::abs(dx) > std::abs(dy))
-                       ? static_cast<uint8_t>(std::abs(dx))
-                       : static_cast<uint8_t>(std::abs(dy));
-        if (dist < 4) {
-            int8_t push = static_cast<int8_t>(power >> 3);
-            if (dx > 0) other.velocity_x += push;
-            else if (dx < 0) other.velocity_x -= push;
-            if (dy > 0) other.velocity_y += push;
-            else if (dy < 0) other.velocity_y -= push;
+        if (&other == &obj) continue;    // don't push the explosion itself
+
+        // Fractional position deltas. Using only `.whole` zeros the
+        // direction vector when both objects share a tile (the most
+        // impactful near-ground-zero case), so damage would land but
+        // the target wouldn't move. Sub-tile precision matches the
+        // 6502's calculate_angle_from_vector (&22d4) which operates
+        // on the full 16-bit positions.
+        int other_fx = int(other.x.whole) * 256 + int(other.x.fraction);
+        int other_fy = int(other.y.whole) * 256 + int(other.y.fraction);
+        int obj_fx   = int(obj.x.whole)   * 256 + int(obj.x.fraction);
+        int obj_fy   = int(obj.y.whole)   * 256 + int(obj.y.fraction);
+        int dfx = other_fx - obj_fx;
+        int dfy = other_fy - obj_fy;
+
+        // Tile-granular distance still drives the power drop-off so
+        // radius behaviour matches the 6502's 8-units-per-tile scale.
+        int adx_tiles = std::abs(dfx) / 256;
+        int ady_tiles = std::abs(dfy) / 256;
+        int dist_units = std::max(adx_tiles, ady_tiles) * 8;
+
+        uint8_t weight        = other.weight();
+        bool    static_target = weight >= 7;
+        int     weight_factor = weight * 2 + 8;
+
+        int remaining = int(power) - weight_factor - dist_units;
+        if (remaining <= 0) continue;
+
+        // Damage — acceleration * 2 (port of &3485 ASL A / &3486 JSR
+        // damage_object). Cap at object's current energy.
+        if (damages && remaining >= 4) {
+            uint8_t hurt = static_cast<uint8_t>(std::min(255, remaining * 2));
+            other.energy = (other.energy > hurt) ? (other.energy - hurt) : 0;
         }
+
+        // Statics feel damage but don't get accelerated.
+        if (static_target) continue;
+
+        // Push magnitude = remaining / 2, in the direction from the
+        // explosion to the target. Normalise by the Chebyshev length
+        // of the sub-tile delta so one axis always gets the full push
+        // and the other is proportional. When both deltas are exactly
+        // zero (perfect overlap), fall back to a purely upward kick —
+        // matches the feel of the 6502 where zero-vector targets end
+        // up with their acceleration_sign EOR'd angle defaulting
+        // "up" for the blast wave.
+        int accel = remaining / 2;
+        int abs_fx = std::abs(dfx);
+        int abs_fy = std::abs(dfy);
+        int max_abs = std::max(abs_fx, abs_fy);
+        int push_x, push_y;
+        if (max_abs == 0) {
+            push_x = 0;
+            push_y = -accel;
+        } else {
+            push_x = accel * dfx / max_abs;
+            push_y = accel * dfy / max_abs;
+        }
+
+        int vx = int(other.velocity_x) + push_x;
+        int vy = int(other.velocity_y) + push_y;
+        if (vx >  127) vx =  127;
+        if (vx < -128) vx = -128;
+        if (vy >  127) vy =  127;
+        if (vy < -128) vy = -128;
+        other.velocity_x = static_cast<int8_t>(vx);
+        other.velocity_y = static_cast<int8_t>(vy);
     }
 }
 

@@ -1,4 +1,4 @@
-#include "ai/mood.h"
+#include "behaviours/mood.h"
 #include "core/types.h"
 
 // NPC stimuli response tables from &316b-&31ab.
