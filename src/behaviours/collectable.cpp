@@ -2,6 +2,7 @@
 #include "objects/object_data.h"
 #include "particles/particle_system.h"
 #include "core/types.h"
+#include "world/water.h"
 #include <algorithm>
 #include <cstdlib>
 
@@ -56,6 +57,30 @@ void update_collectable(Object& obj, UpdateContext& ctx) {
             *ctx.whistle_two_collected = true;
             obj.flags |= ObjectFlags::PENDING_REMOVAL;
             return;
+        }
+        // Keys behave like whistles: auto-collect into
+        // player_keys_collected (port of &0806) and consume the primary.
+        // The door-unlock path (update_door's &4c9e hook) later reads
+        // the bitmask to decide whether the RCD can toggle a matching
+        // door's LOCKED flag. Keys skip the pocket stack entirely — this
+        // matches the 6502, where player_collected[key_type] is stamped
+        // directly at pickup rather than occupying an inventory slot.
+        if (ctx.player_keys_collected) {
+            int key_index = -1;
+            switch (obj.type) {
+                case ObjectType::CYAN_YELLOW_GREEN_KEY: key_index = 0; break;
+                case ObjectType::RED_YELLOW_GREEN_KEY:  key_index = 1; break;
+                case ObjectType::GREEN_YELLOW_RED_KEY:  key_index = 2; break;
+                case ObjectType::YELLOW_WHITE_RED_KEY:  key_index = 3; break;
+                case ObjectType::RED_MAGENTA_RED_KEY:   key_index = 4; break;
+                case ObjectType::BLUE_CYAN_GREEN_KEY:   key_index = 5; break;
+                default: break;
+            }
+            if (key_index >= 0) {
+                ctx.player_keys_collected[key_index] = 0x80;
+                obj.flags |= ObjectFlags::PENDING_REMOVAL;
+                return;
+            }
         }
     }
 
@@ -185,7 +210,13 @@ void update_destinator(Object& obj, UpdateContext& ctx) {
 // and tile collision for EMPTY_FLASK naturally.
 void update_empty_flask(Object& obj, UpdateContext& ctx) {
     (void)ctx;
-    if (NPC::is_underwater(obj)) {
+    // Must check against the actual per-column waterline, not
+    // NPC::is_underwater's SURFACE_Y (0x4e) shortcut — that's the
+    // upper-world ceiling, and flagging any flask with y > 0x4e as
+    // submerged makes empty flasks transmute to full the instant they
+    // spawn anywhere on the playfield. 6502 reads `this_object_in_water`
+    // at &1f, computed per-column from the waterline table.
+    if (Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole)) {
         // &43e4 change_object_type: the 6502 also refreshes sprite +
         // palette from the per-type tables, which we mirror so the
         // flask instantly reflects its full-state colour.
@@ -227,14 +258,16 @@ void update_full_flask(Object& obj, UpdateContext& ctx) {
         if (max_vel >= 0x0a) start_emptying = true;
     }
 
-    // &43b7-&43bb: tile hit — approximation via post-update velocity.
-    // tile_collision is set by the previous frame's Y-axis revert; if
-    // the flask was moving fast when it hit, that's what this flag
-    // captures here.
-    uint8_t speed = static_cast<uint8_t>(
-        std::max(std::abs(static_cast<int>(obj.velocity_x)),
-                 std::abs(static_cast<int>(obj.velocity_y))));
-    if (speed >= 0x14 || (obj.tile_collision && speed >= 0x08)) {
+    // &43b7-&43bb: hit a tile hard.
+    //   LDA this_object_pre_collision_velocity_magnitude ; &1d
+    //   CMP #&14 ; BCC skip_starting_timer
+    // `pre_collision_magnitude` is captured by the physics revert in
+    // object_update before the bounce/damp pass — the raw velocity at the
+    // moment of impact. Post-revert velocity isn't usable here: a modest
+    // fall lands at ~0x10, bounces to ~0x0c via bounce_reflect, and the
+    // previous 0x08 fallback fired on every landing — water got knocked
+    // out of the flask even when it was gently placed on a ledge.
+    if (obj.pre_collision_magnitude >= 0x14) {
         start_emptying = true;
     }
 
@@ -355,9 +388,12 @@ static void coronium_common(Object& obj, UpdateContext& ctx) {
 
     if (touching_player || (player_holding && (ctx.rng.next() & 0xc0) == 0)) {
         // Check radiation immunity (player_radiation_immunity_pill_collected)
-        // and whether coronium is underwater (radiation blocked by water)
+        // and whether coronium is underwater (radiation blocked by water).
+        // Per-column waterline — the SURFACE_Y shortcut would flag the
+        // whole lower world as "submerged" and silently suppress all
+        // coronium damage even in air pockets.
         bool immune = false; // Would check player inventory
-        bool underwater = NPC::is_underwater(obj);
+        bool underwater = Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole);
 
         if (!immune && !underwater) {
             // Deal 8 radiation damage to player

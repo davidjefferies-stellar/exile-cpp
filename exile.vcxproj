@@ -88,6 +88,7 @@
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\core\random.cpp" />
     <ClCompile Include="src\world\landscape.cpp" />
+    <ClCompile Include="src\world\landscape_cpp.cpp" />
     <ClCompile Include="src\world\obstruction.cpp" />
     <ClCompile Include="src\world\wind.cpp" />
     <ClCompile Include="src\world\water.cpp" />

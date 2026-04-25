@@ -8,6 +8,7 @@
 #include "rendering/renderer.h"
 #include "rendering/camera.h"
 #include "particles/particle_system.h"
+#include <fstream>
 #include <memory>
 #include <string>
 
@@ -65,6 +66,15 @@ private:
     bool whistle_one_collected_ = false;  // &0816
     bool whistle_two_collected_ = false;  // &0817
     uint8_t chatter_energy_reserve_ = 0;  // &081c
+
+    // Port of &0806 player_keys_collected. Eight entries, 0x80 = key
+    // collected, 0 = not. Index 0..5 are the six visible key object
+    // types (CYAN_YELLOW_GREEN_KEY ... BLUE_CYAN_GREEN_KEY); 6..7 are
+    // the 6502's transporter-beam slots shared with the higher door
+    // colours via consider_toggling_lock's shift math at &31bb. The
+    // RCD's door-unlock path (update_door's &4c9e hook) reads this
+    // array — keys don't occupy pockets, they just stamp the bitmask.
+    uint8_t player_keys_collected_[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 
     // Mushroom timers (port of &081a)
     // [0] = red mushroom exposure (makes invisible objects visible)
@@ -151,6 +161,13 @@ private:
     uint32_t spawn_attempts_ = 0;
     uint32_t spawn_created_  = 0;
 
+    // Append-only lifecycle log. Opened once in init(); each non-paused
+    // frame flushes any events recorded in ObjectManager::debug_events_
+    // (cre/prm/dem/ret/rem) as a line so churn patterns can be inspected
+    // offline (grep / tail -f). File lives next to exile.ini.
+    std::ofstream debug_log_;
+    void flush_debug_log();
+
     // Tertiary → primary spawn-gate radius (in tiles). Set from
     // exile.ini [distances] spawn_tertiary during Game::init; default
     // 4 matches the KEEP_AS_PRIMARY_FOR_LONGER slow+supported demote
@@ -187,7 +204,12 @@ private:
     // drain it into the jetpack if it's a power pod). Returns true if the
     // object was consumed. No-op + false if nothing is held, the object
     // is too tall (>= 8 rows) to fit a pocket, or pockets are full.
-    bool try_store_held(Object& player);
+    //
+    // drain_power_pod: 6502 unconditionally drains — matches S. G's retrieve
+    // path passes false so a pre-seeded power_pod (from exile.ini [pockets],
+    // a state the 6502 couldn't reach) cycles like any other item instead of
+    // being consumed on every revolution.
+    bool try_store_held(Object& player, bool drain_power_pod = true);
 
     // Port of &32c8 handle_dropping_object: release the currently-held
     // primary (if any) back into the world.

@@ -8,6 +8,26 @@
 
 namespace Behaviors {
 
+// Record a flip event in the lifecycle log whenever obj's h-flip bit
+// actually changed between `before_flip` and obj.flags. Skips the log if
+// the flag is unchanged so the output only shows real direction flips.
+// `before_flip` is the masked FLIP_HORIZONTAL bit captured *before* the
+// flip-candidate call (consider_face_movement_direction, the turret's
+// pivot xor, or any other site that might toggle facing). Encodes
+// velocity_x into the event's x slot (for "why did it flip") and new
+// facing into y (0 = right, 1 = left).
+static void log_flip_if_changed(Object& obj, UpdateContext& ctx,
+                                 uint8_t before_flip) {
+    uint8_t after = obj.flags & ObjectFlags::FLIP_HORIZONTAL;
+    if (before_flip == after) return;
+    ctx.mgr.record_debug_event(
+        ObjectManager::EVT_FLIP,
+        static_cast<uint8_t>(ctx.this_slot),
+        static_cast<uint8_t>(obj.type),
+        static_cast<uint8_t>(obj.velocity_x),
+        after ? 1 : 0);
+}
+
 // &4ED8: Turret (green/white and cyan/red). Stationary emplacement that
 // rotates (via h-flip) to face the player and fires angled projectiles
 // whose velocity is random within the 6502's `[0x2d, 0x3c]` band.
@@ -16,6 +36,12 @@ void update_turret(Object& obj, UpdateContext& ctx) {
     // Energy regenerates toward this value every frame; firing doesn't
     // drain it, but taking damage from the player does.
     NPC::enforce_minimum_energy(obj, 0x14);
+
+    // &4ed8-&4ed9 LSR A; BCS leave. Bit 0 of the tertiary data byte is
+    // the "inactive" flag — a wired-off turret recharges but never
+    // fires. Without this an inactive turret with low bit set still
+    // shot at the player as soon as energy reached 0x80.
+    if (obj.tertiary_data_offset & 0x01) return;
 
     // &4efb: don't try to fire until energy >= 0x80. Below that the
     // turret is "recharging" and silently does nothing.
@@ -30,13 +56,12 @@ void update_turret(Object& obj, UpdateContext& ctx) {
     uint8_t threshold = static_cast<uint8_t>((obj.energy >> 3) + 2);
     if (ctx.rng.next() >= threshold) return;
 
-    // Line-of-sight gate — port of the `find_object` path at &3c2a-&3cbd
-    // which calls `check_for_obstruction_between_objects` (&359c) and
-    // skips targets with no LOS. Without this check turrets shoot
-    // through walls; the 6502's find_a_target_and_fire_at_it never
-    // returns a target the turret can't see. Use 16 tiles as the scan
-    // cap to match `check_for_obstruction_between_objects_80` at &359a.
-    if (!NPC::has_line_of_sight(obj, /*target_slot=*/0, /*max_tiles=*/16, ctx)) {
+    // Line-of-sight gate. Turrets fire via `find_a_target_and_fire_at_it`
+    // at &4f0d → `find_object` at &3c2a, which applies the randomised
+    // &3cb5 cap — the same LOS path the rolling / hovering / clawed
+    // robots use. Previous code here used the fixed 16-tile `_80`
+    // variant, which isn't what the turret actually calls.
+    if (!NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
         return;
     }
 
@@ -57,16 +82,32 @@ void update_turret(Object& obj, UpdateContext& ctx) {
     bool want_left   = (aim_vx < 0);
     if (facing_left != want_left) {
         // &3136 flip_this_object_horizontally
+        uint8_t before_flip = obj.flags & ObjectFlags::FLIP_HORIZONTAL;
         obj.flags ^= ObjectFlags::FLIP_HORIZONTAL;
+        log_flip_if_changed(obj, ctx, before_flip);
         return;
     }
 
-    // Pick bullet type from the tertiary data byte (unchanged).
+    // &4ed8-&4edb: bullet type lives in the tertiary data byte itself.
+    //   LSR A                ; carry = .......1 (inactive flag)
+    //   BCS leave            ; (handled at top of routine)
+    //   TAX                  ; X = data >> 1 = bullet object type
+    // So data = (bullet_type << 1) | inactive_bit. Standard turret data
+    // bytes are 0x26 (ICER), 0x28 (TRACER), 0x30 (PISTOL); the low bit
+    // marks inactive.
+    //
+    // The previous port read obj.state and decoded bits (& 0x0e / & 0x06)
+    // which doesn't match the 6502 at all — turrets ended up always
+    // firing PISTOL_BULLET regardless of which variant the tile was.
     ObjectType bullet = ObjectType::PISTOL_BULLET;
-    if (obj.tertiary_data_offset > 0) {
-        uint8_t data = obj.state;
-        if ((data & 0x0e) == 0x0e) bullet = ObjectType::RED_BULLET;
-        else if ((data & 0x06) == 0x06) bullet = ObjectType::ICER_BULLET;
+    {
+        uint8_t data = obj.tertiary_data_offset;
+        if ((data & 0x01) == 0) {
+            uint8_t bullet_id = static_cast<uint8_t>(data >> 1);
+            if (bullet_id < static_cast<uint8_t>(ObjectType::COUNT)) {
+                bullet = static_cast<ObjectType>(bullet_id);
+            }
+        }
     }
 
     int slot = NPC::fire_projectile(obj, bullet, ctx);
@@ -89,25 +130,46 @@ void update_rolling_robot(Object& obj, UpdateContext& ctx) {
     // Only move if energy >= 0x80
     if (obj.energy < 0x80) return;
 
-    // Roll along ground: maintain horizontal velocity
-    if (obj.is_supported()) {
-        if (obj.velocity_x == 0) {
-            // Start rolling in a direction
-            obj.velocity_x = (ctx.rng.next() & 0x01) ? 4 : -4;
-        }
+    // Roll along ground: when velocity_x has decayed to 0 (either from
+    // collision bounce_reflect damping or inertia decay), resume in the
+    // direction the robot is currently FACING. face_movement_direction
+    // updates is_flipped_h from velocity_x sign on the frame the robot
+    // was last actually moving, so the facing reliably records "which
+    // way was I going last". Continuing in that direction keeps a
+    // stationary-post-bounce robot moving AWAY from whatever it just
+    // hit, rather than immediately rolling back into it.
+    //
+    // Previous version had this ternary inverted — facing left mapped
+    // to velocity_x = +4 — which made the robot reverse direction every
+    // time its velocity decayed, producing the 1-to-5-frame tight
+    // oscillation visible in the lifecycle log (every flip alternates
+    // between vx=+4 and vx=-4). Matches the 6502's effect from
+    // update_walking_npc_and_check_for_obstacles (&3adf), which turns
+    // walking NPCs at obstacles only when they actually hit one.
+    //
+    // A fresh NEWLY_CREATED robot spawns with is_flipped_h == false, so
+    // its first step is +4 (roll right) — deterministic initial
+    // direction.
+    if (obj.is_supported() && obj.velocity_x == 0) {
+        obj.velocity_x = obj.is_flipped_h() ? -4 : 4;
     }
 
-    // Reverse direction on wall collision
-    // (collision detection will zero velocity_x on wall hit,
-    //  next frame we detect zero and reverse)
-    if (obj.velocity_x == 0 && obj.is_supported()) {
-        obj.velocity_x = obj.is_flipped_h() ? 4 : -4;
+    // &4ef1: 1-in-4 gated flip. Unconditional would flicker every frame
+    // when velocity_x zero-crosses on wall bumps or seek overshoot.
+    {
+        uint8_t before_flip = obj.flags & ObjectFlags::FLIP_HORIZONTAL;
+        NPC::consider_face_movement_direction(obj, ctx.rng);
+        log_flip_if_changed(obj, ctx, before_flip);
     }
 
-    NPC::face_movement_direction(obj);
-
-    // Fire at player
-    if (ctx.every_sixteen_frames && obj.energy >= 0x80) {
+    // Fire at player. LOS-gated — 6502 routes through find_a_target_and_
+    // fire_at_it → find_object (&3c2a, carry clear) which runs LOS per
+    // fire attempt with a randomised cap (&3cb5 AND #&4f / EOR NOD).
+    // has_line_of_sight_randomized reproduces that cap faithfully; NOD
+    // defaults to 0xff to match find_object's initial state for a
+    // single-candidate (player-only) target pool.
+    if (ctx.every_sixteen_frames && obj.energy >= 0x80 &&
+        NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
         const Object& player = ctx.mgr.player();
         int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
         if (std::abs(dx) < 12) {
@@ -136,10 +198,17 @@ void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
         NPC::seek_player(obj, ctx.mgr.player(), 4);
     }
 
-    NPC::face_movement_direction(obj);
+    // &4ef1: 1-in-4 gated flip (shared path with magenta/red rolling robot).
+    {
+        uint8_t before_flip = obj.flags & ObjectFlags::FLIP_HORIZONTAL;
+        NPC::consider_face_movement_direction(obj, ctx.rng);
+        log_flip_if_changed(obj, ctx, before_flip);
+    }
 
-    // Fire tracer bullets
-    if (ctx.every_sixteen_frames && obj.energy >= 0x80) {
+    // Fire tracer bullets. LOS-gated — see rolling-robot comment above;
+    // same 6502 find_object-driven randomised cap.
+    if (ctx.every_sixteen_frames && obj.energy >= 0x80 &&
+        NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
         const Object& player = ctx.mgr.player();
         int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
         if (std::abs(dx) < 16) {
@@ -170,10 +239,20 @@ void update_hovering_robot(Object& obj, UpdateContext& ctx) {
         obj.velocity_y += (ctx.rng.next() & 0x03) - 1;
     }
 
-    NPC::face_movement_direction(obj);
+    // &4877: 1-in-4 gated flip (hovering robots share move_hovering_npc
+    // which runs the probability-gated variant).
+    {
+        uint8_t before_flip = obj.flags & ObjectFlags::FLIP_HORIZONTAL;
+        NPC::consider_face_movement_direction(obj, ctx.rng);
+        log_flip_if_changed(obj, ctx, before_flip);
+    }
 
-    // Fire at player
-    if (ctx.every_sixteen_frames && obj.energy >= 0x80) {
+    // Fire at player. LOS-gated — 6502 hovering robot fires through the
+    // shared find_a_target_and_fire_at_it path (&486b), which internally
+    // calls find_object (&3c2a) with carry clear = consider obstructions
+    // and a randomised cap (&3cb5 AND #&4f / EOR NOD).
+    if (ctx.every_sixteen_frames && obj.energy >= 0x80 &&
+        NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
         const Object& player = ctx.mgr.player();
         int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
         if (std::abs(dx) < 12) {
@@ -223,12 +302,27 @@ void update_clawed_robot(Object& obj, UpdateContext& ctx) {
     // `can_see_or_has_seen_player` gate.
     NPC::update_npc_path(obj, ctx);
     NPC::seek_player(obj, ctx.mgr.player(), 6);
-    NPC::face_movement_direction(obj);
+    // &4877: 1-in-4 gated flip (clawed robots also share move_hovering_npc).
+    {
+        uint8_t before_flip = obj.flags & ObjectFlags::FLIP_HORIZONTAL;
+        NPC::consider_face_movement_direction(obj, ctx.rng);
+        log_flip_if_changed(obj, ctx, before_flip);
+    }
 
     uint8_t lvl = NPC::directness_level(obj);
 
-    // Attack: fire icer bullets (only when target visible).
-    if (ctx.every_eight_frames && lvl >= 2) {
+    // Attack: fire icer bullets. Directness level gates path choice but
+    // NOT firing — in the 6502, firing goes through find_a_target_and_
+    // fire_at_it (&4868) which calls find_object (&3c2a) with carry
+    // clear, so every fire attempt runs its own LOS raycast. Relying on
+    // directness alone bakes in a stale LOS: is_unable_to_see_target
+    // (&3d1d) only drops 3→2 and then latches, so the robot would keep
+    // firing through a door that closed after it first saw the player.
+    // Match the 6502 by LOS-gating the fire with the randomised-cap
+    // variant (&3cb5 AND #&4f / EOR NOD), not the turret's fixed
+    // 16-tile direct-call variant at &359a.
+    if (ctx.every_eight_frames && lvl >= 2 &&
+        NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
         const Object& player = ctx.mgr.player();
         int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
         int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);

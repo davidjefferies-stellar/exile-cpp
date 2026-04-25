@@ -1,5 +1,6 @@
 #include "game/game.h"
 #include "behaviours/environment.h"
+#include "objects/collision.h"
 #include "objects/object_data.h"
 #include "objects/object_tables.h"
 #include "rendering/debug_names.h"
@@ -123,12 +124,13 @@ void Game::render() {
     std::string overlay;
     if (paused_) overlay = "[PAUSED]\n";
     if (activation_from_camera_) {
-        char buf[192];
+        char buf[256];
         std::snprintf(buf, sizeof(buf),
                       "[MAP MODE]\n"
                       "anchor %u,%u\n"
                       "try %u made %u\n"
                       "clr: ret%u rem%u dem%u\n"
+                      "add: cre%u prm%u\n"
                       "switch presses: %u\n",
                       object_mgr_.activation_anchor_x(),
                       object_mgr_.activation_anchor_y(),
@@ -136,8 +138,15 @@ void Game::render() {
                       object_mgr_.debug_returns_,
                       object_mgr_.debug_removes_,
                       object_mgr_.debug_demotes_,
+                      object_mgr_.debug_creates_,
+                      object_mgr_.debug_promotes_,
                       object_mgr_.debug_switch_presses_);
         overlay = buf;
+
+        // Event details (cre/prm/dem/ret/rem per-frame event list) go to
+        // exile-debug.log instead of the HUD so they can be grepped.
+        // The HUD keeps the aggregate counters above for at-a-glance
+        // "something's churning" detection.
 
         // Primary tier — full names. Slot 0 is the player; skip it since it's
         // always present.
@@ -166,11 +175,12 @@ void Game::render() {
                        obj.type == ObjectType::VERTICAL_STONE_DOOR) {
                 uint8_t d = obj.tertiary_data_offset;
                 std::snprintf(line, sizeof(line),
-                              " d=%02x %s%s%s",
+                              " d=%02x %s%s%s tx=%02x tc=%02x",
                               d,
                               (d & 0x01) ? "LCK " : "    ",
                               (d & 0x02) ? "OPN " : "    ",
-                              (d & 0x04) ? "MOV"  : "   ");
+                              (d & 0x04) ? "MOV"  : "   ",
+                              obj.tx, obj.touching);
                 overlay += line;
             }
             overlay += "\n";
@@ -178,19 +188,34 @@ void Game::render() {
         }
         if (primary_count == 0) overlay += "  (empty)\n";
 
-        // Secondary tier.
+        // Secondary tier. Each entry shows position and signed tile offset
+        // from the activation anchor, with a leading '*' for entries that
+        // fall inside the promote radius (those will be promoted to primary
+        // on the next promote_selective tick). Without the offset, a
+        // distant ROM-seeded PIANO is visually indistinguishable from a
+        // just-added runtime entry.
         overlay += "SEC:\n";
+        uint8_t ax = object_mgr_.activation_anchor_x();
+        uint8_t ay = object_mgr_.activation_anchor_y();
+        uint8_t prom = object_mgr_.promote_distance();
         int secondary_count = 0;
         for (int i = 0; i < GameConstants::SECONDARY_OBJECT_SLOTS; i++) {
             const SecondaryObject& sec = object_mgr_.secondary(i);
             if (sec.y == 0) continue;
-            overlay += "  ";
-            if (sec.type < static_cast<uint8_t>(ObjectType::COUNT)) {
-                overlay += object_type_name(static_cast<ObjectType>(sec.type));
-            } else {
-                overlay += "UNKNOWN";
-            }
-            overlay += "\n";
+            int dx = static_cast<int>(static_cast<int8_t>(sec.x - ax));
+            int dy = static_cast<int>(static_cast<int8_t>(sec.y - ay));
+            int abs_dx = dx < 0 ? -dx : dx;
+            int abs_dy = dy < 0 ? -dy : dy;
+            bool in_range = abs_dx <= prom && abs_dy <= prom;
+            const char* name = (sec.type < static_cast<uint8_t>(ObjectType::COUNT))
+                ? object_type_name(static_cast<ObjectType>(sec.type))
+                : "UNKNOWN";
+            char line[96];
+            std::snprintf(line, sizeof(line),
+                          "  %c%s @%u,%u (%+d,%+d)\n",
+                          in_range ? '*' : ' ', name,
+                          sec.x, sec.y, dx, dy);
+            overlay += line;
             secondary_count++;
         }
         if (secondary_count == 0) overlay += "  (empty)\n";
@@ -257,6 +282,68 @@ void Game::render() {
             info.palette = palette;
 
             renderer_->render_tile(wx, wy, info);
+        }
+    }
+
+    // Collision-debug overlay. For each visible tile, shade the region
+    // the obstruction pattern reports as solid (per x-section), using
+    // the same tile_threshold_at_x + tile_obstruction_v_flip_bit that
+    // collision probes consult. Door tiles are run through
+    // substitute_door_for_obstruction first so a closed door shows its
+    // STONE_SLOPE_78 shape (left-quarter solid) rather than the raw
+    // passable door tile. This is the ground truth the AABB probes in
+    // object_update.cpp are querying, so sink-through / slope / door-
+    // substitute bugs show up as sprites clipping into the red band.
+    if (renderer_->collision_enabled()) {
+        auto& all_primaries =
+            reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
+                object_mgr_.object(0));
+        for (int dy = 0; dy < vp_h; dy++) {
+            uint8_t wy = static_cast<uint8_t>(start_y + dy);
+            for (int dx = 0; dx < vp_w; dx++) {
+                uint8_t wx = static_cast<uint8_t>(start_x + dx);
+                ResolvedTile res = resolve_tile_with_tertiary(landscape_, wx, wy);
+                uint8_t subst = Collision::substitute_door_for_obstruction(
+                    res.tile_and_flip, res.data_offset, all_primaries,
+                    object_mgr_.tertiary_data_byte(res.data_offset));
+                uint8_t type = subst & TileFlip::TYPE_MASK;
+                if (!Collision::is_tile_type_solid(type)) continue;
+
+                bool fh = (subst & TileFlip::HORIZONTAL) != 0;
+                bool fv = (subst & TileFlip::VERTICAL)   != 0;
+                bool coll_fv = fv ^ tile_obstruction_v_flip_bit(type);
+
+                // Eight vertical bars, one per x_section. For each, the
+                // threshold splits the tile into solid-above / solid-
+                // below depending on coll_fv. Sample the section's
+                // centre (xs * 0x20 + 0x10) so the reading matches
+                // tile_threshold_at_x's x_frac >> 5 quantisation.
+                for (int xs = 0; xs < 8; xs++) {
+                    uint8_t xf_sample = static_cast<uint8_t>(xs * 0x20 + 0x10);
+                    uint8_t threshold = tile_threshold_at_x(
+                        type, fh, fv, xf_sample);
+                    uint8_t y0, h;
+                    if (coll_fv) {
+                        // Solid when y_frac <= threshold → fill 0..threshold.
+                        if (threshold == 0) continue;
+                        y0 = 0;
+                        h  = threshold;
+                    } else {
+                        // Solid when y_frac > threshold → fill threshold+1..0xff.
+                        if (threshold >= 0xff) continue;
+                        y0 = static_cast<uint8_t>(threshold + 1);
+                        h  = static_cast<uint8_t>(0xff - threshold);
+                    }
+                    // Opaque red — fenster's fill_rect doesn't blend,
+                    // so use a colour that's distinct over any tile
+                    // background. Toggle the overlay off to see the
+                    // tiles it's covering.
+                    renderer_->render_tile_shade_rect(
+                        wx, wy,
+                        static_cast<uint8_t>(xs * 0x20), y0,
+                        0x20, h, 0xCC2222);
+                }
+            }
         }
     }
 

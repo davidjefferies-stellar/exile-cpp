@@ -34,6 +34,67 @@ static uint8_t single_tile_effective_threshold(uint8_t tile_type, bool flip_h,
     return best;
 }
 
+// Probe a single tile cell with door substitution. Used by both the
+// row-span and column-span helpers below.
+static bool probe_point_with_door_subst(
+    const Landscape& landscape, ObjectManager& mgr,
+    uint8_t tile_x, uint8_t tile_y, uint8_t x_frac, uint8_t y_frac)
+{
+    ResolvedTile r = resolve_tile_with_tertiary(landscape, tile_x, tile_y);
+    uint8_t tile = Collision::substitute_door_for_obstruction(
+        r.tile_and_flip, r.data_offset,
+        reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(mgr.object(0)),
+        mgr.tertiary_data_byte(r.data_offset));
+    uint8_t type = tile & TileFlip::TYPE_MASK;
+    if (!Collision::is_tile_type_solid(type)) return false;
+    return Collision::tile_and_flip_obstructs_point(tile, x_frac, y_frac);
+}
+
+// Horizontal-motion blocking with per-row old/new diff. Walks every
+// 0x20-fraction row down the sprite height and asks "is this row
+// obstructed at the new column but NOT at the old column?" — i.e. did
+// the move introduce a NEW wall overlap at this row.
+//
+// Pre-existing obstructions (head already in a ceiling, feet already
+// touching floor, sprite straddling a section that's always solid) are
+// skipped because the move didn't create them and blocking on them
+// freezes the player forever. This is the key to the 6502-like
+// behaviour: left/right motion is gated solely by walls that would
+// actually be *encountered* by the edge, not by vertical overlaps that
+// top/bottom obstructions should handle separately.
+//
+// Port analogue: the 6502 computes obstruction DEPTHS per-edge (&2e8a)
+// and resolves them via a direction vector at &306c. Our diff-based
+// check captures the same "block only on new obstruction in this axis"
+// spirit without the full angle-vector math.
+static bool column_move_blocked(
+    const Landscape& landscape, ObjectManager& mgr,
+    uint8_t old_tx, uint8_t old_xf,
+    uint8_t new_tx, uint8_t new_xf,
+    uint8_t y_whole, uint8_t y_frac, int sprite_h_frac)
+{
+    int top_abs = static_cast<int>(y_whole) * 256 + static_cast<int>(y_frac);
+    int bot_abs = top_abs + sprite_h_frac;
+    for (int sy = top_abs; sy <= bot_abs; sy += 0x20) {
+        int clamp_sy   = sy > bot_abs ? bot_abs : sy;
+        uint8_t ty     = static_cast<uint8_t>((clamp_sy >> 8) & 0xff);
+        uint8_t ty_frac = static_cast<uint8_t>(clamp_sy & 0xff);
+        bool old_solid = probe_point_with_door_subst(
+            landscape, mgr, old_tx, ty, old_xf, ty_frac);
+        bool new_solid = probe_point_with_door_subst(
+            landscape, mgr, new_tx, ty, new_xf, ty_frac);
+        if (new_solid && !old_solid) return true;
+    }
+    // Catch the very bottom row if the step skipped past it.
+    uint8_t ty     = static_cast<uint8_t>((bot_abs >> 8) & 0xff);
+    uint8_t ty_frac = static_cast<uint8_t>(bot_abs & 0xff);
+    bool old_solid = probe_point_with_door_subst(
+        landscape, mgr, old_tx, ty, old_xf, ty_frac);
+    bool new_solid = probe_point_with_door_subst(
+        landscape, mgr, new_tx, ty, new_xf, ty_frac);
+    return new_solid && !old_solid;
+}
+
 // Port of &2fb8 check_for_tile_collisions_on_top_and_bottom_edges_tile_loop.
 //
 // Walks every 32-fraction x-section the player's AABB overlaps, crossing
@@ -43,12 +104,11 @@ static uint8_t single_tile_effective_threshold(uint8_t tile_type, bool flip_h,
 // player_y_frac) inside the resolved tile's obstruction pattern?" and
 // returns true on the first hit.
 //
-// The old implementation only probed the left-edge tile and wrapped
-// x_frac back to section 0 of the same tile — which let the player
-// penetrate walls to the right (right-edge tile never checked) and
-// false-blocked left motion (section 0 of the current tile spuriously
-// sampled). This helper handles both cases by resolving each tile the
-// AABB overlaps and probing it at the correct section(s).
+// Used to gate VERTICAL motion. This is the 6502's top_obstruction /
+// bottom_obstruction analogue: the caller passes the y_frac of whichever
+// edge it cares about — player.y.fraction for upward motion (head-row
+// probe → catches ceilings), feet_y_frac for downward motion (feet-row
+// probe → catches floors).
 static bool player_aabb_obstructed(
     const Landscape& landscape, ObjectManager& mgr,
     uint8_t tile_y, uint8_t x_whole, uint8_t x_frac, int sprite_w_frac,
@@ -159,13 +219,38 @@ void Game::integrate_player_motion(Object& player,
         Fixed8_8 old_x = player.x;
         player.x.add_velocity(player.velocity_x);
 
-        // Tile-span obstruction probe: walks every section the AABB
-        // overlaps and crosses to the neighbouring tile when the section
-        // rolls past 0x08 (port of &2fb8-&2fef).
-        bool blocked = player_aabb_obstructed(
-            landscape_, object_mgr_,
-            player.y.whole, player.x.whole, player.x.fraction,
-            sprite_w_frac, player.y.fraction);
+        // Port of the 6502's left/right_obstruction model (&2fa4 / &3033
+        // check_for_top_and_bottom_tile_collisions with X = leading section):
+        // blocking horizontal motion depends on whether the LEADING
+        // vertical edge of the AABB — the right column when moving right,
+        // the left column when moving left — crosses into solid geometry
+        // across the sprite's height. Static probes (velocity_x == 0)
+        // don't block; walking away from the wall shouldn't either.
+        //
+        // This replaces the previous head-row-only probe, which
+        // conflated "head is in a ceiling" with "left/right edge hit a
+        // wall" and made any head-in-ceiling state freeze sideways
+        // motion. The 6502 avoids that by keeping top/bottom and
+        // left/right obstructions on independent axes.
+        bool blocked = false;
+        if (player.velocity_x != 0) {
+            // Leading vertical edge at OLD and NEW positions: right edge
+            // when moving right (+ sprite_w_frac), left edge otherwise.
+            int old_lead = static_cast<int>(old_x.whole) * 256 +
+                           static_cast<int>(old_x.fraction) +
+                           (player.velocity_x > 0 ? sprite_w_frac : 0);
+            int new_lead = static_cast<int>(player.x.whole) * 256 +
+                           static_cast<int>(player.x.fraction) +
+                           (player.velocity_x > 0 ? sprite_w_frac : 0);
+            uint8_t old_tx = static_cast<uint8_t>((old_lead >> 8) & 0xff);
+            uint8_t old_xf = static_cast<uint8_t>(old_lead & 0xff);
+            uint8_t new_tx = static_cast<uint8_t>((new_lead >> 8) & 0xff);
+            uint8_t new_xf = static_cast<uint8_t>(new_lead & 0xff);
+            blocked = column_move_blocked(
+                landscape_, object_mgr_,
+                old_tx, old_xf, new_tx, new_xf,
+                player.y.whole, player.y.fraction, sprite_h_frac);
+        }
         // Object AABB backstop — port of &2a64 check_for_collisions +
         // &2bb6 apply_collision_to_objects_velocities. Tile obstruction
         // alone (STONE_SLOPE_78 pattern) only covers the left quarter of
@@ -242,19 +327,29 @@ void Game::integrate_player_motion(Object& player,
         Fixed8_8 old_y = player.y;
         player.y.add_velocity(player.velocity_y);
 
-        // If the sprite's top ends up inside the obstruction region of
-        // its current tile, that's an "overshoot" — rewind. The
-        // obstruction sits above or below the threshold depending on the
-        // effective collision flip: landscape flip_v XOR the &04ab bit.
-        // Door tiles swap to STONE_SLOPE_78 / SPACE before this check so
-        // a closed door blocks and an open one doesn't, matching the
-        // 6502's door_tiles_table substitution at obstruction time.
-        // Same AABB-spanning probe as the X-motion block — checks every
-        // section / neighbouring tile the player's width overlaps.
-        bool y_blocked = player_aabb_obstructed(
-            landscape_, object_mgr_,
-            player.y.whole, player.x.whole, player.x.fraction,
-            sprite_w_frac, player.y.fraction);
+        // Port of the 6502's top/bottom_obstruction model (&2fb8-&300d).
+        // Blocking vertical motion depends on whether the LEADING
+        // horizontal edge of the AABB — the bottom row when moving down,
+        // the top row when moving up — crosses into solid geometry
+        // across the sprite's width. Static probes (velocity_y == 0)
+        // don't block.
+        //
+        // Door tiles are substituted to STONE_SLOPE_78 (closed) / SPACE
+        // (open) inside player_aabb_obstructed's tile-by-tile walk so
+        // closed doors block and open doors don't, matching the 6502's
+        // door_tiles_table swap at obstruction time.
+        bool y_blocked = false;
+        if (player.velocity_y != 0) {
+            int lead_abs = static_cast<int>(player.y.whole) * 256 +
+                           static_cast<int>(player.y.fraction) +
+                           (player.velocity_y > 0 ? sprite_h_frac : 0);
+            uint8_t lead_ty = static_cast<uint8_t>((lead_abs >> 8) & 0xff);
+            uint8_t lead_yf = static_cast<uint8_t>(lead_abs & 0xff);
+            y_blocked = player_aabb_obstructed(
+                landscape_, object_mgr_,
+                lead_ty, player.x.whole, player.x.fraction,
+                sprite_w_frac, lead_yf);
+        }
         // Object-AABB backstop — same mechanism as the X-axis revert
         // above, with the same mass-ratio velocity transfer on block.
         int y_obj_blocker = -1;
@@ -377,10 +472,26 @@ void Game::integrate_player_motion(Object& player,
     // The "event" branch that spawns mushroom ball primaries (&3fde-&3fe9)
     // is gated on TILE_PROCESSING_FLAG_EVENTS — a separate code path our
     // port hasn't wired; hooking it up is the update_events job.
+    //
+    // Probe every tile row the player's AABB overlaps, not just the head
+    // tile: red mushrooms sit on the floor (the player's feet tile, which
+    // is player.y.whole + 1 when the player is standing) and blue
+    // mushrooms on the ceiling (player.y.whole when jumping up). Checking
+    // only player.y.whole would silently miss red mushrooms entirely — the
+    // head tile is the tile ABOVE the floor.
     {
-        uint8_t tile = landscape_.get_tile(player.x.whole, player.y.whole);
-        uint8_t type = tile & TileFlip::TYPE_MASK;
-        if (type == static_cast<uint8_t>(TileType::MUSHROOMS)) {
+        int head_abs = static_cast<int>(player.y.whole) * 256 +
+                       static_cast<int>(player.y.fraction);
+        int feet_abs = head_abs + sprite_h_frac;
+        uint8_t head_tile_y = static_cast<uint8_t>((head_abs >> 8) & 0xff);
+        uint8_t feet_tile_y = static_cast<uint8_t>((feet_abs >> 8) & 0xff);
+        for (int ty = head_tile_y;
+             ty != static_cast<uint8_t>(feet_tile_y + 1);
+             ty = static_cast<uint8_t>(ty + 1)) {
+            uint8_t tile = landscape_.get_tile(player.x.whole,
+                                               static_cast<uint8_t>(ty));
+            uint8_t type = tile & TileFlip::TYPE_MASK;
+            if (type != static_cast<uint8_t>(TileType::MUSHROOMS)) continue;
             bool is_blue = (tile & TileFlip::VERTICAL) != 0;
             int which    = is_blue ? 1 : 0;
             // &4005 add_to_player_mushroom_timer: +0x3f per frame of
@@ -389,15 +500,23 @@ void Game::integrate_player_motion(Object& player,
             int sum = static_cast<int>(player_mushroom_timers_[which]) + 0x3f;
             if (sum > 0xff) sum = 0xff;
             player_mushroom_timers_[which] = static_cast<uint8_t>(sum);
-            // &4000-&4002 emit one STAR_OR_MUSHROOM particle at the
-            // player's position. rng-driven per-frame so the effect has
-            // visible motion rather than one still particle.
-            particles_.emit(ParticleType::STAR_OR_MUSHROOM, 1, player, rng_);
+            // &4000-&4002 emit one STAR_OR_MUSHROOM particle. The 6502
+            // emits from `this_object` (the player), which combined with
+            // our use_vcentre flag (0x08 in the STAR_OR_MUSHROOM table row)
+            // puts the particle at the player's vertical centre — a tile
+            // above a floor mushroom, a tile below a ceiling mushroom.
+            // Emit from the mushroom tile instead so the spores visibly
+            // puff out where the mushrooms actually are. Use emit_at to
+            // skip the object-centred base offset entirely.
+            particles_.emit_at(ParticleType::STAR_OR_MUSHROOM,
+                               player.x.whole, static_cast<uint8_t>(ty),
+                               rng_);
+            break;
         }
     }
 
     // Apply water effects
-    Water::apply_water_effects(player, player.weight());
+    Water::apply_water_effects(landscape_, player, player.weight());
 
     // Object-object collision for player
     auto obj_coll = Collision::check_object_collision(

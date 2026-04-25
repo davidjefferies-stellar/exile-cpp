@@ -56,6 +56,32 @@ bool has_line_of_sight(const Object& obj,
                        uint8_t max_tiles,
                        const UpdateContext& ctx);
 
+// 6502 find_object-style LOS check: the raycast cap is randomised per
+// call, matching &3cb5-&3cba:
+//
+//   max_distance = (rnd & 0x4f) XOR nearest_object_distance
+//
+// where `nearest_object_distance` is the length of the closest candidate
+// found so far this iteration, initialised to 0xff before any candidate.
+// For our simplified single-target callers (firing at the player with no
+// alternate target pool), nearest_object_distance is always 0xff, so the
+// cap ranges over 0xb0..0xff &20-fractions ≈ 22..32 tiles, selected at
+// random each call. Multi-candidate callers (a future faithful port of
+// find_object with OBJECT_ACTIVE_CHATTER alternate targeting) would pass
+// the running nearest_object_distance so later candidates get the
+// "within ~10 tiles of the current nearest" cap described at &3cb5.
+//
+// The 6502's `AND #&4f` mask sits behind the comment "Use random
+// distance up to 10 tiles" — i.e. the randomisation amount (bits 0-3
+// and bit 6), not the absolute cap. After XOR with an initial 0xff the
+// effective cap is larger than 10 tiles; the comment only becomes a
+// tight cap once nearest_object_distance is small.
+bool has_line_of_sight_randomized(
+    const Object& obj,
+    uint8_t target_slot,
+    const UpdateContext& ctx,
+    uint8_t nearest_object_distance = 0xff);
+
 // 16-frame-cadence directness update. Port of `consider_if_npc_can_see_target`
 // (&3cf6). When LOS is clear, snaps both directness bits on; when blocked,
 // decays the level by one per 16-frame tick. Also nudges `obj.tx / obj.ty`

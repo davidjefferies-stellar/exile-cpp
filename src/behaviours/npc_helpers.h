@@ -30,6 +30,12 @@ struct UpdateContext {
     bool* whistle_two_collected;
     // Pointer to Game::player_mushroom_timers_ [0]=red, [1]=blue. May be null.
     uint8_t* player_mushroom_timers;
+    // Pointer to Game::player_keys_collected_ (port of &0806). 8 entries;
+    // 0x80 in entry N means key N has been picked up. update_door reads
+    // this via consider_toggling_lock (&31ac) to decide whether an RCD
+    // shot can toggle the door's LOCKED flag; update_collectable writes
+    // it when a key primary is collected. May be null for headless/tests.
+    uint8_t* player_keys_collected;
     // Particle pool. Behaviors that want to spawn particles call
     // `particles->emit(ParticleType::X, count, obj, rng)`. May be null if
     // the system isn't initialised yet (headless/tests).
@@ -65,9 +71,6 @@ void set_sprite_from_velocity(Object& obj, uint8_t base_sprite, int num_frames);
 // Update walking animation sprite
 void animate_walking(Object& obj, uint8_t base_sprite, uint8_t frame_counter);
 
-// Check if object is underwater
-bool is_underwater(const Object& obj);
-
 // Apply damage to player if touching
 void damage_player_if_touching(Object& obj, Object& player, uint8_t damage);
 
@@ -80,8 +83,19 @@ void seek_player(Object& obj, const Object& player, int8_t speed);
 // NPC avoidance: set velocity away from player
 void flee_player(Object& obj, const Object& player, int8_t speed);
 
-// Flip sprite to face movement direction
+// Flip sprite to face movement direction. Port of &257e flip_object_to_match_
+// velocity_x — unconditional. Used by NPCs whose 6502 equivalent calls &257e
+// directly (e.g. piranha, wasp).
 void face_movement_direction(Object& obj);
+
+// Probability-gated flip. Port of &2578 consider_flipping_object_to_match_
+// velocity_x — same as above but only flips 1-in-4 frames on average. Used
+// by NPCs whose 6502 path runs through the &2578 entry point (rolling robots,
+// hovering robots, clawed robots, green slime, frogmen, imps, big fish,
+// worms, maggots). Without this gate, a velocity_x that crosses zero each
+// frame (from seek jitter or collision-zeroing) flicks the sprite 180°
+// every frame instead of settling.
+void consider_face_movement_direction(Object& obj, Random& rng);
 
 // Create a child projectile from this object. Spawns at the parent's
 // position; caller must set velocity then call `offset_child_from_parent`

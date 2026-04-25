@@ -56,16 +56,6 @@ void animate_walking(Object& obj, uint8_t base_sprite, uint8_t frame_counter) {
     obj.sprite = base_sprite + frame;
 }
 
-// Simplified port of the "is object in any water" test the 6502 sets
-// into `this_object_in_water` (&1f) during the main loop. The full
-// version at &2cbc get_waterline_for_x compares obj.y against the
-// per-column waterline_y table; this helper uses a single fixed
-// SURFACE_Y approximation which is close enough for tests where the
-// creature is confined to one waterline region.
-bool is_underwater(const Object& obj) {
-    return obj.y.whole >= GameConstants::SURFACE_Y + 1;
-}
-
 // Thin wrapper over damage_object (&24a6). The 6502 routine takes
 // A = damage, Y = target slot and applies damage to this_object_energy.
 // Our helper folds in the "touching the player?" guard — callers
@@ -117,17 +107,24 @@ void flee_player(Object& obj, const Object& player, int8_t speed) {
 }
 
 // Port of flip_object_to_match_velocity_x (&257e) — always flips, no
-// probability gate. The 6502 also has consider_flipping_object_to_
-// match_velocity_x (&2578) which only flips 1-in-N frames; behaviours
-// that want that RNG nudge should call that routine's port when we
-// add one. For now every caller just wants "face wherever I'm going",
-// which is the bare flip_object_to_match_velocity_x.
+// probability gate. Used directly by NPCs whose 6502 path enters at &257e
+// (piranha/wasp at &4f68).
 void face_movement_direction(Object& obj) {
     if (obj.velocity_x < 0) {
         obj.flags |= ObjectFlags::FLIP_HORIZONTAL;
     } else if (obj.velocity_x > 0) {
         obj.flags &= ~ObjectFlags::FLIP_HORIZONTAL;
     }
+}
+
+// Port of consider_flipping_object_to_match_velocity_x (&2578). The 6502
+// does `LDA #&03 / AND rnd_state / BNE leave` — a 1-in-4 chance of even
+// attempting the flip this frame. Prevents single-frame sign changes in
+// velocity_x (common when seek_player trims the delta to zero near the
+// target) from turning into visible sprite flicker.
+void consider_face_movement_direction(Object& obj, Random& rng) {
+    if ((rng.next() & 0x03) != 0) return;
+    face_movement_direction(obj);
 }
 
 // Reduced port of create_child_object (&33b8) / create_projectile
@@ -426,13 +423,47 @@ void dampen_velocities_twice(Object& obj) {
     }
 }
 
-// Reduced port of move_towards_target_with_probability_X (&31da). The
-// 6502 version takes magnitude + max-accel + a probability threshold
-// and, when the RNG passes, accelerates toward the current target via
-// calculate_firing_vector_from_angle (&3311 / &2357). We collapse the
-// vector math into a per-axis nudge clamped to `max_accel`; good
-// enough for homing cadence, but less faithful than a vector port
-// would be (a TODO once the full firing-vector chain is wired).
+// Per-axis port of the 6502's apply_weighted_acceleration_to_this_
+// object_velocity (&31f6):
+//   delta = desired_vel - current_vel      ; signed
+//   delta = clamp(delta, -max_accel, max_accel)
+//   current_vel += delta
+//
+// Free function (not a lambda) per CLAUDE.md.
+static void apply_weighted_acceleration(int8_t& v, int8_t desired,
+                                         uint8_t max_accel) {
+    int delta = int(desired) - int(v);
+    int cap = int(max_accel);
+    if (delta >  cap) delta =  cap;
+    if (delta < -cap) delta = -cap;
+    int nv = int(v) + delta;
+    if (nv >  127) nv =  127;
+    if (nv < -128) nv = -128;
+    v = static_cast<int8_t>(nv);
+}
+
+// Port of move_towards_target_with_probability_X (&31da). The 6502
+// sequence is:
+//   CPX rnd ; BCC leave                 ; prob X/256
+//   STY maximum_acceleration            ; Y is the clamp magnitude
+//   set_target_object_x_y_from_this_object_tx_ty
+//   use_vector_between_object_centres (A = magnitude)
+//   for axis in (y, x):
+//     apply_weighted_acceleration_to_this_object_velocity(vector_N)
+//
+// `use_vector_between_object_centres` (&3347) returns (vector_x,
+// vector_y) as a diamond-metric signed pair roughly proportional to
+// (target - self) with magnitude `magnitude`. We approximate that
+// with a per-axis sign*magnitude — good enough since apply_weighted_
+// acceleration clamps the delta to max_accel anyway: as long as the
+// desired-vel has the right sign and |desired - current| >= max_accel,
+// the creature accelerates by the full max_accel per call (matching
+// the 6502's big jumps).
+//
+// Previous reduced port nudged by max_accel/4 per call — too small to
+// survive bounce_reflect (which zeroes any |v| <= 2), so newly-
+// spawned birds couldn't build enough speed to escape the nest tile
+// once they touched any adjacent solid.
 void move_towards_target_with_probability(Object& obj, UpdateContext& ctx,
                                           uint8_t magnitude,
                                           uint8_t max_accel,
@@ -446,22 +477,28 @@ void move_towards_target_with_probability(Object& obj, UpdateContext& ctx,
                             ctx.mgr.object(slot).is_active())
                            ? ctx.mgr.object(slot)
                            : ctx.mgr.player();
-    (void)magnitude; // magnitude governs vector length in the full routine;
-                     // in this reduced port we lean on max_accel instead.
 
     int8_t tdx = static_cast<int8_t>(target.x.whole - obj.x.whole);
     int8_t tdy = static_cast<int8_t>(target.y.whole - obj.y.whole);
 
-    auto nudge = [&](int8_t& v, int8_t d) {
-        int step = (d > 0) ? int(max_accel) / 4 :
-                   (d < 0) ? -int(max_accel) / 4 : 0;
-        int nv = int(v) + step;
-        if (nv >  int(max_accel)) nv =  int(max_accel);
-        if (nv < -int(max_accel)) nv = -int(max_accel);
-        v = static_cast<int8_t>(nv);
-    };
-    nudge(obj.velocity_x, tdx);
-    nudge(obj.velocity_y, tdy);
+    // Desired velocity ≈ sign(delta) * magnitude on each axis. The real
+    // &3347 uses a diamond metric that splits the magnitude between
+    // axes by the direction ratio, but the apply_weighted_acceleration
+    // clamp saturates to max_accel long before the ratio matters for
+    // creatures whose max_accel is small (birds: 8, wasps: 4, etc.).
+    int desired_x = (tdx > 0) ?  int(magnitude)
+                  : (tdx < 0) ? -int(magnitude) : 0;
+    int desired_y = (tdy > 0) ?  int(magnitude)
+                  : (tdy < 0) ? -int(magnitude) : 0;
+    if (desired_x >  127) desired_x =  127;
+    if (desired_x < -128) desired_x = -128;
+    if (desired_y >  127) desired_y =  127;
+    if (desired_y < -128) desired_y = -128;
+
+    apply_weighted_acceleration(obj.velocity_x,
+                                 static_cast<int8_t>(desired_x), max_accel);
+    apply_weighted_acceleration(obj.velocity_y,
+                                 static_cast<int8_t>(desired_y), max_accel);
 }
 
 } // namespace NPC

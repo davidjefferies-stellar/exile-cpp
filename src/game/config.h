@@ -73,6 +73,29 @@ struct StartupConfig {
     // restricts how much stuff can be live simultaneously.
     int primary_slots   = 16;
     int secondary_slots = 32;
+
+    // [keys] — port of &0806 player_keys_collected. Eight-entry array,
+    // indices 0..5 map to the six key object types (CYAN_YELLOW_GREEN_KEY
+    // through BLUE_CYAN_GREEN_KEY); indices 6..7 remain for the 6502's
+    // transporter-beam slots (shared with the upper-colour doors via
+    // consider_toggling_lock's shift math at &31bb). Each byte: 0x80 =
+    // collected, 0 = not collected. The RCD's door-unlock path reads
+    // this bitmask, not the pocket stack — keys never occupy pockets.
+    //
+    //   index 0 : CYAN_YELLOW_GREEN_KEY
+    //   index 1 : RED_YELLOW_GREEN_KEY
+    //   index 2 : GREEN_YELLOW_RED_KEY
+    //   index 3 : YELLOW_WHITE_RED_KEY
+    //   index 4 : RED_MAGENTA_RED_KEY
+    //   index 5 : BLUE_CYAN_GREEN_KEY
+    std::array<uint8_t, 8> keys_collected = {0, 0, 0, 0, 0, 0, 0, 0};
+
+    // [landscape] — pick which procedural-landscape implementation runs.
+    // The pseudo-6502 reference (landscape.cpp) and the native C++
+    // rewrite (landscape_cpp.cpp) are intended to produce byte-identical
+    // maps; this toggle exists for A/B testing and as a safety net while
+    // the rewrite settles. Default false → reference implementation.
+    bool use_cpp_landscape = false;
 };
 
 // Load the config from the given path. Returns the populated struct;

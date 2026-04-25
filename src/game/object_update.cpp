@@ -103,6 +103,7 @@ void Game::update_objects() {
                               whistle_one_active_, whistle_two_activator_,
                               &whistle_one_collected_, &whistle_two_collected_,
                               player_mushroom_timers_,
+                              player_keys_collected_,
                               &particles_,
                               held_object_slot_, player_object_fired_, slot};
             update_fn(obj, uctx);
@@ -201,39 +202,30 @@ void Game::update_objects() {
                 // we record it on obj.tile_collision for the next frame's
                 // updater (bullets use it to explode on impact).
                 //
-                // Probe tiles at both the object's top (obj.y.whole) AND the
-                // tile the bottom edge enters — matches the 6502's use of
-                // this_object_maximum_y (obj.y + height) at &2a48. A short
-                // object (32-unit grenade, bullet etc.) can have its top
-                // stuck in an empty tile while its bottom plunges into a
-                // solid tile below; checking only the top lets it sink
-                // visibly into the floor before overflow kicks in.
+                // Sprite AABB in 16-bit fraction-unit space. The 6502
+                // stores (pixels-1)*16 in its width table and (rows-1)*8
+                // in its height table (see &5e89 / the port at
+                // tertiary_spawn.cpp:186); derive the same here so the
+                // probe matches what the renderer actually draws.
                 int obj_h_units = (obj.sprite <= 0x7c)
                     ? (sprite_atlas[obj.sprite].h > 0
                         ? (sprite_atlas[obj.sprite].h - 1) * 8 : 0)
                     : 0;
+                int obj_w_units = (obj.sprite <= 0x7c)
+                    ? (sprite_atlas[obj.sprite].w > 0
+                        ? (sprite_atlas[obj.sprite].w - 1) * 16 : 0)
+                    : 0;
 
-                // Per-section obstruction probe. `is_tile_solid` classifies a
-                // whole tile by type which is too coarse for spaceship-wall
-                // tiles (and slopes) where the solid region is only a
-                // sub-section of the tile. NPCs spawned inside such a tile's
-                // passable region — Triax at (&99, &3b) in the ship interior
-                // being the classic case — would otherwise be flagged as
-                // embedded in solid geometry and every gravity step would
-                // revert, pinning them in place. `point_in_tile_solid`
-                // evaluates the tile's obstruction pattern at the exact
-                // (x_frac, y_frac) of the sample, matching the 6502's
-                // &2fce LDA (&7c),Y + CMP y_fraction check at per-section
-                // resolution.
-                // Probe with door substitution. The raw METAL_DOOR /
-                // STONE_DOOR tile types are marked non-solid so unresolved
-                // callers don't phase-block around them; we resolve them
-                // here to their live closed/open substitute (STONE_SLOPE_78
-                // or SPACE) so thrown grenades and other primaries collide
-                // with closed doors instead of dropping through. Player
-                // motion uses the same substitute_door_for_obstruction
-                // pattern in player_motion.cpp.
+                // Probe a single (tile_x, tile_y) cell at an explicit
+                // sub-tile (x_frac, y_frac). Door tiles are swapped for
+                // their live closed/open substitute so primaries collide
+                // with closed doors like the player does, and the pattern-
+                // based `tile_and_flip_obstructs_point` handles slopes
+                // and spaceship-wall tiles where only a sub-section is
+                // solid — same per-section resolution as the 6502's
+                // &2fce LDA (&7c),Y / CMP y_fraction check.
                 auto probe_tile = [&](uint8_t ttx, uint8_t tty,
+                                      uint8_t ttx_frac,
                                       uint8_t tty_frac)->bool {
                     ResolvedTile res =
                         resolve_tile_with_tertiary(landscape_, ttx, tty);
@@ -243,26 +235,40 @@ void Game::update_objects() {
                             object_mgr_.object(0)),
                         object_mgr_.tertiary_data_byte(res.data_offset));
                     return Collision::tile_and_flip_obstructs_point(
-                        subst, obj.x.fraction, tty_frac);
+                        subst, ttx_frac, tty_frac);
                 };
-                auto any_tile_solid = [&](uint8_t tx, uint8_t ty,
-                                          uint8_t ty_frac)->bool {
-                    // Top-edge probe: the sample point is within the
-                    // current tile at (x_frac, ty_frac).
-                    if (probe_tile(tx, ty, ty_frac)) return true;
-                    // Bottom-edge probe: the object's bottom may be in a
-                    // different tile below. Translate into that tile's
-                    // local y_frac and check there too.
-                    int bottom_abs = static_cast<int>(ty) * 256 +
+
+                // Sample all four corners of the sprite's AABB. The
+                // previous implementation skipped right/bottom corners
+                // when they landed in the SAME tile as top-left, which
+                // misses slopes and partial-tile patterns: the corners
+                // have different (x_frac, y_frac) even inside one tile,
+                // and the obstruction threshold is a function of
+                // x_section / y_frac, so "same tile" doesn't mean "same
+                // obstruction answer". A red rolling robot (152-frac
+                // tall) fits entirely inside a single tile row; without
+                // the bottom probes the robot would slip through slope
+                // tiles because only the top of the sprite (y_frac ~0,
+                // above the slope surface) got tested.
+                //
+                // The probes are idempotent when corners happen to
+                // collapse onto the same point (sprite width or height
+                // zero), so always running all four is harmless.
+                auto any_tile_solid = [&](uint8_t tx, uint8_t tx_frac,
+                                          uint8_t ty, uint8_t ty_frac)->bool {
+                    int right_abs  = static_cast<int>(tx) * 256 +
+                                     static_cast<int>(tx_frac) + obj_w_units;
+                    uint8_t r_tx   = static_cast<uint8_t>((right_abs >> 8) & 0xff);
+                    uint8_t r_frac = static_cast<uint8_t>(right_abs & 0xff);
+                    int bot_abs    = static_cast<int>(ty) * 256 +
                                      static_cast<int>(ty_frac) + obj_h_units;
-                    uint8_t bottom_tile_y =
-                        static_cast<uint8_t>((bottom_abs >> 8) & 0xff);
-                    uint8_t bottom_y_frac =
-                        static_cast<uint8_t>(bottom_abs & 0xff);
-                    if (bottom_tile_y != ty &&
-                        probe_tile(tx, bottom_tile_y, bottom_y_frac)) {
-                        return true;
-                    }
+                    uint8_t b_ty   = static_cast<uint8_t>((bot_abs >> 8) & 0xff);
+                    uint8_t b_frac = static_cast<uint8_t>(bot_abs & 0xff);
+
+                    if (probe_tile(tx,   ty,   tx_frac, ty_frac)) return true;
+                    if (probe_tile(r_tx, ty,   r_frac,  ty_frac)) return true;
+                    if (probe_tile(tx,   b_ty, tx_frac, b_frac))  return true;
+                    if (probe_tile(r_tx, b_ty, r_frac,  b_frac))  return true;
                     return false;
                 };
 
@@ -283,13 +289,22 @@ void Game::update_objects() {
                     reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
                         object_mgr_.object(0));
                 obj.tile_collision = false;
+                obj.pre_collision_magnitude = 0;
                 {
                     Fixed8_8 old_x = obj.x;
                     obj.x.add_velocity(obj.velocity_x);
                     bool blocked =
-                        any_tile_solid(obj.x.whole, obj.y.whole, obj.y.fraction) ||
+                        any_tile_solid(obj.x.whole, obj.x.fraction,
+                                       obj.y.whole, obj.y.fraction) ||
                         Collision::overlaps_solid_object(obj, slot, all_primaries);
                     if (blocked) {
+                        // Port of &30b7: capture the max-axis velocity
+                        // BEFORE the reflect/damp so update_full_flask and
+                        // friends can tell a hard collision from a scrape.
+                        uint8_t pre = static_cast<uint8_t>(std::max(
+                            std::abs(static_cast<int>(obj.velocity_x)),
+                            std::abs(static_cast<int>(obj.velocity_y))));
+                        obj.pre_collision_magnitude = pre;
                         obj.x = old_x;
                         obj.velocity_x = bounce_reflect(obj.velocity_x);
                         obj.velocity_y = damp_seven_eighths(obj.velocity_y);
@@ -299,9 +314,16 @@ void Game::update_objects() {
                     Fixed8_8 old_y = obj.y;
                     obj.y.add_velocity(obj.velocity_y);
                     bool blocked =
-                        any_tile_solid(obj.x.whole, obj.y.whole, obj.y.fraction) ||
+                        any_tile_solid(obj.x.whole, obj.x.fraction,
+                                       obj.y.whole, obj.y.fraction) ||
                         Collision::overlaps_solid_object(obj, slot, all_primaries);
                     if (blocked) {
+                        uint8_t pre = static_cast<uint8_t>(std::max(
+                            std::abs(static_cast<int>(obj.velocity_x)),
+                            std::abs(static_cast<int>(obj.velocity_y))));
+                        if (pre > obj.pre_collision_magnitude) {
+                            obj.pre_collision_magnitude = pre;
+                        }
                         obj.y = old_y;
                         if (obj.velocity_y > 0) obj.flags |= ObjectFlags::SUPPORTED;
                         obj.velocity_y = bounce_reflect(obj.velocity_y);
@@ -326,13 +348,43 @@ void Game::update_objects() {
                 }
 
                 // Apply water effects (buoyancy + damping)
-                Water::apply_water_effects(obj, obj.weight());
+                Water::apply_water_effects(landscape_, obj, obj.weight());
 
-                if (Collision::is_tile_solid(landscape_, obj.x.whole,
-                                             static_cast<uint8_t>(obj.y.whole + 1))) {
-                    obj.flags |= ObjectFlags::SUPPORTED;
-                } else {
-                    obj.flags &= ~ObjectFlags::SUPPORTED;
+                // SUPPORTED re-evaluation: probe the tile(s) one frac unit
+                // below the sprite's actual bottom edge, across both the
+                // left and right columns the sprite occupies. Previously
+                // this was `is_tile_solid(x, y+1)` which (a) used the
+                // coarse whole-tile-type check instead of the obstruction
+                // pattern, (b) sampled at `y+1` which lands INSIDE a
+                // multi-tile sprite rather than below it, and (c) only
+                // tested the x-origin column. All three meant robots
+                // with straddle-wide sprites or 2-tile heights had
+                // SUPPORTED cleared each frame — the rolling-robot
+                // "only roll when supported" branch then stalled.
+                {
+                    int foot_abs = static_cast<int>(obj.y.whole) * 256 +
+                                   static_cast<int>(obj.y.fraction) +
+                                   obj_h_units + 1;
+                    uint8_t foot_ty   = static_cast<uint8_t>((foot_abs >> 8) & 0xff);
+                    uint8_t foot_frac = static_cast<uint8_t>(foot_abs & 0xff);
+                    int right_abs  = static_cast<int>(obj.x.whole) * 256 +
+                                     static_cast<int>(obj.x.fraction) +
+                                     obj_w_units;
+                    uint8_t r_tx   = static_cast<uint8_t>((right_abs >> 8) & 0xff);
+                    uint8_t r_frac = static_cast<uint8_t>(right_abs & 0xff);
+
+                    // Always probe both columns — even when the sprite
+                    // fits in one tile column (r_tx == obj.x.whole), the
+                    // two probes are at different x_fracs within that
+                    // tile, and slopes/partial-tile patterns give
+                    // different obstruction answers. Same reasoning as
+                    // the 4-corner AABB probe above.
+                    bool supported =
+                        probe_tile(obj.x.whole, foot_ty,
+                                   obj.x.fraction, foot_frac) ||
+                        probe_tile(r_tx, foot_ty, r_frac, foot_frac);
+                    if (supported) obj.flags |=  ObjectFlags::SUPPORTED;
+                    else           obj.flags &= ~ObjectFlags::SUPPORTED;
                 }
 
                 // Object-object collision: set touching field

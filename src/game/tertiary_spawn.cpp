@@ -30,35 +30,40 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
     // CHECK_TERTIARY marker (0x00..0x08) but the tertiary entry rewrites
     // the rendered / dispatched tile to something else (a door, switch,
     // transporter beam, etc.). We detect this by raw != resolved.
-    //
-    // Two classes of doors exist in the 6502's ROM tertiary data:
-    //   - bit 7 SET in the data byte: canonical "needs spawning"; the
-    //     6502's create_primary_object_from_tertiary honours this and
-    //     produces a primary object with animation.
-    //   - bit 7 CLEAR: the 6502 skips spawning and relies entirely on
-    //     tile-level handling — a `door_tiles_table` substitution at
-    //     obstruction time makes a "closed" door block and the render
-    //     layer draws the door tile directly. No object is created, so
-    //     the door never animates.
-    //
-    // Our port animates doors via primary objects, so for any tertiary
-    // redirect we want to spawn regardless of bit 7. De-dup the spawns
-    // via the "primary already owns this tertiary_slot" scan instead of
-    // the bit-7 gate (since clearing bit 7 in redirect data would also
-    // corrupt the switch-effects number packed into the same byte when
-    // the landscape tile is TILE_INVISIBLE_SWITCH).
     bool redirect = (raw_tile_type != tile_type);
 
-    // Non-redirect tertiary objects still use the 6502's bit-7 gate: the
-    // value is a straight "needs-spawning" flag with no co-tenant bits.
-    if (!redirect && data_offset != 0 &&
+    // Only the INVISIBLE_SWITCH landscape tile packs live switch-effect
+    // bits into the tertiary data byte (bit 7 = MSB of the effect-id,
+    // not a spawn flag). Every other kind of tertiary — including
+    // every other redirect (doors spawned via a CHECK_TERTIARY marker,
+    // FROM_DATA produced via a redirect tile, etc.) — uses bit 7 as a
+    // plain "needs spawning" flag, same as non-redirects. Earlier
+    // versions of this code treated ALL redirects as bit-7-preserving,
+    // which let FROM_DATA-via-redirect tiles re-spawn every frame after
+    // a primary had demoted to secondary (the dedup scan only checks
+    // active primaries and misses secondary-pool entries), producing
+    // duplicate rolling robots visible in the lifecycle log.
+    bool switch_redirect = tile_is(raw_tile_type, TileType::INVISIBLE_SWITCH);
+
+    // Bit-7 gate: applies to everything except INVISIBLE_SWITCH
+    // redirects. If bit 7 is clear, the tertiary has already spawned
+    // its primary (which is either live or sitting in the secondary
+    // pool), so skip re-spawning.
+    if (!switch_redirect && data_offset != 0 &&
         !(object_mgr_.tertiary_data_byte(data_offset) & 0x80)) {
         return;
     }
 
-    // Dedup for redirects: if a primary already owns this tertiary_slot,
-    // don't spawn a duplicate on this render tick.
-    if (redirect && data_offset > 0) {
+    // Dedup scan for INVISIBLE_SWITCH redirects only: since bit 7 can't
+    // be used as a spawn flag there (it's part of the switch effect-id),
+    // guard against double-spawning by checking whether any live primary
+    // already owns this tertiary_slot. Note: this scan misses primaries
+    // that have demoted to secondary, so it only prevents intra-frame
+    // duplicates — not repeat spawns after a cache round-trip. For
+    // INVISIBLE_SWITCH redirects that's OK because they're statics
+    // (switches, doors) that the demote path catches via check_demotion's
+    // KEEP_AS_TERTIARY branch and return_to_tertiary re-arming.
+    if (switch_redirect && data_offset > 0) {
         for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
             const Object& p = object_mgr_.object(i);
             if (p.is_active() &&
@@ -67,13 +72,6 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
             }
         }
     }
-
-    // Only the INVISIBLE_SWITCH redirect packs live switch-effect bits
-    // into the tertiary data byte, so only that case needs to preserve
-    // bit 7 when copying to the primary's data field below. Other
-    // redirects (transporter → door, etc.) use the 6502's standard door
-    // bit layout and can be stripped like any non-redirect.
-    bool switch_redirect = tile_is(raw_tile_type, TileType::INVISIBLE_SWITCH);
 
     // On the BBC the visible viewport was ~8 tiles, and object spawning
     // piggybacked on tile plotting — so you could never spawn a tile that
@@ -292,14 +290,12 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
     }
 
     // Mark tertiary as spawned so it isn't created again every frame.
-    // Only the canonical (non-redirect) path uses bit 7 as the spawn
-    // gate; the redirect paths dedup via the "primary already owns this
-    // slot" scan at the top. For INVISIBLE_SWITCH redirects specifically,
-    // bit 7 is ALSO part of the packed switch-effects number, so clearing
-    // it would corrupt the switch behaviour. Other redirects (e.g. door
-    // placed via CHECK_TERTIARY marker with bit 7 already clear) also
-    // skip the clear because their dedup is the primary-slot scan.
-    if (!redirect) {
+    // Clear bit 7 for every kind of tertiary EXCEPT INVISIBLE_SWITCH
+    // redirects, where bit 7 is part of the packed switch-effects id
+    // and must be preserved. This matches the bit-7 gate at the top —
+    // both entry and exit of the spawn path agree on which tertiaries
+    // treat bit 7 as a spawn flag vs. part of the data.
+    if (!switch_redirect) {
         object_mgr_.clear_tertiary_spawn_bit(data_offset);
     }
 }

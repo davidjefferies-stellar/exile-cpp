@@ -27,8 +27,8 @@ static constexpr int PX_SCALE_X = 2;
 static constexpr int PX_SCALE_Y = 1;
 static constexpr int TILE_PX_BASE_X = 16 * PX_SCALE_X;  // 32
 static constexpr int TILE_PX_BASE_Y = 32 * PX_SCALE_Y;  // 32
-static constexpr int INITIAL_W = 640;
-static constexpr int INITIAL_H = 480;
+static constexpr int INITIAL_W = 1920;
+static constexpr int INITIAL_H = 1080;
 static constexpr int HUD_PX = TILE_PX_BASE_Y / 2;
 // Zoom is expressed as (scale / zoom_den). MIN_SCALE=1 with an
 // MAX_ZOOM_DEN > 1 lets the wheel keep zooming out past 1:1.
@@ -41,6 +41,20 @@ static constexpr uint32_t COL_GREEN   = 0x00CC00;
 static constexpr uint32_t COL_MAGENTA = 0xCC00CC;
 static constexpr uint32_t COL_CYAN    = 0x00CCCC;
 static constexpr uint32_t COL_WHITE   = 0xCCCCCC;
+
+// Floor division by 256 — rounds toward -inf rather than toward zero.
+//
+// world_to_screen's sub-tile offset is `(obj_frac - vp_frac) * tpx / 256`.
+// The numerator can be negative (viewport-fraction > object-fraction), and
+// C's default truncate-toward-zero leaves a visible 1-pixel seam between a
+// static object and the landscape tile it sits on whenever the viewport's
+// fraction crosses a tile-pixel boundary: the tile's offset `(0-X)*tpx/256`
+// jumps at X = k·256/tpx while the object's `(F-X)*tpx/256` jumps at the
+// nearest k·256/tpx above F, one pixel later. Floor division makes both
+// snap on the same X so the sprite sits flush as the player walks.
+static inline int floor_div_256(int v) {
+    return (v >= 0) ? (v >> 8) : -((-v + 255) >> 8);
+}
 
 // --- Debug-panel layout -----------------------------------------------------
 //
@@ -103,6 +117,11 @@ struct PixelRenderer::Impl {
                                      // green switch→door wires.
     bool transports_on   = false;    // "Transports" checkbox — draws
                                      // cyan transporter→destination wires.
+    bool collision_on    = false;    // "Collision" checkbox — shades the
+                                     // solid region of every visible tile
+                                     // according to its obstruction
+                                     // pattern (per-x-section threshold),
+                                     // so sink-through bugs are visible.
     bool aabb_overlay_on = false;    // still keyboard-toggled via 'B'.
     bool aabb_key_prev = false;
     // Highlighted tile — drawn only while the tile grid is on.
@@ -368,9 +387,9 @@ struct PixelRenderer::Impl {
         int tpx = tile_px_x();
         int tpy = tile_px_y();
         // Sub-tile offset: (wx_frac - vp_frac_x) is a signed 8.8 delta, scaled
-        // to pixels. Same for y.
-        int sub_x = (int(wx_frac) - int(vp_frac_x)) * tpx / 256;
-        int sub_y = (int(wy_frac) - int(vp_frac_y)) * tpy / 256;
+        // to pixels. Must use floor division — see floor_div_256 comment.
+        int sub_x = floor_div_256((int(wx_frac) - int(vp_frac_x)) * tpx);
+        int sub_y = floor_div_256((int(wy_frac) - int(vp_frac_y)) * tpy);
         sx = f.width / 2 + dx * tpx + sub_x + pan_px_x;
         sy = hud_y_px() / 2 + dy * tpy + sub_y + pan_px_y;
         return sx > -tpx && sx < f.width && sy > -tpy && sy < hud_y_px();
@@ -418,18 +437,19 @@ struct PixelRenderer::Impl {
         // tile click. See the DebugCheckbox layout above for geometry.
         bool left_down = (f.mouse & 1) != 0;
         if (left_down && !left_was_down) {
-            DebugCheckbox boxes[6] = {
+            DebugCheckbox boxes[7] = {
                 { "Grid",       &tile_outline_on },
                 { "Map mode",   &map_mode_on     },
                 { "Debug",      &debug_text_on   },
                 { "Object lbl", &object_tiers_on },
                 { "Switches",   &switches_on     },
                 { "Transports", &transports_on   },
+                { "Collision",  &collision_on    },
             };
             int hud_y = hud_y_px();
             int cy    = checkbox_slot_y(hud_y);
             bool consumed = false;
-            for (int i = 0; i < 6; i++) {
+            for (int i = 0; i < 7; i++) {
                 int cx = checkbox_slot_x(i);
                 // Generous hit-area: the whole label's slot width, not
                 // just the little box, so users can click the text too.
@@ -829,16 +849,17 @@ void PixelRenderer::render_hud(const PlayerState& player) {
     // in the CHECKBOX_* constants + checkbox_slot_x/y so the click hit-
     // test in process_mouse uses the same layout.
     impl_->fill_rect(0, hud_y, impl_->f.width, 16, 0x151515);
-    DebugCheckbox boxes[6] = {
+    DebugCheckbox boxes[7] = {
         { "Grid",       &impl_->tile_outline_on },
         { "Map mode",   &impl_->map_mode_on     },
         { "Debug",      &impl_->debug_text_on   },
         { "Object lbl", &impl_->object_tiers_on },
         { "Switches",   &impl_->switches_on     },
         { "Transports", &impl_->transports_on   },
+        { "Collision",  &impl_->collision_on    },
     };
     int cy = checkbox_slot_y(hud_y);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 7; i++) {
         int cx = checkbox_slot_x(i);
         uint32_t border = *boxes[i].state ? 0xffffff : 0x666666;
         impl_->stroke_rect(cx, cy, CHECKBOX_SIZE, CHECKBOX_SIZE, border);
@@ -1002,6 +1023,26 @@ bool PixelRenderer::object_tiers_enabled() const { return impl_->object_tiers_on
 bool PixelRenderer::map_mode_enabled()     const { return impl_->map_mode_on;     }
 bool PixelRenderer::switches_enabled()     const { return impl_->switches_on;     }
 bool PixelRenderer::transports_enabled()   const { return impl_->transports_on;   }
+bool PixelRenderer::collision_enabled()    const { return impl_->collision_on;    }
+
+void PixelRenderer::render_tile_shade_rect(uint8_t world_x, uint8_t world_y,
+                                             uint8_t x_frac, uint8_t y_frac,
+                                             uint8_t w_frac, uint8_t h_frac,
+                                             uint32_t rgb) {
+    int sx0, sy0;
+    if (!impl_->world_to_screen(world_x, world_y, sx0, sy0,
+                                 x_frac, y_frac)) return;
+    int tpx = impl_->tile_px_x();
+    int tpy = impl_->tile_px_y();
+    // Fraction → screen-pixel conversion. Integer-round so adjacent
+    // sub-sections tile without gaps, and floor-to-1 so one-frac bars
+    // stay visible at low zoom.
+    int w_px = (static_cast<int>(w_frac) * tpx + 128) / 256;
+    int h_px = (static_cast<int>(h_frac) * tpy + 128) / 256;
+    if (w_px < 1) w_px = 1;
+    if (h_px < 1) h_px = 1;
+    impl_->fill_rect(sx0, sy0, w_px, h_px, rgb);
+}
 
 // Bresenham between the centres of two world tiles, plus a small
 // arrowhead at (x2, y2). Tile-whole inputs only — game layer decides

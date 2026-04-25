@@ -31,17 +31,21 @@ uint8_t get_waterline_y(uint8_t x) {
     return waterline;
 }
 
-bool is_underwater(uint8_t x, uint8_t y) {
+bool is_underwater(const Landscape& landscape, uint8_t x, uint8_t y) {
+    // 6502 at &2f03-&2f39 checks the tile (TileType::WATER) first for
+    // upper-world ponds, then falls back to the global waterline.
+    uint8_t tile = landscape.get_tile(x, y);
+    if ((tile & TileFlip::TYPE_MASK) == static_cast<uint8_t>(TileType::WATER)) {
+        return true;
+    }
     return y >= get_waterline_y(x);
 }
 
 // Apply water physics: buoyancy and velocity damping.
 // Port of the water physics at &2f01-&2f6e.
 // Buoyancy pushes objects upward, damping reduces velocity.
-void apply_water_effects(Object& obj, uint8_t weight) {
-    uint8_t waterline = get_waterline_y(obj.x.whole);
-
-    if (obj.y.whole < waterline) return; // Not underwater
+void apply_water_effects(const Landscape& landscape, Object& obj, uint8_t weight) {
+    if (!is_underwater(landscape, obj.x.whole, obj.y.whole)) return;
 
     // Buoyancy: reduce downward velocity based on weight
     // Lighter objects are more buoyant

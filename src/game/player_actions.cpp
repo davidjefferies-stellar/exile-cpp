@@ -9,14 +9,14 @@
 // it into the jetpack instead if it's a power pod. Returns true if the
 // held slot was consumed. No-op if nothing is held, the sprite is too
 // tall (>= 8 rows, &34c4) to pocket, or all 5 pockets are already full.
-bool Game::try_store_held(Object& player) {
+bool Game::try_store_held(Object& player, bool drain_power_pod) {
     if (held_object_slot_ >= 0x80) return false;
     int slot = held_object_slot_;
     Object& held = object_mgr_.object(slot);
     uint8_t sprite_id = held.sprite;
     if (sprite_id > 0x7c || sprite_atlas[sprite_id].h >= 8) return false;
     uint8_t ot = static_cast<uint8_t>(held.type);
-    if (ot == static_cast<uint8_t>(ObjectType::POWER_POD)) {
+    if (drain_power_pod && ot == static_cast<uint8_t>(ObjectType::POWER_POD)) {
         // &34cd not_power_pod: power pods feed the jetpack, not a pocket.
         uint32_t e = static_cast<uint32_t>(weapon_energy_[0]) + 0x800u;
         weapon_energy_[0] = (e > 0xFFFFu) ? 0xFFFFu
@@ -300,7 +300,10 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     bool retrieve_edge = retrieve_down && !retrieve_key_prev_;
     retrieve_key_prev_ = retrieve_down;
     if (retrieve_edge) {
-        try_store_held(player);  // Mirror &34f8: store first so G cycles pockets.
+        // Mirror &34f8: store first so G cycles pockets. drain_power_pod=false
+        // keeps pre-seeded power_pods in the rotation instead of refuelling
+        // the jetpack every time they come around.
+        try_store_held(player, /*drain_power_pod=*/false);
         if (held_object_slot_ >= 0x80 && pockets_used_ > 0) {
             uint8_t ot = pockets_[pockets_used_ - 1];
             pockets_[pockets_used_ - 1] = 0xff;

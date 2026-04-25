@@ -158,6 +158,22 @@ public:
     // relation at a time. Game reads each gate independently.
     virtual bool switches_enabled()     const { return false; }
     virtual bool transports_enabled()   const { return false; }
+    // Collision-debug overlay: shade the solid region of every visible
+    // tile according to its obstruction pattern (per-x-section threshold
+    // from tile_data.h). Makes sink-through / slope / door-substitute
+    // bugs visible. Game passes each visible tile through
+    // render_collision_tile below when this returns true.
+    virtual bool collision_enabled()    const { return false; }
+
+    // Shade a sub-tile rectangle in the given RGB. Coordinates are the
+    // 6502's 1/256-tile fraction units — same space as Fixed8_8 fraction
+    // and object AABBs. `world_x`/`world_y` select the tile; `x_frac`
+    // and `y_frac` the top-left of the sub-rectangle within it.
+    // Default no-op for renderers without overlay support.
+    virtual void render_tile_shade_rect(uint8_t /*world_x*/, uint8_t /*world_y*/,
+                                        uint8_t /*x_frac*/,  uint8_t /*y_frac*/,
+                                        uint8_t /*w_frac*/,  uint8_t /*h_frac*/,
+                                        uint32_t /*rgb*/) {}
 
     // Draw a thin line between two world-tile positions in the given RGB.
     // Coordinates are tile-whole; game code picks the tile each end sits

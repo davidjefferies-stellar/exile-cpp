@@ -388,12 +388,12 @@ void update_pistol_bullet(Object& obj, UpdateContext& ctx) {
 
 // &4A88: Plasma ball — on object contact, turn it into a short fireball.
 // Otherwise, reduce energy each frame; while underwater, 1-in-4 random
-// removal; when out of energy, explode. Gravity cancelled (see &4a92+).
+// removal; when out of energy, explode. Falls under gravity like any
+// weight-4 projectile — the 6502 doesn't touch acceleration_y in this
+// routine, so the main loop's +1-per-frame gravity stands.
 // TODO: particle emission (add_plasma_particles &4aa7), fireball conversion
 // on object-type match (&4a8d-&4a90 needs collides_with_plasma_ball).
 void update_plasma_ball(Object& obj, UpdateContext& ctx) {
-    NPC::cancel_gravity(obj);
-
     // &4a88: if touching another object, turn that object into a duration-13
     // fireball (the plasma ball "becomes" the fireball in the same slot).
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS && obj.touching != 0) {
@@ -404,9 +404,16 @@ void update_plasma_ball(Object& obj, UpdateContext& ctx) {
         return;
     }
 
-    // &4a92-&4a98: 1-in-4 random removal while underwater.
-    if (NPC::is_underwater(obj)) {
-        uint8_t r = ctx.rng.next() & ctx.rng.next(); // emulates AND of rnd_state & rnd_state+3
+    // &4a92-&4a98: 1-in-4 random removal while fully underwater.
+    //   LDA in_water / ORA rnd_state / ORA rnd_state+3 / BPL remove
+    // Needs the actual waterline, not npc_helpers::is_underwater — that
+    // one compares against SURFACE_Y (upper-world ceiling, 0x4f) and
+    // flags any y >= 0x4f as "underwater", which is the whole playfield.
+    // Previous code here killed the plasma ball 3-in-4 frames on land.
+    // Also: 6502 uses OR then BPL (kill when both high bits clear = 1/4);
+    // previous code used AND and then !(r & 0x80), giving 3/4 kill rate.
+    if (Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole)) {
+        uint8_t r = ctx.rng.next() | ctx.rng.next();
         if (!(r & 0x80)) {
             obj.energy = 0;
             return;

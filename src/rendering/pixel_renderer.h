@@ -42,8 +42,13 @@ public:
     bool map_mode_enabled()     const override;
     bool switches_enabled()     const override;
     bool transports_enabled()   const override;
+    bool collision_enabled()    const override;
     void render_wire(uint8_t x1, uint8_t y1,
                      uint8_t x2, uint8_t y2, uint32_t rgb) override;
+    void render_tile_shade_rect(uint8_t world_x, uint8_t world_y,
+                                uint8_t x_frac,  uint8_t y_frac,
+                                uint8_t w_frac,  uint8_t h_frac,
+                                uint32_t rgb) override;
 
 private:
     struct Impl;

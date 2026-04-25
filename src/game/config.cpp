@@ -70,13 +70,36 @@ bool parse_bool(const std::string& raw, bool& out) {
 
 // Named object type → uint8_t. We reuse object_type_name's spelling
 // (uppercase with underscores) but match case-insensitively. Unknown
-// strings fall through to parse_uint so a config author can specify by
-// number, e.g. `slot0 = 0x5b` for ICER.
+// strings fall through to a short alias table (longer/friendlier names
+// for a few types with terse debug spellings — notably the keys, which
+// show up as CYG_KEY etc. in the debug UI but deserve
+// cyan_yellow_green_key in a config file), then to parse_uint so a
+// config author can specify by number, e.g. `slot0 = 0x5b` for ICER.
 int parse_object_type(const std::string& raw) {
     std::string want = to_lower(raw);
     for (int i = 0; i < static_cast<int>(ObjectType::COUNT); i++) {
         std::string name = to_lower(object_type_name(static_cast<ObjectType>(i)));
         if (name == want) return i;
+    }
+    // Friendlier long-name aliases. Keys use the colour triple because
+    // that's how the original packaging refers to them.
+    struct Alias { const char* name; int id; };
+    static constexpr Alias aliases[] = {
+        { "cyan_yellow_green_key",
+          static_cast<int>(ObjectType::CYAN_YELLOW_GREEN_KEY) },
+        { "red_yellow_green_key",
+          static_cast<int>(ObjectType::RED_YELLOW_GREEN_KEY) },
+        { "green_yellow_red_key",
+          static_cast<int>(ObjectType::GREEN_YELLOW_RED_KEY) },
+        { "yellow_white_red_key",
+          static_cast<int>(ObjectType::YELLOW_WHITE_RED_KEY) },
+        { "red_magenta_red_key",
+          static_cast<int>(ObjectType::RED_MAGENTA_RED_KEY) },
+        { "blue_cyan_green_key",
+          static_cast<int>(ObjectType::BLUE_CYAN_GREEN_KEY) },
+    };
+    for (const auto& a : aliases) {
+        if (want == a.name) return a.id;
     }
     unsigned long v;
     if (parse_uint(raw, v) &&
@@ -187,6 +210,42 @@ StartupConfig load_startup_config(const std::string& path) {
                 cfg.whistle_one_collected = b;
             } else if (key == "whistle_two_collected" && parse_bool(value, b)) {
                 cfg.whistle_two_collected = b;
+            }
+        } else if (section == "keys") {
+            // Each key-name sets a byte in cfg.keys_collected (0x80 =
+            // collected, 0 = not). Index mapping matches the 6502's
+            // &0806 array and consider_toggling_lock at &31bb — index
+            // 0..5 are the six visible key object types; indices 6..7
+            // are the transporter-beam slots the original game shares
+            // with the higher door colours.
+            bool b = false;
+            if (!parse_bool(value, b)) continue;
+            uint8_t byte_value = b ? 0x80 : 0x00;
+            struct KeyAlias { const char* name; int idx; };
+            static constexpr KeyAlias key_aliases[] = {
+                { "cyan_yellow_green_key", 0 },
+                { "cyg_key",               0 },
+                { "red_yellow_green_key",  1 },
+                { "ryg_key",               1 },
+                { "green_yellow_red_key",  2 },
+                { "gyr_key",               2 },
+                { "yellow_white_red_key",  3 },
+                { "ywr_key",               3 },
+                { "red_magenta_red_key",   4 },
+                { "rmr_key",               4 },
+                { "blue_cyan_green_key",   5 },
+                { "bcg_key",               5 },
+            };
+            for (const auto& a : key_aliases) {
+                if (key == a.name) {
+                    cfg.keys_collected[static_cast<size_t>(a.idx)] = byte_value;
+                    break;
+                }
+            }
+        } else if (section == "landscape") {
+            bool b = false;
+            if (key == "use_cpp_impl" && parse_bool(value, b)) {
+                cfg.use_cpp_landscape = b;
             }
         } else if (section == "pockets") {
             // Keys are slot0..slot4. slot0 = top of stack.

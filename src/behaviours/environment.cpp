@@ -1,7 +1,9 @@
 #include "behaviours/environment.h"
+#include "behaviours/path.h"
 #include "core/types.h"
 #include "objects/object_data.h"
 #include "particles/particle_system.h"
+#include <algorithm>
 #include <cstdlib>
 
 namespace Behaviors {
@@ -92,6 +94,46 @@ void update_door(Object& obj, UpdateContext& ctx) {
 
     // &4cab-&4cad: always re-set MOVING while the door is being ticked.
     uint8_t data = obj.tertiary_data_offset | DoorFlag::MOVING;
+
+    // &4c9e check_if_object_hit_by_remote_control + &31ac consider_
+    // toggling_lock. Port of the RCD door-unlock path.
+    //
+    // The 6502 hit test at &0bc5 is three-part: (a) the fired object's
+    // type is REMOTE_CONTROL_DEVICE (&4e), (b) the fired object is
+    // within ~3 tiles of this door with clear LOS, (c) the player's
+    // aiming-angle vector points within a narrow cone at the door.
+    // Our simplified check drops the angle cone and uses Chebyshev
+    // distance; good enough for gameplay until the full aim-vector
+    // geometry is ported. The fired object's position is the player's
+    // position (RCD is held), so distance is effectively "is the
+    // player within 3 tiles of the door".
+    //
+    // When hit, toggle DOOR_FLAG_LOCKED iff the matching key has been
+    // collected, matching &31c2-&31cd exactly: clear MOVING if now
+    // locked, set OPENING if now unlocked so the door starts moving
+    // on the next tick.
+    if (ctx.player_object_fired < GameConstants::PRIMARY_OBJECT_SLOTS &&
+        ctx.player_keys_collected) {
+        const Object& fired = ctx.mgr.object(ctx.player_object_fired);
+        if (fired.is_active() &&
+            fired.type == ObjectType::REMOTE_CONTROL_DEVICE) {
+            int8_t dx = static_cast<int8_t>(fired.x.whole - obj.x.whole);
+            int8_t dy = static_cast<int8_t>(fired.y.whole - obj.y.whole);
+            int adx = dx < 0 ? -dx : dx;
+            int ady = dy < 0 ? -dy : dy;
+            if (adx <= 3 && ady <= 3) {
+                uint8_t door_colour = (obj.tertiary_data_offset >> 4) & 0x07;
+                if (ctx.player_keys_collected[door_colour] & 0x80) {
+                    data ^= DoorFlag::LOCKED;
+                    if (data & DoorFlag::LOCKED) {
+                        data &= ~DoorFlag::MOVING;
+                    } else {
+                        data |= DoorFlag::OPENING;
+                    }
+                }
+            }
+        }
+    }
 
     bool opening = (data & DoorFlag::OPENING) != 0;
     bool locked  = (data & DoorFlag::LOCKED)  != 0;
@@ -522,6 +564,17 @@ void update_hive(Object& obj, UpdateContext& ctx) {
     spawn.velocity_x = obj.is_flipped_h() ? -0x20 : 0x20;
     spawn.velocity_y = 0;
 
+    // Shift the wasp out of the hive's AABB, on the side matching its
+    // emerge velocity. create_object_at spawned the child at the hive's
+    // exact origin, and the hive is weight-7 — overlaps_solid_object
+    // fires on every subsequent X-integration and bounces the wasp's
+    // velocity back, so before this call each wasp sat stuck on top of
+    // the hive (velocity decaying to near zero via bounce_reflect)
+    // until the hive itself demoted. Same pre-compensation the 6502's
+    // create_child_object at &33e5-&342d does for bullets; wasps
+    // should use it too.
+    NPC::offset_child_from_parent(spawn, obj);
+
     // &4bf9-&4c06: aggressiveness lives in the spawn's state. Flipped
     // hives produce less aggressive spawns (0x20 / 1-in-8 target the
     // player), non-flipped hives produce more aggressive ones (0xa0 /
@@ -560,31 +613,175 @@ void update_dense_nest(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4DED: Sucking nest - pulls objects toward it
+// &4E37 sucking_nests_trigger_table — object type that activates each
+// variant. 0xff means "activates on any object" (bit 7 → always active).
+// The nest variant is stored in the tertiary data byte.
+static constexpr uint8_t sucking_nests_trigger[9] = {
+    0xff, // 0: all
+    0x3e, // 1: HORIZONTAL_STONE_DOOR
+    0x11, // 2: WASP
+    0x55, // 3: CORONIUM_BOULDER (also YELLOW_SLIME via &3c2a secondary)
+    0x10, // 4: PIRANHA
+    0xff, // 5: all
+    0x55, // 6: CORONIUM_BOULDER
+    0x10, // 7: PIRANHA
+    0x0f, // 8: WORM
+};
+
+// &4E40 sucking_nests_power_table — suction radius / force, in &20
+// fractions (8 per tile). This is both the `acceleration_power` argument
+// passed to `accelerate_all_objects` and the per-candidate LOS cap
+// inside it (&344a `check_for_obstruction_between_objects_A`).
+static constexpr uint8_t sucking_nests_power[9] = {
+    0x50, // 0: 10 tiles
+    0x30, // 1:  6 tiles
+    0x7f, // 2: ~16 tiles
+    0x40, // 3:  8 tiles
+    0x50, // 4: 10 tiles
+    0x7f, // 5: ~16 tiles
+    0x7f, // 6: ~16 tiles
+    0x50, // 7: 10 tiles
+    0x40, // 8:  8 tiles
+};
+
+// &4E49 sucking_nests_palette_direction_table — top 7 bits are palette
+// (shifted down into obj.palette); bit 0 is direction (1 = attract,
+// 0 = repel).
+static constexpr uint8_t sucking_nests_direction[9] = {
+    0x5f, 0xac, 0xbf, 0x3d, 0xf9, 0x58, 0xa2, 0xd8, 0x4b,
+};
+
+// &4DED update_sucking_nest — port of &4ded-&4e34.
+//
+// Every 16 frames, `find_object` (6502 &3c2a) scans for an object of
+// the nest's trigger type; if one is found (or trigger == 0xff = "all")
+// the nest enters "active" state. While active, `accelerate_all_objects`
+// applies variant-dependent suction — each candidate is LOS-raycast out
+// to `power` &20-fractions, and the effective acceleration is
+// `power - (weight*2 + 8 + distance)`, so heavy or far objects are
+// skipped automatically.
+//
+// Simplifications vs the 6502:
+//   * The coronium-boulder → secondary-type-yellow-slime special case at
+//     &4dfd-&4e01 isn't wired up. Variants 3 and 6 still activate on
+//     coronium boulders directly; they just don't also activate on
+//     yellow slime.
+//   * `find_object`'s random per-attempt probability gate at &3c99
+//     isn't ported — we accept any matching candidate. In practice
+//     activation is still correct because the 6502 also accepts any
+//     matching candidate eventually; we just converge on frame 1 rather
+//     than over ~dozen 16-frame ticks.
+//   * The random-flip (&4e1f STA this_object_x_flip) and 1/256 high-
+//     damage roll (&4e23 CMP #&50) are preserved faithfully.
 void update_sucking_nest(Object& obj, UpdateContext& ctx) {
     NPC::enforce_minimum_energy(obj, 0x7f);
 
-    // Pull nearby objects toward nest
-    for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
-        Object& other = ctx.mgr.object(i);
-        if (!other.is_active()) continue;
+    // Variant from tertiary data byte (our port's this_object_data
+    // equivalent). Clamp to table size so unwired variants don't crash.
+    uint8_t variant = obj.tertiary_data_offset & 0x0f;
+    if (variant >= 9) variant = 0;
 
-        int8_t dx = static_cast<int8_t>(obj.x.whole - other.x.whole);
-        int8_t dy = static_cast<int8_t>(obj.y.whole - other.y.whole);
-        uint8_t dist = static_cast<uint8_t>(std::max(std::abs(dx), std::abs(dy)));
+    // &4ded: set palette from top 7 bits of direction byte.
+    obj.palette = static_cast<uint8_t>(sucking_nests_direction[variant] >> 1);
 
-        if (dist < 6) {
-            // Pull toward nest
-            if (dx > 0 && other.velocity_x < 4) other.velocity_x++;
-            if (dx < 0 && other.velocity_x > -4) other.velocity_x--;
-            if (dy > 0 && other.velocity_y < 4) other.velocity_y++;
-            if (dy < 0 && other.velocity_y > -4) other.velocity_y--;
+    // &4df3-&4e09: detection. Every 16 frames scan for a target of the
+    // trigger type; 0xff trigger means "always active". Active state
+    // persists between detection ticks via Object::state.
+    if (ctx.every_sixteen_frames) {
+        uint8_t trigger = sucking_nests_trigger[variant];
+        bool active = false;
+        if (trigger == 0xff) {
+            active = true;
+        } else {
+            for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+                const Object& other = ctx.mgr.object(i);
+                if (!other.is_active()) continue;
+                if (static_cast<uint8_t>(other.type) != trigger) continue;
+                // 6502 find_object carry-clear LOS: randomised cap per
+                // call (see has_line_of_sight_randomized). One slot from
+                // self to candidate here stands in for find_object's
+                // slot loop — close enough for activation gating.
+                if (NPC::has_line_of_sight_randomized(
+                        obj, static_cast<uint8_t>(i), ctx)) {
+                    active = true;
+                    break;
+                }
+            }
         }
+        obj.state = active ? 0x80 : 0x00;
     }
 
-    // Absorb objects that reach the nest
+    bool active = (obj.state & 0x80) != 0;
+
+    // &4e0f-&4e1c: accelerate_all_objects. Iterate every primary
+    // (skip self), LOS-raycast out to `power`, compute weight/distance-
+    // attenuated acceleration, nudge velocity toward (attract) or away
+    // (repel) from the nest.
+    uint8_t damage_amount = 2;
+    if (active) {
+        uint8_t power = sucking_nests_power[variant];
+        bool attract = (sucking_nests_direction[variant] & 0x01) != 0;
+        // power/8 converts &20 fractions to whole-tile cap for our
+        // has_line_of_sight (which takes tiles, not fractions). Matches
+        // the 6502's `&344a JSR check_for_obstruction_between_objects_A`
+        // where A = acceleration_power (in &20 fractions).
+        uint8_t max_tiles = static_cast<uint8_t>(power / 8);
+        for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+            Object& other = ctx.mgr.object(i);
+            if (!other.is_active()) continue;
+            int8_t dx = static_cast<int8_t>(obj.x.whole - other.x.whole);
+            int8_t dy = static_cast<int8_t>(obj.y.whole - other.y.whole);
+            uint8_t adx = static_cast<uint8_t>(std::abs(dx));
+            uint8_t ady = static_cast<uint8_t>(std::abs(dy));
+            uint8_t dist_tiles = adx > ady ? adx : ady;
+            if (dist_tiles > max_tiles) continue;
+            if (!NPC::has_line_of_sight(obj, static_cast<uint8_t>(i),
+                                        max_tiles, ctx)) continue;
+
+            // &3461-&3476: acceleration = power - (weight*2 + 8 + distance).
+            // Distance is in &20 fractions, so convert our tile count
+            // back. Weight of 7 means "static" (the 6502 sets its static
+            // bit at &346b and skips the velocity write at &348c).
+            uint8_t w = other.weight();
+            bool is_static = (w == 7);
+            int dist_fracs = static_cast<int>(dist_tiles) * 8;
+            int eff = static_cast<int>(power) - (w * 2 + 8 + dist_fracs);
+            if (eff <= 0) continue;
+            if (is_static) continue;
+
+            // Velocity nudge toward / away from nest. `dx > 0` means the
+            // nest is east of the candidate → attract pulls the
+            // candidate east (velocity_x++). Repel flips the sign.
+            int8_t step_x = 0, step_y = 0;
+            if (dx > 0) step_x = attract ?  1 : -1;
+            if (dx < 0) step_x = attract ? -1 :  1;
+            if (dy > 0) step_y = attract ?  1 : -1;
+            if (dy < 0) step_y = attract ? -1 :  1;
+            if (step_x > 0 && other.velocity_x <  4) other.velocity_x++;
+            if (step_x < 0 && other.velocity_x > -4) other.velocity_x--;
+            if (step_y > 0 && other.velocity_y <  4) other.velocity_y++;
+            if (step_y < 0 && other.velocity_y > -4) other.velocity_y--;
+        }
+
+        // &4e1f-&4e25: random h-flip per frame + 1-in-256 chance of
+        // dealing 80 damage instead of 2.
+        uint8_t r = ctx.rng.next();
+        if (r & 0x80) obj.flags |=  ObjectFlags::FLIP_HORIZONTAL;
+        else           obj.flags &= ~ObjectFlags::FLIP_HORIZONTAL;
+        if (r == 0x50) damage_amount = 80;
+    }
+
+    // &4e29-&4e34: damage the touched object (2 normally, 80 on the
+    // rare roll above). remove_object approximates the full damage
+    // chain — a cannonball-strength hit is enough to kill most things
+    // and lighter victims end up deleted by the nest's touch regardless.
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS && obj.touching != 0) {
-        ctx.mgr.remove_object(obj.touching);
+        Object& victim = ctx.mgr.object(obj.touching);
+        if (victim.energy > damage_amount) {
+            victim.energy = static_cast<uint8_t>(victim.energy - damage_amount);
+        } else {
+            ctx.mgr.remove_object(obj.touching);
+        }
     }
 }
 

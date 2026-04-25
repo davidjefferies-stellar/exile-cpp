@@ -74,10 +74,23 @@ struct Alu {
 };
 
 // ============================================================================
-// get_tile - faithful port of &178d-&19a6
+// get_tile - dispatches to the active implementation. The pseudo-6502
+// version below is the reference; the C++ rewrite lives in
+// landscape_cpp.cpp.
 // ============================================================================
 
 uint8_t Landscape::get_tile(uint8_t tile_x, uint8_t tile_y) const {
+    return use_cpp_impl_
+        ? get_tile_cpp(tile_x, tile_y)
+        : get_tile_pseudo_6502(tile_x, tile_y);
+}
+
+// ============================================================================
+// get_tile_pseudo_6502 - faithful port of &178d-&19a6 with explicit
+// Alu carry tracking. Each block 1:1-maps to the disassembly.
+// ============================================================================
+
+uint8_t Landscape::get_tile_pseudo_6502(uint8_t tile_x, uint8_t tile_y) const {
     Alu s;
 
     // &178d: Calculate f1 - triangular function of x and y

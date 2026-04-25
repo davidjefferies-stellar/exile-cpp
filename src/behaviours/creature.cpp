@@ -493,7 +493,10 @@ void update_yellow_slime(Object& obj, UpdateContext& ctx) {
 // &4761: Big fish - swims, eats piranhas
 void update_big_fish(Object& obj, UpdateContext& ctx) {
     NPC::cancel_gravity(obj);
-    if (!NPC::is_underwater(obj)) {
+    // Per-column waterline — the SURFACE_Y shortcut flagged the whole
+    // lower world as "underwater", so fish swam freely through rock and
+    // air pockets. Actual waterline keeps them confined to water.
+    if (!Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole)) {
         // Fish out of water: no movement
         return;
     }
@@ -561,16 +564,30 @@ void update_piranha_or_wasp(Object& obj, UpdateContext& ctx) {
 
     // &4f33-&4f42: 1-in-2 chance every frame of considering a new target.
     // When aggressiveness (obj.state) >= rnd, aim at the player directly;
-    // otherwise fall back on the species' default nest type. Our helper
-    // takes over the "consider_finding_target" / "consider_updating_npc_
-    // path" chain by simply applying velocity via seek.
+    // otherwise fall back on the species' default nest type. The 6502
+    // updates target_and_flags here (not velocity) and lets the later
+    // move_towards_target_with_probability_X at &4f75 carry the actual
+    // motion via a vector from obj to target.
+    //
+    // The old port called seek_player, which SETS velocity_x/y to ±4
+    // directly — that slammed the ±0x20 emerge velocity the hive gave
+    // a new wasp down to ±4 on the first tick, so the wasp never left
+    // the hive's immediate area and looked "stuck going the wrong way".
+    // Updating target_and_flags preserves the emerge momentum and lets
+    // move_towards_target_with_probability blend into it gradually.
+    //
+    // Home-hive fallback: the 6502 calls find_object for the nearest
+    // SMALL_HIVE; we approximate with "leave target_and_flags unchanged",
+    // which keeps the spawning hive (set by update_hive) as the home.
     if (ctx.rng.next() & 0x40) {
-        const Object& player = ctx.mgr.player();
         bool target_player = obj.state >= (ctx.rng.next());
         if (target_player) {
-            NPC::seek_player(obj, player, 4);
+            // Low 5 bits = target slot; 0 = player. Preserve directness
+            // / AVOID bits in the top 3 (they encode path-planning
+            // state, not target identity).
+            obj.target_and_flags = static_cast<uint8_t>(
+                (obj.target_and_flags & 0xe0) | 0);
         }
-        // Home-hive targeting isn't wired up yet; skip the fallback.
     }
 
     // &4f45-&4f5e: 1/256 chance to play the passive sound; if
@@ -605,7 +622,7 @@ void update_piranha_or_wasp(Object& obj, UpdateContext& ctx) {
     // "in water", so they hit this `return` before their seek/jitter
     // could produce any motion and got stuck next to the hive.
     bool in_water =
-        Water::is_underwater(obj.x.whole, obj.y.whole);
+        Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole);
     bool out_of_element = is_wasp ? in_water : !in_water;
     if (!obj.tile_collision && out_of_element) return;
 
@@ -640,7 +657,9 @@ void update_piranha_or_wasp(Object& obj, UpdateContext& ctx) {
 // by (type − OBJECT_GREEN_YELLOW_BIRD), covering green, white, red,
 // invisible.
 static constexpr uint8_t birds_damage_table[4]  = { 0, 3, 0x40, 0x14 };
-static constexpr uint8_t birds_energy_table[4]  = { 0, 0,    0,    0 };
+// &4694-&4697: only RED_MAGENTA_BIRD has a non-zero minimum (0x1e = 30) — it
+// regenerates when wounded so a single hit doesn't finish it.
+static constexpr uint8_t birds_energy_table[4]  = { 0, 0, 0x1e, 0    };
 
 // Common body of all bird types. Handles the 6502's update_bird path at
 // &4631 onwards plus the earlier hooks for whistling / invisible birds.
@@ -707,7 +726,9 @@ static void update_bird_common(Object& obj, UpdateContext& ctx) {
     NPC::cancel_gravity(obj);
 
     // &4688: if in any water, dampen both velocities twice (divide by 4).
-    if (NPC::is_underwater(obj)) {
+    // Per-column waterline — SURFACE_Y shortcut would dampen birds flying
+    // through the lower world's air pockets as if they were submerged.
+    if (Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole)) {
         NPC::dampen_velocities_twice(obj);
     }
 

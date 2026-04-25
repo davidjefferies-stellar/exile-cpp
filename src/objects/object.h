@@ -38,6 +38,14 @@ struct Object {
     // our update order is (update_fn, physics) rather than (physics, update_fn),
     // so the bullet updater reads the previous frame's flag.
     bool       tile_collision = false;  // true if axis-separated move was undone
+    // Max(|vx|,|vy|) at the moment of a tile collision, captured BEFORE
+    // the bounce-reflect / damp pass. Mirrors the 6502's &1d
+    // this_object_pre_collision_velocity_magnitude (set at &30b7).
+    // update_full_flask reads it via the >= 0x14 "hit tile hard" check —
+    // post-revert velocity alone is too spiky (a modest fall bounces to
+    // ~0x10 which fires a smaller threshold but the unbounced velocity
+    // was still tame).
+    uint8_t    pre_collision_magnitude = 0;
 
     bool is_active() const { return y.whole != 0; }
     bool is_flipped_h() const { return flags & ObjectFlags::FLIP_HORIZONTAL; }

@@ -17,12 +17,35 @@ void ObjectManager::init() {
     // the destinator, fluffy, etc.) that the player's activation radius
     // promotes to primary when they come close enough. Without this the
     // secondary list starts empty and those items never appear.
-    for (int i = 0; i < static_cast<int>(GameConstants::SECONDARY_OBJECT_SLOTS); ++i) {
+    //
+    // Only iterate up to the source-array size (32 — the 6502's hard
+    // capacity). Our std::array backing is sized to
+    // GameConstants::SECONDARY_OBJECT_SLOTS (128) via exile.ini, and reading
+    // initial_secondary_*[] past index 31 was undefined behaviour — the
+    // slots beyond the 19 ROM entries were being populated with whatever
+    // bytes happened to follow the tables in static memory, spawning
+    // phantom UNKNOWN / ALIEN_WEAPON secondaries far from the player.
+    // Slots 32..127 start inactive via SecondaryObject's default y=0,
+    // which is exactly what we want.
+    constexpr int kInitialSecondaries =
+        sizeof(initial_secondary_type) / sizeof(initial_secondary_type[0]);
+    static_assert(
+        kInitialSecondaries ==
+            sizeof(initial_secondary_x) / sizeof(initial_secondary_x[0]),
+        "secondary init tables out of sync");
+    for (int i = 0; i < kInitialSecondaries; ++i) {
         SecondaryObject& sec = secondary_[i];
         sec.type = initial_secondary_type[i];
         sec.x    = initial_secondary_x[i];
         sec.y    = initial_secondary_y[i];
         sec.energy_and_fractions = initial_secondary_energy_and_fracs[i];
+        // Log the ROM-seeded entries so the lifecycle log shows "PIANO was
+        // already at (a3,5d) when the game started, before any promote"
+        // — disambiguates starting-pool membership from runtime promotions.
+        if (sec.y != 0) {
+            record_debug_event(EVT_SEC_INIT, static_cast<uint8_t>(i),
+                               sec.type, sec.x, sec.y);
+        }
     }
 
     // Copy mutable tertiary data (creature counts etc. change at runtime)
@@ -132,6 +155,9 @@ int ObjectManager::create_object(ObjectType type, int min_free_slots,
     obj.x = {spawn_x, spawn_x_frac};
     obj.y = {spawn_y, spawn_y_frac};
 
+    debug_creates_++;
+    record_debug_event(EVT_CREATE, static_cast<uint8_t>(slot),
+                       static_cast<uint8_t>(type), spawn_x, spawn_y);
     return slot;
 }
 
@@ -207,6 +233,10 @@ void ObjectManager::demote_to_secondary(int primary_slot) {
     sec.y = obj.y.whole;
     sec.energy_and_fractions = pack_energy_fractions(obj.energy, obj.x.fraction, obj.y.fraction);
 
+    record_debug_event(EVT_DEMOTE, static_cast<uint8_t>(primary_slot),
+                       static_cast<uint8_t>(obj.type),
+                       obj.x.whole, obj.y.whole);
+
     // Clear primary slot
     primary_[primary_slot].y.whole = 0;
 }
@@ -251,6 +281,9 @@ int ObjectManager::promote_from_secondary(int secondary_slot, int min_free_slots
     // Clear secondary slot
     sec.y = 0;
 
+    debug_promotes_++;
+    record_debug_event(EVT_PROMOTE, static_cast<uint8_t>(pri_slot),
+                       static_cast<uint8_t>(type), obj.x.whole, obj.y.whole);
     return pri_slot;
 }
 
@@ -309,6 +342,9 @@ void ObjectManager::return_to_tertiary(int primary_slot) {
 
     debug_returns_++;
     Object& obj = primary_[primary_slot];
+    record_debug_event(EVT_RETURN, static_cast<uint8_t>(primary_slot),
+                       static_cast<uint8_t>(obj.type),
+                       obj.x.whole, obj.y.whole);
     uint8_t tidx = static_cast<uint8_t>(obj.type);
     uint8_t type_flags = (tidx < static_cast<uint8_t>(ObjectType::COUNT))
                          ? object_types_flags[tidx] : 0;
@@ -339,8 +375,14 @@ void ObjectManager::return_to_tertiary(int primary_slot) {
 
 void ObjectManager::remove_object(int primary_slot) {
     if (primary_slot <= 0 || primary_slot >= GameConstants::PRIMARY_OBJECT_SLOTS) return;
-    if (primary_[primary_slot].is_active()) debug_removes_++;
-    primary_[primary_slot].y.whole = 0;
+    Object& obj = primary_[primary_slot];
+    if (obj.is_active()) {
+        debug_removes_++;
+        record_debug_event(EVT_REMOVE, static_cast<uint8_t>(primary_slot),
+                           static_cast<uint8_t>(obj.type),
+                           obj.x.whole, obj.y.whole);
+    }
+    obj.y.whole = 0;
 }
 
 // ============================================================================

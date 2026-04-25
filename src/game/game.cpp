@@ -3,6 +3,7 @@
 #include "objects/object_data.h"
 #include "objects/object_tables.h"
 #include "objects/held_object.h"
+#include "rendering/debug_names.h"
 #include "rendering/sprite_atlas.h"
 #include "world/tertiary.h"
 #include "world/tile_data.h"
@@ -73,6 +74,18 @@ bool Game::init() {
     whistle_one_collected_ = cfg.whistle_one_collected;
     whistle_two_collected_ = cfg.whistle_two_collected;
 
+    // Key-collected bitmask (port of &0806 player_keys_collected). Each
+    // entry is 0x80 when the corresponding key has been picked up; the
+    // door-unlock path (update_door's &4c9e RCD hit → consider_toggling_
+    // lock at &31bb) will read this array to decide whether the matching
+    // coloured door can be toggled. exile.ini's [keys] section pre-sets
+    // entries for testing without having to wander to each key in-world.
+    constexpr size_t kKeys =
+        sizeof(player_keys_collected_) / sizeof(player_keys_collected_[0]);
+    for (size_t i = 0; i < kKeys && i < cfg.keys_collected.size(); i++) {
+        player_keys_collected_[i] = cfg.keys_collected[i];
+    }
+
     // Cache-range radii. object_manager.cpp's check_demotion picks one of
     // the three demote_distances_ values based on an object's type flags;
     // promote_distance_ governs secondary → primary re-promotion; and
@@ -83,6 +96,12 @@ bool Game::init() {
                                       cfg.demote_settled);
     object_mgr_.set_promote_distance(cfg.promote_secondary);
     spawn_tertiary_distance_ = cfg.spawn_tertiary;
+
+    // Pick which landscape generator runs. The two implementations are
+    // intended to produce byte-identical maps; the toggle exists so the
+    // C++ rewrite (landscape_cpp.cpp) can be A/B-tested against the
+    // pseudo-6502 reference (landscape.cpp).
+    landscape_.set_use_cpp_impl(cfg.use_cpp_landscape);
 
     // Cache sizes. object_manager's backing arrays are sized at compile
     // time to GameConstants::PRIMARY/SECONDARY_OBJECT_SLOTS; these
@@ -111,8 +130,78 @@ bool Game::init() {
         triax.y = {0x3b, 0x20};
     }
 
+    // Truncate + open the lifecycle log. Any previous session's data is
+    // discarded — we only ever want the current run's churn record. Each
+    // non-paused frame flushes its events here via flush_debug_log().
+    debug_log_.open("exile-debug.log",
+                    std::ios::out | std::ios::trunc);
+    if (debug_log_.is_open()) {
+        debug_log_ << "# exile-cpp lifecycle log\n"
+                   << "# cols: frame kind p<slot> TYPE @x,y anchor=ax,ay dx=DX dy=DY\n";
+        debug_log_.flush();
+    }
+
+    // Seed the activation anchor to the player's spawn tile before flushing
+    // so EVT_SEC_INIT entries recorded by object_mgr_.init() print with
+    // sensible dx/dy relative to the player, not the default (0,0) anchor.
+    // The main loop re-sets this every frame from the live player position.
+    object_mgr_.set_activation_anchor(player.x.whole, player.y.whole);
+    flush_debug_log();
+
     running_ = true;
     return true;
+}
+
+void Game::flush_debug_log() {
+    if (!debug_log_.is_open()) return;
+    if (object_mgr_.debug_events_n_ == 0) return;
+
+    uint8_t ax = object_mgr_.activation_anchor_x();
+    uint8_t ay = object_mgr_.activation_anchor_y();
+
+    for (int i = 0; i < object_mgr_.debug_events_n_; i++) {
+        const ObjectManager::DebugEvent& e = object_mgr_.debug_events_[i];
+        const char* tag = "???";
+        switch (e.kind) {
+            case ObjectManager::EVT_CREATE:   tag = "cre"; break;
+            case ObjectManager::EVT_PROMOTE:  tag = "prm"; break;
+            case ObjectManager::EVT_DEMOTE:   tag = "dem"; break;
+            case ObjectManager::EVT_RETURN:   tag = "ret"; break;
+            case ObjectManager::EVT_REMOVE:   tag = "rem"; break;
+            case ObjectManager::EVT_FLIP:     tag = "flp"; break;
+            case ObjectManager::EVT_SEC_INIT: tag = "sec"; break;
+        }
+        const char* name =
+            (e.type < static_cast<uint8_t>(ObjectType::COUNT))
+                ? object_type_name(static_cast<ObjectType>(e.type))
+                : "UNKNOWN";
+
+        char line[192];
+        if (e.kind == ObjectManager::EVT_FLIP) {
+            // Flip event: x = velocity_x (reinterpreted signed), y = 0
+            // (facing right) or 1 (facing left). Spells out vx so the
+            // reason for the flip is obvious at a glance, and the
+            // frame/slot/type fields line up with normal events.
+            int vx = static_cast<int>(static_cast<int8_t>(e.x));
+            const char* facing = (e.y & 1) ? "LEFT" : "RIGHT";
+            std::snprintf(line, sizeof(line),
+                          "%u %s p%u %s vx=%d -> %s\n",
+                          static_cast<unsigned>(frame_counter_),
+                          tag, e.slot, name, vx, facing);
+        } else {
+            // Chebyshev distance to anchor — helps see if events cluster
+            // on the demote_settled / promote_secondary / spawn_tertiary
+            // rings.
+            int dx = static_cast<int>(static_cast<int8_t>(e.x - ax));
+            int dy = static_cast<int>(static_cast<int8_t>(e.y - ay));
+            std::snprintf(line, sizeof(line),
+                          "%u %s p%u %s @%u,%u anchor=%u,%u dx=%d dy=%d\n",
+                          static_cast<unsigned>(frame_counter_),
+                          tag, e.slot, name, e.x, e.y, ax, ay, dx, dy);
+        }
+        debug_log_ << line;
+    }
+    debug_log_.flush();
 }
 
 void Game::run() {
@@ -202,6 +291,15 @@ void Game::run() {
         }
 
         render();
+
+        // Flush lifecycle events AFTER render() so CREATE events emitted
+        // by spawn_tertiary_object (which fires from the tile-plotting
+        // path inside render) are captured in the log. Flushing before
+        // render silently dropped those events — the ret/cre pair for a
+        // churning tertiary looked one-sided.
+        if (!paused_) {
+            flush_debug_log();
+        }
 
         // Frame timing: sleep to maintain 50fps
         auto frame_end = clock::now();
@@ -373,16 +471,45 @@ void Game::update_events() {
                 tx, 0x80, ty, 0x80);
             if (slot <= 0) continue;
 
-            // &3e7d-&3e83: centre the spawn horizontally in the tile by
-            // setting x_fraction = (~sprite_width) / 2, where sprite_width
-            // is the 6502's (pixels-1)*16 encoding.
             Object& spawn = object_mgr_.object(slot);
             uint8_t sid = spawn.sprite;
+            uint8_t sprite_h_byte = 0;
+            uint8_t sprite_w_byte = 0;
             if (sid <= 0x7c) {
                 int w = sprite_atlas[sid].w;
-                uint8_t wb = static_cast<uint8_t>((w > 0 ? (w - 1) : 0) * 16);
-                spawn.x.fraction = static_cast<uint8_t>((~wb & 0xff) >> 1);
+                int h = sprite_atlas[sid].h;
+                sprite_w_byte = static_cast<uint8_t>((w > 0 ? (w - 1) : 0) * 16);
+                sprite_h_byte = static_cast<uint8_t>((h > 0 ? (h - 1) : 0) * 8);
             }
+
+            // &4075-&407e set y_fraction so the spawn sits at the EMPTY
+            // edge of the nest tile, away from the solid region:
+            //   v-flipped tile  -> y_frac = 0       (spawn at top)
+            //   not v-flipped   -> y_frac = ~height (spawn at bottom)
+            // create_object left y_frac at 0x80 (tile centre) which
+            // drops the bird straight into the tile's solid pattern
+            // (for nest-adjacent tiles like leaves / branches) — its
+            // velocity never builds past the bounce-reflect threshold
+            // so the bird sits at the spawn point forever.
+            //
+            // Note: &3e72-&3e74 then overwrite flags back to 0x05 after
+            // create_primary_object_from_tertiary sets flip bits — birds
+            // from nests deliberately do NOT inherit the tile's flip.
+            bool v_flipped = (res.tile_and_flip & TileFlip::VERTICAL) != 0;
+            spawn.y.fraction = v_flipped
+                ? 0x00
+                : static_cast<uint8_t>(~sprite_h_byte & 0xff);
+
+            // &3e7d-&3e83 centre the spawn horizontally within the tile.
+            // This overrides whatever &4072 set.
+            spawn.x.fraction = static_cast<uint8_t>((~sprite_w_byte & 0xff) >> 1);
+
+            // &4081-&4083 store this_object_tertiary_data_offset into the
+            // primary so return_to_tertiary can credit the creature back
+            // to the nest. Without this the nest drains permanently —
+            // birds never come back, and after four spawns the tile is
+            // silent forever.
+            spawn.tertiary_slot = static_cast<uint8_t>(res.data_offset);
 
             // &3e6d-&3e6f SBC #&03 with carry clear = subtract four: clears
             // bit 2 of the data byte (the lowest creature-count bit),
@@ -470,11 +597,17 @@ void Game::update_events() {
         uint8_t r = rng_.next() & 0x03;
         int8_t avail = static_cast<int8_t>(clawed_robot_availability_[r]);
         if (avail == 0) {
-            // Not dormant, not yet active — build teleport energy.
+            // &2725-&2728: INC teleport_energy ; BPL leave.
+            // Only spawn once the counter overflows past 0x7f (signed
+            // positive → signed negative). Previously the conditional
+            // was inverted — a freshly-incremented counter (0 → 1) is
+            // positive, which is the "still recharging, don't spawn"
+            // case in the 6502, but my code ran the spawn branch there
+            // and a clawed robot appeared within 8 frames of game start.
             clawed_robot_teleport_energy_[r]++;
             if (static_cast<int8_t>(clawed_robot_teleport_energy_[r]) < 0) {
-                // Still negative → not enough energy to return.
-            } else {
+                // Counter wrapped past 0x80 — robot has enough teleport
+                // energy to rejoin the game.
                 ObjectType t = static_cast<ObjectType>(
                     static_cast<uint8_t>(ObjectType::MAGENTA_CLAWED_ROBOT) + r);
                 int slot = object_mgr_.create_object(

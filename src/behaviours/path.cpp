@@ -10,10 +10,13 @@ namespace NPC {
 // we've advanced one tile along the dominant axis.
 static constexpr int STEP_FRACTIONS = 0x20;
 
-bool has_line_of_sight(const Object& obj,
-                       uint8_t target_slot,
-                       uint8_t max_tiles,
-                       const UpdateContext& ctx) {
+// Shared raycast body used by both the fixed-cap and randomised-cap
+// LOS variants. `cap_fracs` is the maximum Chebyshev distance to check,
+// expressed in 16-bit fraction units (whole * 256 + fraction).
+static bool has_line_of_sight_fracs(const Object& obj,
+                                    uint8_t target_slot,
+                                    int cap_fracs,
+                                    const UpdateContext& ctx) {
     if (target_slot >= GameConstants::PRIMARY_OBJECT_SLOTS) return false;
     const Object& target = ctx.mgr.object(target_slot);
     if (!target.is_active()) return false;
@@ -44,9 +47,8 @@ bool has_line_of_sight(const Object& obj,
     int max_axis = (adx > ady) ? adx : ady;
     if (max_axis == 0) return true; // coincident
 
-    // Early distance gate: if even the Chebyshev distance exceeds the cap,
-    // skip the raycast. `max_tiles` × 256 is the cap in fraction-units.
-    int cap_fracs = static_cast<int>(max_tiles) * 256;
+    // Early distance gate: if even the max-of-axis distance exceeds the
+    // cap, skip the raycast.
     if (max_axis > cap_fracs) return false;
 
     // Normalise to a step of STEP_FRACTIONS along the dominant axis. The
@@ -76,6 +78,38 @@ bool has_line_of_sight(const Object& obj,
         }
     }
     return true;
+}
+
+bool has_line_of_sight(const Object& obj,
+                       uint8_t target_slot,
+                       uint8_t max_tiles,
+                       const UpdateContext& ctx) {
+    // `max_tiles` × 256 converts whole tiles to the 16-bit fraction-unit
+    // space used by the raycast. Matches the turret's direct call to
+    // `check_for_obstruction_between_objects_80` at &359a which uses a
+    // fixed `max_distance = 0x80` (= 128 &20-fractions = 16 tiles).
+    return has_line_of_sight_fracs(obj, target_slot,
+                                   static_cast<int>(max_tiles) * 256, ctx);
+}
+
+bool has_line_of_sight_randomized(const Object& obj,
+                                  uint8_t target_slot,
+                                  const UpdateContext& ctx,
+                                  uint8_t nearest_object_distance) {
+    // Port of &3cb2-&3cba inside find_object. The 6502 works in &20
+    // fractions (1/8 tile each), so `max_distance_6502` ranges 0..255
+    // representing 0..32 tiles. Our raycast works in 16-bit fraction
+    // units (1/256 tile), so multiply by 0x20 to convert.
+    //
+    //   &3cb2 JSR rnd
+    //   &3cb5 AND #&4f         ; keep bits 0-3 and bit 6 only
+    //   &3cb7 EOR nearest_object_distance
+    //   &3cba JSR check_for_obstruction_between_objects
+    uint8_t r = ctx.rng.next();
+    uint8_t max_distance_6502 =
+        static_cast<uint8_t>((r & 0x4f) ^ nearest_object_distance);
+    int cap_fracs = static_cast<int>(max_distance_6502) * 0x20;
+    return has_line_of_sight_fracs(obj, target_slot, cap_fracs, ctx);
 }
 
 void update_target_directness(Object& obj, UpdateContext& ctx) {

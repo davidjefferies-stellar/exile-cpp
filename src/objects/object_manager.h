@@ -177,12 +177,46 @@ public:
     // Per-frame lifecycle counters (debug)
     // ========================================================================
     // Incremented from return_to_tertiary / remove_object / demote_to_secondary
-    // so the HUD can tell us which path is clearing primaries each frame.
-    // Game::run resets these at the top of each non-paused tick.
-    uint32_t debug_returns_ = 0;
-    uint32_t debug_removes_ = 0;
-    uint32_t debug_demotes_ = 0;
+    // / promote_from_secondary so the HUD can tell us which path is clearing
+    // or creating primaries each frame. Game::run resets these at the top of
+    // each non-paused tick.
+    uint32_t debug_returns_  = 0;
+    uint32_t debug_removes_  = 0;
+    uint32_t debug_demotes_  = 0;
+    uint32_t debug_promotes_ = 0;         // secondary -> primary promotions
+    uint32_t debug_creates_  = 0;         // direct create_object calls
     uint32_t debug_switch_presses_ = 0;   // lifetime press count (not reset)
+
+    // Per-frame lifecycle event log — populated by create / promote /
+    // demote / return / remove sites so the HUD can show WHICH specific
+    // primary slot + object type is churning, not just how many times
+    // per frame. Reset at the top of each non-paused tick. Fixed small
+    // cap; overflow entries are dropped (counters still tick).
+    enum DebugEventKind : uint8_t {
+        EVT_CREATE   = 1,   // create_object: new primary (tertiary spawn,
+                            // nest spawn, random event, firing, etc.)
+        EVT_PROMOTE  = 2,   // secondary -> primary
+        EVT_DEMOTE   = 3,   // primary    -> secondary
+        EVT_RETURN   = 4,   // primary    -> tertiary
+        EVT_REMOVE   = 5,   // primary    -> gone
+        EVT_FLIP     = 6,   // horizontal sprite flip toggled. Uses x
+                            // field for velocity_x (signed), y field
+                            // for new facing (0=right, 1=left).
+        EVT_SEC_INIT = 7,   // ROM-seeded secondary entry. Fired once per
+                            // non-empty slot during ObjectManager::init so
+                            // the lifecycle log shows the starting pool.
+                            // Slot field reuses the secondary index.
+    };
+    struct DebugEvent {
+        uint8_t kind;
+        uint8_t slot;   // primary slot (or secondary for EVT_PROMOTE source)
+        uint8_t type;   // ObjectType value
+        uint8_t x;
+        uint8_t y;
+    };
+    static constexpr int DEBUG_EVENT_CAP = 24;
+    DebugEvent debug_events_[DEBUG_EVENT_CAP] = {};
+    uint8_t    debug_events_n_ = 0;
 
     // Port of &0819 door_timer — the 6502's single global "hold door open"
     // countdown. update_door reads/writes this; the main loop decrements it
@@ -190,9 +224,17 @@ public:
     // which iterate X=2,1,0 — the X=0 case lands on &0819).
     uint8_t door_timer_ = 0;
     void reset_debug_counters() {
-        debug_returns_ = 0;
-        debug_removes_ = 0;
-        debug_demotes_ = 0;
+        debug_returns_  = 0;
+        debug_removes_  = 0;
+        debug_demotes_  = 0;
+        debug_promotes_ = 0;
+        debug_creates_  = 0;
+        debug_events_n_ = 0;
+    }
+    void record_debug_event(uint8_t kind, uint8_t slot, uint8_t type,
+                            uint8_t x, uint8_t y) {
+        if (debug_events_n_ >= DEBUG_EVENT_CAP) return;
+        debug_events_[debug_events_n_++] = {kind, slot, type, x, y};
     }
 
     // Initialise a primary-slot Object from the 6502 type tables. Used by
