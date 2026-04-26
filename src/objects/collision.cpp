@@ -379,19 +379,31 @@ uint8_t substitute_door_for_obstruction(
         }
     }
 
-    // &3e91-&3e94 door_tiles_table: closed → STONE_SLOPE_78, open → SPACE.
-    // The 6502's OPENING bit is bit 1 of the door's data byte (&4cdf),
-    // and it's set while the door is opening or fully open.
+    // &3e91-&3e94 door_tiles_table: per door orientation × open state.
+    //   index 0 (h closed): TILE_SPACESHIP_WALL_HORIZONTAL_QUARTER (0x17)
+    //   index 1 (h open):   TILE_SPACE (0x19)
+    //   index 2 (v closed): TILE_STONE_SLOPE_SEVENTY_EIGHT (0x2a)
+    //   index 3 (v open):   TILE_SPACE (0x19)
+    //
+    // The 6502 picks the orientation from the tile's flip bits at
+    // &3ea1-&3ea7: orientation = fh XOR fv (0 = horizontal door,
+    // 1 = vertical door). Both-set or neither-set means horizontal —
+    // and that's load-bearing for collision: STONE_SLOPE_78 is
+    // solid only in its left quarter, so substituting it for a CLOSED
+    // HORIZONTAL door (a 1-tile-wide solid slab the player walks ON)
+    // makes the player sink into the door past the slope's solid
+    // region. Horizontal doors must use the SPACESHIP_WALL_HORIZONTAL_
+    // QUARTER tile, whose obstruction is a uniform thin top slab.
     bool opening = (data & 0x02) != 0;
-    // The 6502 writes the raw door_tiles_table byte directly into
-    // tile_type_and_flip (&3ec2 STA &08). There is NO flip-bit inheritance
-    // from the original door tile — and that's load-bearing: a v-flipped
-    // STONE_SLOPE_78 has an inverted threshold that collapses its solid
-    // region, so a closed v-flipped door would be walked through. Match
-    // the original: return the raw type with no flip bits.
-    return opening
-        ? static_cast<uint8_t>(TileType::SPACE)
-        : static_cast<uint8_t>(TileType::STONE_SLOPE_78);
+    bool fh = (tile_and_flip & TileFlip::HORIZONTAL) != 0;
+    bool fv = (tile_and_flip & TileFlip::VERTICAL)   != 0;
+    bool vertical = (fh != fv);
+    if (opening) {
+        return static_cast<uint8_t>(TileType::SPACE);
+    }
+    return vertical
+        ? static_cast<uint8_t>(TileType::STONE_SLOPE_78)
+        : static_cast<uint8_t>(TileType::SPACESHIP_WALL_HORIZONTAL_QUARTER);
 }
 
 } // namespace Collision

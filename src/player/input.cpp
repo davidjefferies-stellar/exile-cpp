@@ -14,7 +14,8 @@ void InputHandler::process_key(int key) {
         case 'z': case 'Z': state_.jetpack      = true; break;
         case ' ':           state_.fire         = true; break;
         case InputKey::TAB:        state_.turn_around = true; break;
-        case InputKey::CTRL_LEFT:  state_.lie_down    = true; break;
+        case InputKey::CTRL_LEFT: state_.lie_down = true; break;
+        case 'L': case 'l':       state_.lie_down = true; break;
         case InputKey::CTRL_RIGHT: state_.boost       = true; break;
         case '\n': case '\r': case InputKey::ENTER:
             state_.pickup_drop = true; break;

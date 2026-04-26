@@ -1,7 +1,9 @@
 #include "game/game.h"
+#include "behaviours/npc_helpers.h"
 #include "objects/physics.h"
 #include "objects/collision.h"
 #include "objects/object_manager.h"
+#include "audio/audio.h"
 #include "rendering/sprite_atlas.h"
 #include "world/tertiary.h"
 #include "world/tile_data.h"
@@ -32,6 +34,31 @@ static uint8_t single_tile_effective_threshold(uint8_t tile_type, bool flip_h,
         else              { if (t < best) best = t; }
     }
     return best;
+}
+
+// Slope-tracking snap threshold. Probes the supporting tile's threshold
+// at the player's centre x and uses it directly when that section is
+// obstructing — so as the player walks across a slope tile the snap
+// target follows the slope surface beneath their feet. Falls back to
+// single_tile_effective_threshold (MIN/MAX over sprite width) when the
+// centre section is non-obstructing, which preserves landing on
+// partial-solid tiles like STONE_SLOPE_78 (door substitute, solid only
+// in the left quarter) where the player's centre may not sit over the
+// solid section.
+static uint8_t slope_tracking_threshold(uint8_t tile_type, bool flip_h,
+                                         bool flip_v, uint8_t x_at,
+                                         int sprite_w_frac,
+                                         bool ceiling_like) {
+    uint8_t at_x = tile_threshold_at_x(tile_type, flip_h, flip_v, x_at);
+    if (!ceiling_like) {
+        // Ground-like: thresh=0xff means "no obstruction at this x".
+        if (at_x < 0xff) return at_x;
+    } else {
+        // Ceiling-like: thresh=0x00 means "no obstruction at this x".
+        if (at_x > 0x00) return at_x;
+    }
+    return single_tile_effective_threshold(tile_type, flip_h, flip_v,
+                                            x_at, sprite_w_frac, ceiling_like);
 }
 
 // Probe a single tile cell with door substitution. Used by both the
@@ -75,8 +102,20 @@ static bool column_move_blocked(
 {
     int top_abs = static_cast<int>(y_whole) * 256 + static_cast<int>(y_frac);
     int bot_abs = top_abs + sprite_h_frac;
-    for (int sy = top_abs; sy <= bot_abs; sy += 0x20) {
-        int clamp_sy   = sy > bot_abs ? bot_abs : sy;
+    // Slope step-up tolerance: only check obstruction in the TOP HALF of
+    // the sprite. Anything obstructing the lower half is treated as a
+    // slope or step-up and allowed (the Y-axis collision/snap will lift
+    // the player to the new surface). Walls have to extend into the
+    // upper half to block X motion, which catches anything ≥ ~1/2 tile
+    // tall. This is the port-equivalent of the 6502's
+    // apply_tile_collision_to_position_and_velocity (&306c) which uses
+    // obstruction-depth ratios to distinguish slopes (push UP) from
+    // walls (push BACK) — we don't compute the ratios, but skipping the
+    // lower body achieves the same "slopes don't block, walls do" rule.
+    int gate_bot = top_abs + (bot_abs - top_abs) / 2;
+    if (gate_bot < top_abs) gate_bot = top_abs;
+    for (int sy = top_abs; sy <= gate_bot; sy += 0x20) {
+        int clamp_sy   = sy > gate_bot ? gate_bot : sy;
         uint8_t ty     = static_cast<uint8_t>((clamp_sy >> 8) & 0xff);
         uint8_t ty_frac = static_cast<uint8_t>(clamp_sy & 0xff);
         bool old_solid = probe_point_with_door_subst(
@@ -85,9 +124,9 @@ static bool column_move_blocked(
             landscape, mgr, new_tx, ty, new_xf, ty_frac);
         if (new_solid && !old_solid) return true;
     }
-    // Catch the very bottom row if the step skipped past it.
-    uint8_t ty     = static_cast<uint8_t>((bot_abs >> 8) & 0xff);
-    uint8_t ty_frac = static_cast<uint8_t>(bot_abs & 0xff);
+    // Catch the gate-bottom row if the step skipped past it.
+    uint8_t ty     = static_cast<uint8_t>((gate_bot >> 8) & 0xff);
+    uint8_t ty_frac = static_cast<uint8_t>(gate_bot & 0xff);
     bool old_solid = probe_point_with_door_subst(
         landscape, mgr, old_tx, ty, old_xf, ty_frac);
     bool new_solid = probe_point_with_door_subst(
@@ -339,6 +378,8 @@ void Game::integrate_player_motion(Object& player,
         // closed doors block and open doors don't, matching the 6502's
         // door_tiles_table swap at obstruction time.
         bool y_blocked = false;
+        bool y_blocked_by_tile = false;
+        uint8_t lead_ty_for_snap = 0;
         if (player.velocity_y != 0) {
             int lead_abs = static_cast<int>(player.y.whole) * 256 +
                            static_cast<int>(player.y.fraction) +
@@ -349,6 +390,10 @@ void Game::integrate_player_motion(Object& player,
                 landscape_, object_mgr_,
                 lead_ty, player.x.whole, player.x.fraction,
                 sprite_w_frac, lead_yf);
+            if (y_blocked) {
+                y_blocked_by_tile = true;
+                lead_ty_for_snap = lead_ty;
+            }
         }
         // Object-AABB backstop — same mechanism as the X-axis revert
         // above, with the same mass-ratio velocity transfer on block.
@@ -387,27 +432,81 @@ void Game::integrate_player_motion(Object& player,
         }
         bool object_supported = false;
         if (y_blocked) {
-            player.y = old_y;
-            if (player.velocity_y > 0) {
-                player.flags |= ObjectFlags::SUPPORTED;
-                // When the Y revert was due to AABB overlap with a
-                // heavier static, the tile-based grounded check below
-                // will read SPACE under the player and clear SUPPORTED.
-                // Preserve it so the flag survives to the friction /
-                // animation code.
-                object_supported = true;
-            }
-            if (y_obj_blocker >= 0) {
-                Object& other = object_mgr_.object(y_obj_blocker);
-                bool hit_from_below = player.velocity_y < 0; // moving up into other
-                auto t = Collision::apply_mass_ratio_velocity(
-                    player.velocity_y, other.velocity_y,
-                    player.weight(), other.weight(),
-                    hit_from_below);
-                player.velocity_y = t.this_v;
-                other.velocity_y  = t.other_v;
-            } else {
+            // Tile-based downward block: SNAP feet to the obstructing
+            // tile's surface instead of reverting to old_y. The pre-frame
+            // y is often 8-16 frac ABOVE the floor (the player's height
+            // doesn't quite reach the floor tile boundary), so a plain
+            // revert leaves the player suspended in air. Gravity then
+            // accumulates over several frames before the leading edge
+            // penetrates the floor again — making SUPPORTED toggle every
+            // ~5 frames and breaking the walking-speed branch in
+            // apply_player_input which requires SUPPORTED set on entry.
+            //
+            // The 6502 sidesteps this because its `&3046 halve_object_
+            // velocities_and_clear_obstructions` / &306c collision-vector
+            // path always pushes the object out of obstruction by enough
+            // to land at the surface (see &308a LDA #&fe). Match that by
+            // computing the surface y from lead_ty's threshold and
+            // positioning feet exactly there. Result: gravity bumps feet
+            // 1 frac into the floor every subsequent frame, the leading-
+            // edge probe always fires, SUPPORTED stays set, and walking
+            // engages continuously.
+            if (y_blocked_by_tile && player.velocity_y > 0 && y_obj_blocker < 0) {
+                ResolvedTile lres = resolve_tile_with_tertiary(
+                    landscape_, player.x.whole, lead_ty_for_snap);
+                uint8_t ltile = Collision::substitute_door_for_obstruction(
+                    lres.tile_and_flip, lres.data_offset,
+                    reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
+                        object_mgr_.object(0)),
+                    object_mgr_.tertiary_data_byte(lres.data_offset));
+                uint8_t ltype = ltile & TileFlip::TYPE_MASK;
+                if (Collision::is_tile_type_solid(ltype)) {
+                    bool lfh = (ltile & TileFlip::HORIZONTAL) != 0;
+                    bool lfv = (ltile & TileFlip::VERTICAL)   != 0;
+                    bool lcoll_fv = lfv ^ tile_obstruction_v_flip_bit(ltype);
+                    uint8_t lthresh = slope_tracking_threshold(
+                        ltype, lfh, lfv, player.x.fraction,
+                        sprite_w_frac, lcoll_fv);
+                    uint8_t snap_y = lcoll_fv ? 0 : lthresh;
+                    int target_feet_abs = static_cast<int>(lead_ty_for_snap) * 256 +
+                                          static_cast<int>(snap_y);
+                    int target_top_abs  = target_feet_abs - sprite_h_frac;
+                    player.y.whole    = static_cast<uint8_t>((target_top_abs >> 8) & 0xff);
+                    player.y.fraction = static_cast<uint8_t>(target_top_abs & 0xff);
+                    player.flags |= ObjectFlags::SUPPORTED;
+                    object_supported = true;
+                } else {
+                    // Section that obstructed wasn't a fully-solid tile
+                    // type at the simple lookup; fall back to plain
+                    // revert (old behaviour).
+                    player.y = old_y;
+                    player.flags |= ObjectFlags::SUPPORTED;
+                    object_supported = true;
+                }
                 player.velocity_y = 0;
+            } else {
+                player.y = old_y;
+                if (player.velocity_y > 0) {
+                    player.flags |= ObjectFlags::SUPPORTED;
+                    // When the Y revert was due to AABB overlap with a
+                    // heavier static, the tile-based grounded check below
+                    // will read SPACE under the player and clear SUPPORTED.
+                    // Preserve it so the flag survives to the friction /
+                    // animation code.
+                    object_supported = true;
+                }
+                if (y_obj_blocker >= 0) {
+                    Object& other = object_mgr_.object(y_obj_blocker);
+                    bool hit_from_below = player.velocity_y < 0;
+                    auto t = Collision::apply_mass_ratio_velocity(
+                        player.velocity_y, other.velocity_y,
+                        player.weight(), other.weight(),
+                        hit_from_below);
+                    player.velocity_y = t.this_v;
+                    other.velocity_y  = t.other_v;
+                } else {
+                    player.velocity_y = 0;
+                }
             }
         }
 
@@ -439,24 +538,138 @@ void Game::integrate_player_motion(Object& player,
         bool ffv = (ftile & TileFlip::VERTICAL) != 0;
 
         bool grounded = false;
+        uint8_t snap_ty = feet_tile_y;
+        uint8_t snap_y  = 0;
         if (Collision::is_tile_type_solid(ftype)) {
             bool fcoll_fv = ffv ^ tile_obstruction_v_flip_bit(ftype);
-            uint8_t fthresh = single_tile_effective_threshold(
+            // Loose check uses MIN over sprite width — catches grounded
+            // even when the player's centre x is over a non-obstructing
+            // patch and only an edge section is on the floor (door
+            // substitutes, slope edges).
+            uint8_t fthresh_min = single_tile_effective_threshold(
+                ftype, ffh, ffv, player.x.fraction,
+                sprite_w_frac, fcoll_fv);
+            // Snap target uses thresh AT player's centre — needed for
+            // slopes so the snap follows the slope surface as the player
+            // walks across it. MIN would pin the player to the highest
+            // point under their sprite and break uphill walking.
+            uint8_t fthresh_at = slope_tracking_threshold(
                 ftype, ffh, ffv, player.x.fraction,
                 sprite_w_frac, fcoll_fv);
             bool feet_in_obstr = fcoll_fv
-                ? (feet_frac <= fthresh)
-                : (feet_frac >= fthresh);
+                ? (feet_frac <= fthresh_min)
+                : (feet_frac >= fthresh_min);
             if (feet_in_obstr) {
                 grounded = true;
-                uint8_t land_y = fcoll_fv ? 0 : fthresh;
-                if (player.velocity_y >= 0) {
-                    int target_top = static_cast<int>(feet_tile_y) * 256 +
-                                     static_cast<int>(land_y) - sprite_h_frac;
-                    player.y.whole    = static_cast<uint8_t>((target_top >> 8) & 0xff);
-                    player.y.fraction = static_cast<uint8_t>(target_top & 0xff);
-                    player.velocity_y = 0;
+                snap_ty = feet_tile_y;
+                snap_y  = fcoll_fv ? 0 : fthresh_at;
+            }
+        }
+
+        // Sprite-height-change fallback: when the spacesuit cycles through
+        // standing (h=22) → walking (h=21) → angled (h=17/19/20) sprites,
+        // sprite_h_frac shrinks by up to ~40 frac. Feet computed from the
+        // current sprite then sit ABOVE the floor surface, which leaves
+        // feet_tile_y in non-solid SPACE and breaks the grounded probe
+        // even though the player is visually still on the floor. Probe
+        // feet_tile_y+1 within a 1/4-tile tolerance to catch this — port
+        // deviation from the 6502, whose check_for_top_and_bottom_tile_
+        // collisions has the same theoretical issue but the original
+        // game's flat tiles happen to position the player such that
+        // single-row sprite swaps don't fully clear obstruction.
+        if (!grounded) {
+            uint8_t below_ty = static_cast<uint8_t>(feet_tile_y + 1);
+            ResolvedTile bres = resolve_tile_with_tertiary(
+                landscape_, player.x.whole, below_ty);
+            uint8_t btile = Collision::substitute_door_for_obstruction(
+                bres.tile_and_flip, bres.data_offset,
+                reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
+                    object_mgr_.object(0)),
+                object_mgr_.tertiary_data_byte(bres.data_offset));
+            uint8_t btype = btile & TileFlip::TYPE_MASK;
+            if (Collision::is_tile_type_solid(btype)) {
+                bool bfh = (btile & TileFlip::HORIZONTAL) != 0;
+                bool bfv = (btile & TileFlip::VERTICAL)   != 0;
+                bool bcoll_fv = bfv ^ tile_obstruction_v_flip_bit(btype);
+                // MIN gives the highest surface in below_ty across the
+                // sprite — used for the gap test so any solid section
+                // under the player counts as "near the floor".
+                uint8_t bthresh_min = single_tile_effective_threshold(
+                    btype, bfh, bfv, player.x.fraction,
+                    sprite_w_frac, bcoll_fv);
+                // Snap target uses thresh-at-x for slope tracking.
+                uint8_t bthresh_at = slope_tracking_threshold(
+                    btype, bfh, bfv, player.x.fraction,
+                    sprite_w_frac, bcoll_fv);
+                uint8_t min_surface_y = bcoll_fv ? 0 : bthresh_min;
+                uint8_t at_surface_y  = bcoll_fv ? 0 : bthresh_at;
+                int feet_abs_full     = static_cast<int>(feet_tile_y) * 256 +
+                                        static_cast<int>(feet_frac);
+                int min_surface_abs   = static_cast<int>(below_ty) * 256 +
+                                        static_cast<int>(min_surface_y);
+                int gap = min_surface_abs - feet_abs_full;
+                if (gap >= 0 && gap <= 0x40) {
+                    grounded = true;
+                    snap_ty = below_ty;
+                    snap_y  = at_surface_y;
                 }
+            }
+        }
+
+        if (grounded && player.velocity_y >= 0) {
+            int target_top = static_cast<int>(snap_ty) * 256 +
+                             static_cast<int>(snap_y) - sprite_h_frac;
+            player.y.whole    = static_cast<uint8_t>((target_top >> 8) & 0xff);
+            player.y.fraction = static_cast<uint8_t>(target_top & 0xff);
+            player.velocity_y = 0;
+        }
+
+        // Refresh tile_collision_angle (port of &1c) from the slope of the
+        // supporting tile. Sample its threshold at left and right of the
+        // player's x.fraction, take the delta, and run angle_from_deltas
+        // — the same conversion the 6502 applies at &306c after building
+        // an obstruction-depth vector. For flat ground the delta is zero
+        // and tcA stays 0x00 ("right" / collision directly beneath); for
+        // a 45° rising-right slope the delta gives a vector pointing
+        // up-right and tcA lands around 0xe0. The walking branch in
+        // apply_player_input adds 0x10 (or 0x6f) and converts back to
+        // (vx, vy) via vector_from_magnitude_and_angle, producing accel
+        // along the slope direction.
+        //
+        // Skip the refresh while airborne so the last grounded value
+        // persists into a jump — matches the 6502, which only updates
+        // &1c when collision response actually fires.
+        if (grounded) {
+            ResolvedTile sres = resolve_tile_with_tertiary(
+                landscape_, player.x.whole, snap_ty);
+            uint8_t stile = Collision::substitute_door_for_obstruction(
+                sres.tile_and_flip, sres.data_offset,
+                reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
+                    object_mgr_.object(0)),
+                object_mgr_.tertiary_data_byte(sres.data_offset));
+            uint8_t stype = stile & TileFlip::TYPE_MASK;
+            bool sfh = (stile & TileFlip::HORIZONTAL) != 0;
+            bool sfv = (stile & TileFlip::VERTICAL)   != 0;
+            bool scoll_fv = sfv ^ tile_obstruction_v_flip_bit(stype);
+            if (!scoll_fv) {
+                // cfv=0: surface is at y_frac=thresh. Slope = d(thresh)/d(x).
+                constexpr int SAMPLE_HALF_DX = 0x10;  // 16 frac, 1/16 of a tile.
+                uint8_t left_x  = static_cast<uint8_t>(
+                    player.x.fraction - SAMPLE_HALF_DX);
+                uint8_t right_x = static_cast<uint8_t>(
+                    player.x.fraction + SAMPLE_HALF_DX);
+                uint8_t left_t  = tile_threshold_at_x(stype, sfh, sfv, left_x);
+                uint8_t right_t = tile_threshold_at_x(stype, sfh, sfv, right_x);
+                int dthresh = static_cast<int>(right_t) - static_cast<int>(left_t);
+                if (dthresh >  127) dthresh =  127;
+                if (dthresh < -128) dthresh = -128;
+                player_tile_collision_angle_ = NPC::angle_from_deltas(
+                    static_cast<int8_t>(SAMPLE_HALF_DX * 2),
+                    static_cast<int8_t>(dthresh));
+            } else {
+                // cfv=1 (full-solid floor / ceiling): surface at top of
+                // tile, no slope.
+                player_tile_collision_angle_ = 0;
             }
         }
         if (grounded || object_supported) player.flags |=  ObjectFlags::SUPPORTED;
@@ -511,12 +724,22 @@ void Game::integrate_player_motion(Object& player,
             particles_.emit_at(ParticleType::STAR_OR_MUSHROOM,
                                player.x.whole, static_cast<uint8_t>(ty),
                                rng_);
+            // &3ff9-&3ffc: mushroom contact sound — soft poof on top of
+            // the spore puff.
+            static constexpr uint8_t kSoundMushroomPoof[4] = { 0x33, 0xf3, 0x1d, 0x03 };
+            Audio::play(Audio::CH_ANY, kSoundMushroomPoof);
             break;
         }
     }
 
     // Apply water effects
     Water::apply_water_effects(landscape_, player, player.weight());
+
+    // Tile-based wind / water-current — same dispatch as the per-object
+    // loop. Without this the player feels surface wind but not the local
+    // gusts inside windy caverns or the river current in Triax's lab.
+    Wind::apply_tile_environment(player, landscape_, object_mgr_,
+                                 frame_counter_, rng_, particles_);
 
     // Object-object collision for player
     auto obj_coll = Collision::check_object_collision(

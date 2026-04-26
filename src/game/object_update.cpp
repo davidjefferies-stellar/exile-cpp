@@ -4,6 +4,8 @@
 #include "objects/object_data.h"
 #include "objects/held_object.h"
 #include "behaviours/behavior_dispatch.h"
+#include "behaviours/npc_helpers.h"
+#include "audio/audio.h"
 #include "world/tertiary.h"
 #include "world/tile_data.h"
 #include "world/wind.h"
@@ -44,6 +46,31 @@ static int8_t damp_seven_eighths(int8_t v_in) {
     return static_cast<int8_t>(v_in > 0 ? mag : -mag);
 }
 
+// AABB-corner solid probe for the held primary's penetration check at
+// step 3. Returns true if any of the four corners (top-left, top-right,
+// bottom-left, bottom-right) sits inside a solid tile. Used by the
+// axis-separated revert to test "if I left this axis at the new flush
+// value but kept the other axis at the old held position, does the
+// sprite still penetrate a wall?".
+static bool held_aabb_solid(const Landscape& landscape,
+                             Fixed8_8 hx, Fixed8_8 hy, int hw, int hh) {
+    int right_abs = int(hx.whole) * 256 + int(hx.fraction) + hw;
+    int bot_abs   = int(hy.whole) * 256 + int(hy.fraction) + hh;
+    uint8_t rtx = uint8_t((right_abs >> 8) & 0xff);
+    uint8_t rxf = uint8_t(right_abs & 0xff);
+    uint8_t bty = uint8_t((bot_abs   >> 8) & 0xff);
+    uint8_t byf = uint8_t(bot_abs   & 0xff);
+    return
+        Collision::point_in_tile_solid(landscape,
+            hx.whole, hy.whole, hx.fraction, hy.fraction) ||
+        Collision::point_in_tile_solid(landscape,
+            rtx, hy.whole, rxf, hy.fraction) ||
+        Collision::point_in_tile_solid(landscape,
+            hx.whole, bty, hx.fraction, byf) ||
+        Collision::point_in_tile_solid(landscape,
+            rtx, bty, rxf, byf);
+}
+
 // Full 18-step update loop - port of &1a0b-&1e18
 void Game::update_objects() {
     const Object& player = object_mgr_.player();
@@ -56,9 +83,59 @@ void Game::update_objects() {
         Object& obj = object_mgr_.object(slot);
         if (!obj.is_active()) continue;
 
-        // Step 3: Handle held objects
+        // Step 3: Handle held objects.
+        //
+        // 6502 &1afd-&1b54: position the held primary flush to the
+        // player's facing side (objects_x = player_x + offset), then
+        // fall through to JSR check_for_collisions at &1b54 — exactly
+        // the same routine every other object runs. If the flush
+        // position penetrates solid geometry, that routine reverts
+        // position so the held bumps the wall and stays there while the
+        // player moves on. Drift accumulates, and consider_dropping_
+        // held_object (&1cab) eventually fires HeldObject::should_drop
+        // to drop it.
+        //
+        // Our port previously skipped tile collision for held primaries
+        // (step 15 has `if (slot != held_object_slot_)`), so the held
+        // visually clipped through walls. Re-add the revert here without
+        // touching step 15: snapshot the position before update_position,
+        // run a tile-overlap test on the four AABB corners, and if any
+        // sit inside a solid tile, restore the snapshot. The motion
+        // delta over a single frame is small, so a corner-only probe
+        // catches penetrations the same way the 6502's section sweep
+        // would.
         if (slot == held_object_slot_) {
+            Fixed8_8 old_held_x = obj.x;
+            Fixed8_8 old_held_y = obj.y;
             HeldObject::update_position(obj, player);
+            Fixed8_8 new_held_x = obj.x;
+            Fixed8_8 new_held_y = obj.y;
+            int hw = (obj.sprite <= 0x7c)
+                ? (sprite_atlas[obj.sprite].w > 0
+                    ? (sprite_atlas[obj.sprite].w - 1) * 16 : 0) : 0;
+            int hh = (obj.sprite <= 0x7c)
+                ? (sprite_atlas[obj.sprite].h > 0
+                    ? (sprite_atlas[obj.sprite].h - 1) * 8 : 0) : 0;
+            // Axis-separated revert. The 6502's check_for_collisions reverts
+            // x and y independently: a horizontal wall doesn't pin the
+            // held vertically, and vice versa. Reverting both together
+            // (the previous version) made the held stick at its old y
+            // while the player jumped, leaving a tall gap until a facing
+            // flip refreshed update_position to a non-penetrating
+            // position on the other side.
+            //
+            // Try Y first (with old x), then X (with whichever y we
+            // settled on). Each axis only reverts if the move along
+            // THAT axis caused the overlap.
+            obj.x = old_held_x;
+            obj.y = new_held_y;
+            if (held_aabb_solid(landscape_, obj.x, obj.y, hw, hh)) {
+                obj.y = old_held_y;
+            }
+            obj.x = new_held_x;
+            if (held_aabb_solid(landscape_, obj.x, obj.y, hw, hh)) {
+                obj.x = old_held_x;
+            }
         }
 
         // Step 7: Check demotion
@@ -93,6 +170,27 @@ void Game::update_objects() {
             }
         }
 
+        // Step 9b: Refresh `touching` BEFORE the type-specific update reads it.
+        // The 6502 calls check_for_collisions at &1b54 — ahead of the per-type
+        // dispatch — so update routines (most importantly &4704 update_triax,
+        // which absorbs the destinator on its very first frame) see a touching
+        // field that reflects the current overlap. Our flow used to detect
+        // collisions only AFTER the type update, leaving frame-1 update_triax
+        // looking at the initial `touching = 0xff`. The destinator absorb-and-
+        // teleport beat never fired, leaving Triax pinned inside the ceiling
+        // tile (the spawn point at (&99, &3b) overlaps the ship-roof tile, and
+        // gravity's integrate-and-revert can't unstick him from a position
+        // that's already inside solid geometry).
+        {
+            auto early_coll = Collision::check_object_collision(
+                obj, slot,
+                reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
+                    object_mgr_.object(0)));
+            obj.touching = early_coll.collided
+                ? static_cast<uint8_t>(early_coll.other_slot)
+                : 0x80;
+        }
+
         // Step 10: Call type-specific update routine
         auto update_fn = AI::get_update_func(obj.type);
         if (update_fn) {
@@ -119,6 +217,13 @@ void Game::update_objects() {
         // Step 12: Handle explosions
         if (obj.energy == 0) {
             object_mgr_.create_object_at(ObjectType::EXPLOSION, 0, obj);
+            // &40db-&40de play_sound_on_channel_zero (priority): the
+            // generic "object exploded" boom. Wired here, the central
+            // energy-hits-zero hook, so every type of explosion picks
+            // it up — bullets, grenades, robots, NPCs.
+            static constexpr uint8_t kSoundExplosion[4] = { 0x17, 0x03, 0x11, 0x04 };
+            Audio::play_at(Audio::CH_PRIORITY, kSoundExplosion,
+                           obj.x.whole, obj.y.whole);
             object_mgr_.remove_object(slot);
             if (slot == held_object_slot_) held_object_slot_ = 0x80;
             continue;
@@ -146,13 +251,20 @@ void Game::update_objects() {
         // Wind particle emission — port of &3f73 add_wind_particle_
         // using_velocities. One PARTICLE_WIND per frame with probability
         // `magnitude / 0x7f`: stronger wind → visibly more drift trails.
-        // The 6502 emits through the current object's fraction field so
-        // wind particles appear around the object being pushed; emit
-        // helper does the same through the object source.
+        // The 6502's flow at &3f73-&3f91 is: (1) calculate_angle_from_vector
+        // turns the active wind (vector_x, vector_y) into &b5; (2) the
+        // probability gate at &3f76-&3f7b checks that &b7 magnitude exceeds
+        // a random byte; (3) add_particle reads the angle and the type's
+        // spd_rand/spd_base to pick a base velocity in the wind direction.
+        // emit_directed reproduces step 3, so wind particles now drift in
+        // the actual wind direction rather than a random one.
         {
+            int8_t wvx = 0, wvy = 0;
+            Wind::surface_wind_vector(obj, wvx, wvy);
             uint8_t mag = Wind::surface_wind_magnitude(obj);
             if (mag > 0 && (rng_.next() & 0x7f) < mag) {
-                particles_.emit(ParticleType::WIND, 1, obj, rng_);
+                uint8_t angle = NPC::angle_from_deltas(wvx, wvy);
+                particles_.emit_directed(ParticleType::WIND, angle, obj, rng_);
             }
         }
 
@@ -160,6 +272,19 @@ void Game::update_objects() {
         if (slot != held_object_slot_) {
             // Per-type physics gate:
             //   weight 7           -> fully static; pin position, zero velocity.
+            //   "undisturbed pin"  -> energy bit 7 set on a type whose update
+            //                         routine pins via consider_disturbing_object
+            //                         (collectables, inactive grenade). The
+            //                         6502 keeps these still by simply NOT
+            //                         calling add_A_to_position from inside
+            //                         the type's update — there's no global
+            //                         "integrate velocity into position" step
+            //                         like ours has. Without an equivalent
+            //                         skip here, gravity adds +1 to vy each
+            //                         frame and our generic integration drifts
+            //                         the object downward even after the
+            //                         type's pin zeroed velocity. Treat it
+            //                         like fully_static.
             //   INTANGIBLE (0x80)  -> keeps its velocity but skips gravity
             //                         (explosions, lightning, transporter beams,
             //                         moving fireballs, invisible inert — these
@@ -170,8 +295,15 @@ void Game::update_objects() {
                              ? object_types_flags[tidx] : 0;
             bool fully_static = obj.weight() >= 7;
             bool gravity_exempt = (tflags & ObjectTypeFlags::INTANGIBLE) != 0;
+            // "undisturbed" pin via energy bit 7 — see comment above.
+            // Active for the types whose update_fn runs the consider_
+            // disturbing_object pin (collectables 0x4a..0x64 and the
+            // inactive grenade dispatch chain). The bit gets cleared on
+            // touch in update_collectable, after which physics resumes.
+            bool pin_undisturbed = (obj.energy & 0x80) != 0 &&
+                                    static_cast<uint8_t>(obj.type) >= 0x4a;
 
-            if (fully_static) {
+            if (fully_static || pin_undisturbed) {
                 obj.velocity_x = 0;
                 obj.velocity_y = 0;
                 // Static objects still need to notice when something is
@@ -290,6 +422,29 @@ void Game::update_objects() {
                         object_mgr_.object(0));
                 obj.tile_collision = false;
                 obj.pre_collision_magnitude = 0;
+
+                // "Already inside solid" gate. The 6502 has an explicit
+                // push-out routine at &306c apply_tile_collision_to_position_
+                // and_velocity — when collision detection finds a partial
+                // overlap with tile geometry, it nudges the object -2 frac in
+                // the unobstructed direction (`Always try to move out of
+                // obstruction` at &308a) so a sprite that started or grew
+                // into solid space can walk back out.
+                //
+                // We don't port the full push-out yet, but we still need to
+                // avoid the failure mode it prevents: an object that spawns
+                // overlapping a tile (Triax in the ship-roof block at game
+                // start) would otherwise get reverted to the same overlap
+                // every frame, pinning it forever. Detect "already inside"
+                // up front, and if the move doesn't make things worse, allow
+                // it — gravity (or any constant force) then walks the
+                // sprite out of the obstruction. We only relax the X / Y
+                // revert in that case; objects in clear space still
+                // collide normally.
+                bool start_blocked =
+                    any_tile_solid(obj.x.whole, obj.x.fraction,
+                                   obj.y.whole, obj.y.fraction) ||
+                    Collision::overlaps_solid_object(obj, slot, all_primaries);
                 {
                     Fixed8_8 old_x = obj.x;
                     obj.x.add_velocity(obj.velocity_x);
@@ -297,7 +452,7 @@ void Game::update_objects() {
                         any_tile_solid(obj.x.whole, obj.x.fraction,
                                        obj.y.whole, obj.y.fraction) ||
                         Collision::overlaps_solid_object(obj, slot, all_primaries);
-                    if (blocked) {
+                    if (blocked && !start_blocked) {
                         // Port of &30b7: capture the max-axis velocity
                         // BEFORE the reflect/damp so update_full_flask and
                         // friends can tell a hard collision from a scrape.
@@ -317,7 +472,7 @@ void Game::update_objects() {
                         any_tile_solid(obj.x.whole, obj.x.fraction,
                                        obj.y.whole, obj.y.fraction) ||
                         Collision::overlaps_solid_object(obj, slot, all_primaries);
-                    if (blocked) {
+                    if (blocked && !start_blocked) {
                         uint8_t pre = static_cast<uint8_t>(std::max(
                             std::abs(static_cast<int>(obj.velocity_x)),
                             std::abs(static_cast<int>(obj.velocity_y))));
@@ -334,21 +489,29 @@ void Game::update_objects() {
                     // Water splash — port of &2f69-&2f82 add_water_
                     // particles_for_splash. If the object just crossed
                     // the waterline this frame moving downward, emit one
-                    // PARTICLE_WATER at the crossing point. Angle is &c0
-                    // in the original (straight up); our emit helper
-                    // picks up the object's velocity as the particle's
-                    // starting vector, which gets us rising droplets
-                    // close enough to the 6502 effect.
+                    // PARTICLE_WATER at the crossing point with angle
+                    // &c0 (straight up): emit_directed feeds the angle +
+                    // the type's spd_rand/spd_base through &2357 so the
+                    // droplet starts with vy ≈ -(spd_base..spd_base+spd_rand)
+                    // and visibly leaps out of the water.
                     uint8_t wy = Water::get_waterline_y(obj.x.whole);
                     bool was_above = old_y.whole < wy;
                     bool now_at    = obj.y.whole >= wy;
                     if (was_above && now_at && obj.velocity_y > 0) {
-                        particles_.emit(ParticleType::WATER, 1, obj, rng_);
+                        particles_.emit_directed(ParticleType::WATER,
+                                                 0xc0, obj, rng_);
                     }
                 }
 
                 // Apply water effects (buoyancy + damping)
                 Water::apply_water_effects(landscape_, obj, obj.weight());
+
+                // Tile-based wind / water-current (port of &3f18 / &3f41 /
+                // &3fa3). Pushes the object toward the tile's wind/flow
+                // vector. Runs after the global surface wind so a windy
+                // cavern's local force can override the surface drift.
+                Wind::apply_tile_environment(obj, landscape_, object_mgr_,
+                                             frame_counter_, rng_, particles_);
 
                 // SUPPORTED re-evaluation: probe the tile(s) one frac unit
                 // below the sprite's actual bottom edge, across both the

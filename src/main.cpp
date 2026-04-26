@@ -1,4 +1,5 @@
 #include "game/game.h"
+#include "audio/audio.h"
 #include "rendering/pixel_renderer.h"
 #include <memory>
 #include <cstdio>
@@ -13,5 +14,6 @@ int main() {
     }
 
     game.run();
+    Audio::close();
     return 0;
 }

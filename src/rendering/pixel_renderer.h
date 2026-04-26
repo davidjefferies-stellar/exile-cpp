@@ -53,4 +53,11 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+
+    // Blit an object-type sprite centred inside a HUD cell, at the same
+    // BBC 2:1 aspect the world uses. `obj_type < 0xff` selects the sprite;
+    // 0xff leaves the cell empty. When `dim` is true the palette is darkened
+    // so unselected weapons / un-collected keys read as inactive.
+    void blit_obj_sprite_cell(int cx, int cy, int cell_size,
+                              uint8_t obj_type, bool dim);
 };

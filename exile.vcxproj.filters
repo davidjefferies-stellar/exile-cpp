@@ -71,6 +71,9 @@
 
     <!-- src\player\ -->
     <ClCompile Include="src\player\input.cpp">                   <Filter>src\player</Filter> </ClCompile>
+    <ClCompile Include="src\player\player_actions.cpp">          <Filter>src\player</Filter> </ClCompile>
+    <ClCompile Include="src\player\player_motion.cpp">           <Filter>src\player</Filter> </ClCompile>
+    <ClCompile Include="src\player\player_sprite.cpp">           <Filter>src\player</Filter> </ClCompile>
 
     <!-- src\rendering\ -->
     <ClCompile Include="src\rendering\camera.cpp">               <Filter>src\rendering</Filter> </ClCompile>
@@ -86,9 +89,6 @@
     <ClCompile Include="src\game\game.cpp">                      <Filter>src\game</Filter> </ClCompile>
     <ClCompile Include="src\game\config.cpp">                    <Filter>src\game</Filter> </ClCompile>
     <ClCompile Include="src\game\tertiary_spawn.cpp">            <Filter>src\game</Filter> </ClCompile>
-    <ClCompile Include="src\game\player_actions.cpp">            <Filter>src\game</Filter> </ClCompile>
-    <ClCompile Include="src\game\player_motion.cpp">             <Filter>src\game</Filter> </ClCompile>
-    <ClCompile Include="src\game\player_sprite.cpp">             <Filter>src\game</Filter> </ClCompile>
     <ClCompile Include="src\game\object_update.cpp">             <Filter>src\game</Filter> </ClCompile>
     <ClCompile Include="src\game\render.cpp">                    <Filter>src\game</Filter> </ClCompile>
   </ItemGroup>

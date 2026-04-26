@@ -1,5 +1,6 @@
 #include "behaviours/environment.h"
 #include "behaviours/path.h"
+#include "audio/audio.h"
 #include "core/types.h"
 #include "objects/object_data.h"
 #include "particles/particle_system.h"
@@ -130,6 +131,10 @@ void update_door(Object& obj, UpdateContext& ctx) {
                     } else {
                         data |= DoorFlag::OPENING;
                     }
+                    // &31d0-&31d3 lock/unlock chime — same params for
+                    // both directions in the 6502.
+                    static constexpr uint8_t kSoundLock[4] = { 0x94, 0x64, 0xba, 0xc4 };
+                    Audio::play_at(Audio::CH_ANY, kSoundLock, obj.x.whole, obj.y.whole);
                 }
             }
         }
@@ -192,6 +197,14 @@ void update_door(Object& obj, UpdateContext& ctx) {
             if (ctx.mgr.door_timer_ < 20) {
                 data ^= DoorFlag::OPENING;   // start closing
                 opening = (data & DoorFlag::OPENING) != 0;
+                // &4d2a / &4d33: play opening or closing sound on the
+                // direction toggle. The 6502 dispatches the same way
+                // (BEQ is_closing branch on the OPENING bit).
+                static constexpr uint8_t kSoundDoorOpen[4]  = { 0xc7, 0xc3, 0xc1, 0x13 };
+                static constexpr uint8_t kSoundDoorClose[4] = { 0xc7, 0xc3, 0xc1, 0x03 };
+                Audio::play_at(Audio::CH_ANY,
+                               opening ? kSoundDoorOpen : kSoundDoorClose,
+                               obj.x.whole, obj.y.whole);
             }
         }
         // Non-zero colour_pair at the open end with no touch/unlock fall
@@ -203,6 +216,11 @@ void update_door(Object& obj, UpdateContext& ctx) {
                 // Immediately toggle direction on contact.
                 data ^= DoorFlag::OPENING;
                 opening = (data & DoorFlag::OPENING) != 0;
+                static constexpr uint8_t kSoundDoorOpen[4]  = { 0xc7, 0xc3, 0xc1, 0x13 };
+                static constexpr uint8_t kSoundDoorClose[4] = { 0xc7, 0xc3, 0xc1, 0x03 };
+                Audio::play_at(Audio::CH_ANY,
+                               opening ? kSoundDoorOpen : kSoundDoorClose,
+                               obj.x.whole, obj.y.whole);
             } else if (ctx.mgr.door_timer_ == 0) {
                 // cyG/rmB doors: arm the 60-frame hold-open timer and
                 // toggle direction (fallthrough from &4d1f into &4d22).
@@ -406,7 +424,9 @@ void update_switch(Object& obj, UpdateContext& ctx) {
             ctx.mgr.set_tertiary_data_byte(obj.tertiary_slot, data);
         }
         process_switch_effects(ctx.mgr, effect, /*mask=*/0xff, toggle);
-        // TODO(&49b6): play_sound.
+        // &49b6-&49b9: switch click.
+        static constexpr uint8_t kSoundSwitch[4] = { 0x3d, 0x04, 0x11, 0xd4 };
+        Audio::play_at(Audio::CH_ANY, kSoundSwitch, obj.x.whole, obj.y.whole);
 
         ctx.mgr.debug_switch_presses_++;
     }
@@ -465,7 +485,10 @@ void update_transporter_beam(Object& obj, UpdateContext& ctx) {
                 touched.timer = 0x20;
                 touched.velocity_x = obj.velocity_x;
                 touched.velocity_y = obj.velocity_y;
-                // TODO: play teleport sound (&4daa).
+                // &4daa play_sound_for_teleporting (&440d → JSR
+                // play_sound, params 29 c2 37 f3).
+                static constexpr uint8_t kSoundTeleport[4] = { 0x29, 0xc2, 0x37, 0xf3 };
+                Audio::play_at(Audio::CH_ANY, kSoundTeleport, obj.x.whole, obj.y.whole);
             }
         }
 
@@ -555,6 +578,11 @@ void update_hive(Object& obj, UpdateContext& ctx) {
     int slot = ctx.mgr.create_object_at(
         static_cast<ObjectType>(spawn_type_id), 4, obj);
     if (slot < 0) return;
+
+    // &4be0-&4be3: hive birth squelch sound, played as soon as the
+    // child slot has been allocated successfully.
+    static constexpr uint8_t kSoundHiveSpawn[4] = { 0x33, 0xf3, 0x4f, 0x35 };
+    Audio::play_at(Audio::CH_ANY, kSoundHiveSpawn, obj.x.whole, obj.y.whole);
 
     Object& spawn = ctx.mgr.object(slot);
     // angle &80 = leftward, &00 = rightward. Magnitude 0x20 → translate
@@ -782,6 +810,10 @@ void update_sucking_nest(Object& obj, UpdateContext& ctx) {
         } else {
             ctx.mgr.remove_object(obj.touching);
         }
+        // &4e2d-&4e30: nest digestion crunch when something gets
+        // absorbed.
+        static constexpr uint8_t kSoundNestEat[4] = { 0x57, 0x07, 0x57, 0x97 };
+        Audio::play_at(Audio::CH_ANY, kSoundNestEat, obj.x.whole, obj.y.whole);
     }
 }
 
@@ -793,20 +825,45 @@ void update_bush(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &40EE: Cannon - fires cannonballs periodically
+// &40EE update_cannon. The 6502 cannon has no internal timer: it fires a
+// cannonball iff the player has just fired a CANNON_CONTROL_DEVICE within
+// range and pointed at it (check_if_object_hit_by_other_control at &0bc7,
+// invoked with A=&4f). Without that gate the cannon never fires.
 void update_cannon(Object& obj, UpdateContext& ctx) {
-    NPC::enforce_minimum_energy(obj, 0x3f);
+    // &40ee-&40f3 check_if_object_hit_by_other_control(CANNON_CONTROL_DEVICE).
+    // The full 6502 test is three-part: (a) fired object is type 0x4f,
+    // (b) within ~3 tiles with clear LOS, (c) player aim angle points
+    // within a narrow cone at the cannon. We approximate (b) with
+    // Chebyshev distance and drop (c), matching the door RCD path above.
+    bool triggered = false;
+    if (ctx.player_object_fired < GameConstants::PRIMARY_OBJECT_SLOTS) {
+        const Object& fired = ctx.mgr.object(ctx.player_object_fired);
+        if (fired.is_active() &&
+            fired.type == ObjectType::CANNON_CONTROL_DEVICE) {
+            int8_t dx = static_cast<int8_t>(fired.x.whole - obj.x.whole);
+            int8_t dy = static_cast<int8_t>(fired.y.whole - obj.y.whole);
+            int adx = dx < 0 ? -dx : dx;
+            int ady = dy < 0 ? -dy : dy;
+            if (adx <= 3 && ady <= 3) triggered = true;
+        }
+    }
 
-    if (ctx.every_thirty_two_frames) {
+    if (triggered) {
+        // &40f5-&40f9 create_projectile_with_zero_velocity_y(CANNONBALL,
+        // x velocity = 0x40). The fire_projectile helper inverts vx for a
+        // left-facing parent via this_object_x_flip, matching &33ad.
         int slot = NPC::fire_projectile(obj, ObjectType::CANNONBALL, ctx);
         if (slot >= 0) {
             Object& ball = ctx.mgr.object(slot);
-            ball.velocity_x = obj.is_flipped_h() ? -0x18 : 0x18;
-            ball.velocity_y = -0x08;
+            ball.velocity_x = obj.is_flipped_h() ? -0x40 : 0x40;
+            ball.velocity_y = 0;
             NPC::offset_child_from_parent(ball, obj);
-            ball.timer = 64;
         }
     }
+    // &40fc-&40fe consider_flipping_object_to_match_velocity_x(0x0f) — 1-in-16
+    // chance per frame of snapping facing to the cannon's drift direction.
+    // Skipped here: the cannon is mounted (no x velocity) so the flip would
+    // never trigger anyway.
 }
 
 // &419F: Maggot machine - spawns maggots
@@ -892,7 +949,11 @@ void update_engine_fire(Object& obj, UpdateContext& ctx) {
             if (nv < -128) nv = -128;
             o.velocity_x = static_cast<int8_t>(nv);
         }
-        // TODO: play engine-fire sound (&4c61).
+        // &4c61-&4c64 play_sound_on_channel_zero (priority): engine
+        // fire roar. Channel 0 is the SEC entry point so this always
+        // plays even if the regular pool is busy.
+        static constexpr uint8_t kSoundEngineFire[4] = { 0x70, 0xc2, 0x6e, 0xa3 };
+        Audio::play_at(Audio::CH_PRIORITY, kSoundEngineFire, obj.x.whole, obj.y.whole);
     }
 
     // &4c68-&4c80: palette rwY + random x_fraction in [0x90, 0xcf].

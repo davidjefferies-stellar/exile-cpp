@@ -1,5 +1,6 @@
 #include "behaviours/projectile.h"
 #include "behaviours/mood.h"
+#include "audio/audio.h"
 #include "core/types.h"
 #include "objects/object_data.h"
 #include "objects/object_tables.h"
@@ -297,9 +298,13 @@ void update_active_grenade(Object& obj, UpdateContext& ctx) {
     // &4318: palette cycle through the 4-colour table.
     uint8_t idx = rotate_colour_from_A(obj, obj.timer);
 
-    // &431b-&4325: tick sound every 16 frames when idx wraps to 0.
-    // TODO: wire when audio is ported.
-    (void)idx;
+    // &431b-&4321: every 16 frames (when rotate_colour_from_A returns
+    // X=0), emit the grenade's "tick … tick" countdown beep. The
+    // 1-in-16 gate keeps the chirp at ~3 Hz, slow enough to count.
+    if (idx == 0) {
+        static constexpr uint8_t kSoundGrenadeTick[4] = { 0x57, 0x07, 0xcb, 0x82 };
+        Audio::play_at(Audio::CH_ANY, kSoundGrenadeTick, obj.x.whole, obj.y.whole);
+    }
 }
 
 // Port of the trail emission at &46d9-&46e9 inside update_bullet_with_

@@ -1,4 +1,5 @@
 #include "particles/particle_system.h"
+#include "behaviours/npc_helpers.h"
 #include "objects/object.h"
 #include "objects/object_data.h"
 #include "rendering/sprite_atlas.h"
@@ -283,4 +284,51 @@ void ParticleSystem::emit_at(ParticleType type, uint8_t wx, uint8_t wy,
     axis(t.vy_rand, t.y_rand, wy, vyu, p.y, p.y_fraction);
     p.velocity_x = static_cast<int8_t>(vxu);
     p.velocity_y = static_cast<int8_t>(vyu);
+}
+
+// Per-axis particle position+velocity randomisation used by emit_directed.
+// Mirrors the inner add_particles_loop body at &2230-&2263: the velocity is
+// the caller's base ± (rnd >> 1) & v_rand, the position is src + (rnd &
+// pos_rand). Extracted to a static helper to avoid lambdas per CLAUDE.md.
+static void emit_directed_axis(Random& rng,
+                               int8_t base_v, uint8_t v_rand,
+                               uint8_t base_pos, uint8_t base_frac, uint8_t pos_rand,
+                               int8_t& out_v,
+                               uint8_t& out_whole, uint8_t& out_frac) {
+    uint8_t r = rng.next();
+    bool negate = (r & 0x80) != 0;
+    int8_t mag = static_cast<int8_t>((r >> 1) & v_rand);
+    int v = int(base_v) + (negate ? -int(mag) : int(mag));
+    out_v = static_cast<int8_t>(clamp_signed(v));
+
+    uint8_t jitter = rng.next() & pos_rand;
+    int sum = int(base_frac) + int(jitter);
+    out_frac  = static_cast<uint8_t>(sum);
+    out_whole = base_pos + (sum > 0xff ? 1 : 0);
+}
+
+void ParticleSystem::emit_directed(ParticleType type, uint8_t angle,
+                                   const Object& src, Random& rng) {
+    if (type >= ParticleType::COUNT) return;
+    const TypeData& t = TYPES[static_cast<int>(type)];
+
+    // &21d7-&21e1 in add_particle: magnitude = (rnd & spd_rand) + spd_base,
+    // then (magnitude, angle) -> (vector_x, vector_y) via &2357. The 6502
+    // doesn't bound-check the addition; let it wrap mod 256 like the original.
+    uint8_t magnitude = static_cast<uint8_t>((rng.next() & t.spd_rand) + t.spd_base);
+    int8_t base_vx = 0, base_vy = 0;
+    NPC::vector_from_magnitude_and_angle(magnitude, angle, base_vx, base_vy);
+
+    int slot = allocate_slot(rng);
+    Particle& p = pool_[slot];
+
+    p.ttl = static_cast<uint8_t>((rng.next() & t.ttl_rand) + t.ttl_base);
+    p.colour_and_flags = (rng.next() & t.cf_rand) ^ t.cf_base;
+
+    emit_directed_axis(rng, base_vx, t.vx_rand,
+                       src.x.whole, src.x.fraction, t.x_rand,
+                       p.velocity_x, p.x, p.x_fraction);
+    emit_directed_axis(rng, base_vy, t.vy_rand,
+                       src.y.whole, src.y.fraction, t.y_rand,
+                       p.velocity_y, p.y, p.y_fraction);
 }

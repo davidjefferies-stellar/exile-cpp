@@ -123,6 +123,22 @@ void Game::update_player_sprite(int8_t accel_x, int8_t accel_y) {
     Object& player = object_mgr_.player();
     bool supported = (player.flags & ObjectFlags::SUPPORTED) != 0;
 
+    // Lying-down short-circuit. The 6502 forces the spacesuit
+    // horizontal at &2c7f-&2c91 by snapping the angle accumulator to
+    // the horizontal half-quadrant; we go straight to the HORIZONTAL
+    // sprite (0x00) and leave the flip alone so the player retains
+    // their last facing direction.
+    if (player_lying_down_) {
+        player.sprite = 0x00;
+        if (player_facing_ & 0x80) player.flags |= ObjectFlags::FLIP_HORIZONTAL;
+        else                       player.flags &= ~ObjectFlags::FLIP_HORIZONTAL;
+        // Keep angle parked at horizontal so we don't pop back to
+        // upright the moment lying-down is toggled off — feels less
+        // jarring than the angle suddenly flipping 90°.
+        player_angle_ = (player_facing_ & 0x80) ? 0x80 : 0x00;
+        return;
+    }
+
     uint8_t target_angle;
     if ((accel_x != 0 || accel_y != 0) && !supported) {
         // Airborne thrust: the 6502 at &385d-&3870 passes the raw
@@ -138,9 +154,11 @@ void Game::update_player_sprite(int8_t accel_x, int8_t accel_y) {
     int8_t delta = static_cast<int8_t>(deviation / 4);
     player_angle_ = static_cast<uint8_t>(player_angle_ + delta);
 
-    if (accel_x != 0) {
-        player_facing_ = (accel_x < 0) ? 0x80 : 0x00;
-    }
-
+    // player_facing_ is set in apply_player_input from the move_left /
+    // move_right edge — matches the 6502's order at &38b0-&38b7
+    // (facing decided BEFORE the walking branch's slope-vector rewrites
+    // acceleration_x). Re-deriving from accel_x here would flip the
+    // sprite 180° on every deceleration, since the walking model now
+    // produces a negative accel_x to brake a positive velocity.
     set_spacesuit_sprite_from_angle(player, player_angle_, player_facing_);
 }

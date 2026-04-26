@@ -1,6 +1,6 @@
 # Exile C++ Port — Porting Progress
 
-Survey of the 6502 disassembly at `../exile-standard-disassembly.txt` versus
+Survey of the 6502 disassembly at `exile-standard-disassembly.txt` versus
 the current C++ port. Legend:
 
 - **Done** — faithfully ported with 6502 address cited

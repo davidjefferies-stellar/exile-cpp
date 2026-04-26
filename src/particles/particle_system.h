@@ -83,6 +83,21 @@ public:
     // object-position path.
     void emit_at(ParticleType type, uint8_t wx, uint8_t wy, Random& rng);
 
+    // Like `emit`, but the particle's base velocity comes from the
+    // 6502 angle/magnitude path (&21d7-&21e1 in add_particle) instead of the
+    // object's own velocity. The magnitude is drawn from the type's
+    // spd_rand/spd_base table fields, and (magnitude, angle) is converted to
+    // (vx, vy) via vector_from_magnitude_and_angle. Per-particle ±vx_rand /
+    // ±vy_rand jitter is then added on top, matching the 6502.
+    //
+    // This is the path used by water-splash particles (angle=0xc0, "shoot
+    // up out of the splash") at &2f6d-&2f82 and by wind-tile particles
+    // (angle = direction of the wind vector) at &3f73-&3f91. The existing
+    // `emit` ignores spd_rand/spd_base, which left WATER and WIND particles
+    // drifting only by random jitter rather than in any directional way.
+    void emit_directed(ParticleType type, uint8_t angle,
+                       const Object& src, Random& rng);
+
     int count() const { return n_; }
     const Particle& get(int i) const { return pool_[i]; }
 

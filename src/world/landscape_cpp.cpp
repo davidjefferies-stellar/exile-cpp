@@ -180,19 +180,17 @@ static uint8_t handle_sloping_passage(uint8_t tile_x, uint8_t tile_y, uint8_t f1
     const uint8_t slope_type = slope.y;
     const uint8_t rotation   = kTileRotations[slope_type - 2];
 
-    // The 6502 does ROL × 3 of f1 starting with C=1 (CPY #&00 left
-    // carry set), then AND #&01 + ROL. Tracing the four rotates bit
-    // by bit shows the final 2-bit value y_val = (f1 bits 6,5) — the
-    // disassembly comment "Y = 0 or 2" is misleading; the code can
-    // also produce 1 or 3 when bit 5 is set.
-    const uint8_t y_val = (f1 >> 5) & 0x03;
+    // The 6502 does ROL × 3 starting with C=1 (CPY #&00 left carry set)
+    // followed by AND #&01 + ROL. As with the surface code above,
+    // tracing this yields a single bit: y_val = (f1 bit 4) ? 2 : 0,
+    // independent of the chained carry.
+    const uint8_t y_val = (f1 & 0x10) ? 2 : 0;
 
-    // Feature-vs-plain-slope test. The chain above always leaves C=0
-    // coming out of its final ROL (it operates on a 0-or-1 value, so
-    // bit 7 is necessarily 0). The next op is ADC tile_x, so:
-    //   sum = f1 + tile_x      ; carry-in 0
-    //   rol_v = (sum << 1) | carry-out-of-sum
-    const unsigned add  = unsigned(f1) + tile_x;
+    // Feature-vs-plain-slope test. The 6502 picks up the carry from the
+    // ROL chain (which traces to f1 bit 5), feeds it into ADC tile_x,
+    // then ROLs the new sum back through its carry, EORs y, and masks
+    // with 0x1a. Each of those steps is a pure bitwise expression.
+    const unsigned add  = unsigned(f1) + tile_x + ((f1 >> 5) & 1);
     const uint8_t  rolv = uint8_t((uint8_t(add) << 1) | (add >> 8));
 
     if (((rolv ^ tile_y) & 0x1a) != 0) {

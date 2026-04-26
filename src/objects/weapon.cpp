@@ -1,6 +1,7 @@
 #include "objects/weapon.h"
 #include "objects/object_tables.h"
 #include "behaviours/npc_helpers.h"
+#include "audio/audio.h"
 #include "core/types.h"
 #include "rendering/sprite_atlas.h"
 #include <algorithm>
@@ -81,6 +82,22 @@ int fire(ObjectManager& mgr, const Object& player,
     // while the bullet is still moving. Starting at 0 (as init_object_from_type
     // leaves it) would blow the bullet up on its very first frame.
     bullet.timer = 0x30;
+
+    // &2d58-&2d72: per-weapon firing sound. The 6502 dispatch is
+    //   weapon_type-1 == 0 → pistol, == 1 → icer, else plasma.
+    // Our weapon enum splits plasma and blaster, both of which use the
+    // 6502's plasma path (play_low_beep at &14ad).
+    static constexpr uint8_t kSoundPistol[4]  = { 0x3d, 0x04, 0x3d, 0x04 };  // &2d72
+    static constexpr uint8_t kSoundIcer[4]    = { 0x3d, 0x04, 0x3d, 0xd3 };  // &2d69
+    static constexpr uint8_t kSoundLowBeep[4] = { 0x5d, 0x04, 0xff, 0x05 };  // &14b0
+    switch (weapon_type) {
+        case 1: Audio::play(Audio::CH_ANY, kSoundPistol);  break;
+        case 2: Audio::play(Audio::CH_ANY, kSoundIcer);    break;
+        case 3:                                                                 // blaster
+        case 4: Audio::play(Audio::CH_ANY, kSoundLowBeep); break;               // plasma
+        default: break;
+    }
+
     return slot;
 }
 

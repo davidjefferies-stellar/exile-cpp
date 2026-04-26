@@ -107,6 +107,8 @@
     <ClCompile Include="src\behaviours\creature.cpp" />
     <ClCompile Include="src\behaviours\robot.cpp" />
     <ClCompile Include="src\behaviours\environment.cpp" />
+    <ClCompile Include="src\audio\audio.cpp" />
+    <ClCompile Include="src\audio\fenster_audio_impl.c" />
     <ClCompile Include="src\behaviours\collectable.cpp" />
     <ClCompile Include="src\player\input.cpp" />
     <ClCompile Include="src\rendering\camera.cpp" />
@@ -119,9 +121,9 @@
     <ClCompile Include="src\game\config.cpp" />
     <ClCompile Include="src\game\save_load.cpp" />
     <ClCompile Include="src\game\tertiary_spawn.cpp" />
-    <ClCompile Include="src\game\player_actions.cpp" />
-    <ClCompile Include="src\game\player_motion.cpp" />
-    <ClCompile Include="src\game\player_sprite.cpp" />
+    <ClCompile Include="src\player\player_actions.cpp" />
+    <ClCompile Include="src\player\player_motion.cpp" />
+    <ClCompile Include="src\player\player_sprite.cpp" />
     <ClCompile Include="src\game\object_update.cpp" />
     <ClCompile Include="src\game\render.cpp" />
   </ItemGroup>
@@ -163,6 +165,7 @@
     <ClInclude Include="src\behaviours\robot.h" />
     <ClInclude Include="src\behaviours\environment.h" />
     <ClInclude Include="src\behaviours\collectable.h" />
+    <ClInclude Include="src\audio\audio.h" />
     <ClInclude Include="src\player\input.h" />
     <ClInclude Include="src\game\game.h" />
     <ClInclude Include="src\game\config.h" />

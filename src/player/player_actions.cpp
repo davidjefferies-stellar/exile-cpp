@@ -2,8 +2,8 @@
 #include "objects/held_object.h"
 #include "objects/weapon.h"
 #include "behaviours/npc_helpers.h"
+#include "audio/audio.h"
 #include "rendering/sprite_atlas.h"
-#include <algorithm>
 
 // Port of &34b4 store_object. Pocket the currently-held primary; drain
 // it into the jetpack instead if it's a power pod. Returns true if the
@@ -45,10 +45,17 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     // Tab: turn the player around (port of &1e19 handle_swapping_
     // direction — the 6502 action table's &17 entry). Edge-triggered so
     // holding Tab doesn't spin the facing every frame.
+    //
+    // Toggle `player_facing_` rather than the FLIP_HORIZONTAL flag
+    // directly: update_player_sprite runs later in the frame and
+    // unconditionally rewrites the flag from player_facing_, so a flag
+    // toggle alone gets clobbered the same tick. The 6502 stores
+    // facing in player_object_x_flip (&38) which is the same single
+    // source of truth.
     {
         bool down = inp.turn_around;
         if (down && !turn_around_key_prev_) {
-            player.flags ^= ObjectFlags::FLIP_HORIZONTAL;
+            player_facing_ ^= 0x80;
         }
         turn_around_key_prev_ = down;
     }
@@ -69,14 +76,120 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     // paths to increase max velocity (&3ba1 LDA #&f0 / &3ba3 ADC weight).
     const int accel_scale = inp.boost ? 2 : 1;
 
-    if (inp.move_left)  accel_x = static_cast<int8_t>(-4 * accel_scale);
-    if (inp.move_right) accel_x = static_cast<int8_t>( 4 * accel_scale);
+    // 6502's set_object_jumping_or_flying (&2c7a) is triggered by
+    //   - up-thrust with a functioning jetpack (&2c75 BIT player_has_
+    //     functioning_jetpack / &2c91 in handle_using_booster).
+    //   - booster + horizontal direction (&2c8d-&2c91).
+    // The trigger sets state's low nibble to 0x0f, which makes
+    // update_walking_npc_or_player (&3b0b) see "not walking" via the
+    // BNE leave at &3b10 and skip the walk_along_flat_or_shallow_slope
+    // branch — the player keeps the accumulated thrust acceleration.
+    //
+    // Vertical input (down) also skips walking — pressing down while
+    // grounded shouldn't snap the X velocity; let thrust handle it.
+    bool flying =
+        inp.jetpack || inp.move_up || inp.move_down ||
+        (inp.boost && (inp.move_left || inp.move_right));
 
     if (inp.jetpack || inp.move_up) {
         accel_y = static_cast<int8_t>(-6 * accel_scale); // Thrust upward
     }
     if (inp.move_down) {
         accel_y = static_cast<int8_t>(2 * accel_scale);
+    }
+
+    // Set facing from input direction BEFORE the walking model rewrites
+    // accel_x. The 6502 decides player_facing at &38b0-&38b7 from the
+    // input-driven acceleration_x (set by &2c6a INC / &2c6d DEC), then
+    // the walking branch at &3b53 overwrites accel_x with a slope-vector
+    // value — but that overwrite doesn't affect facing this frame
+    // because it happens AFTER the facing store. Decelerating ("stop
+    // walking right") therefore doesn't flip the player around in the
+    // 6502, even though the post-walking accel_x is negative.
+    //
+    // Our port reads accel_x in update_player_sprite, which runs after
+    // the walking model. With the previous "facing = sign(accel_x)"
+    // logic, a stop-walking spun the sprite 180° because the
+    // decelerating accel_x had the opposite sign of the walking
+    // direction.
+    if (inp.move_right)      player_facing_ = 0x00;
+    else if (inp.move_left)  player_facing_ = 0x80;
+
+    // Walking branch — port of &3b25 walk_along_flat_or_shallow_slope.
+    //
+    // The 6502 doesn't accumulate `acceleration_x` from the &2c6a/&2c6d
+    // INC/DEC handlers when the player is on a walkable surface; instead
+    // it computes a target velocity = ±walking_speed (0x1f) and asks
+    // apply_weight_and_limit_to_acceleration for the per-frame step:
+    //   target = sign(direction) * 0x1f
+    //   diff   = target - velocity_x
+    //   accel  = clamp(diff >> weight, ±max_accel)        ; &3208 LSR
+    //   max_accel for player (weight 3) = 0x10 per &3abd-&3ac4
+    // That converges on walking_speed in ~2 frames and HOLDS — no
+    // overshoot, no "sticky" ramp.
+    //
+    // Our previous port used the flying-style additive accumulation
+    // (`accel_x = ±4` every frame) regardless of supported state. With
+    // velocity climbing 4 per frame from 0, the first ~8 frames look
+    // motionless; then the player crosses ~32 and abruptly slides at
+    // ~max speed — the user's "sticks until enough force to fly".
+    bool walking = (player.flags & ObjectFlags::SUPPORTED) && !flying;
+    if (walking) {
+        // Port of &3b25 walk_along_flat_or_shallow_slope. The 6502 builds
+        // an angle from (tcA + 0x10) for moving-right-vs-surface, or
+        // (tcA + 0x6f) for moving-left-vs-surface, then converts
+        // magnitude+angle to (accel_x, accel_y) via &2357 calculate_
+        // vector_from_magnitude_and_angle. On flat ground (tcA=0) this
+        // reduces to "right + 22.5° down" / "left + 22.5° down" — the
+        // small downward bias keeps the player into the floor for
+        // continuous collision. On a slope the angle rotates with tcA,
+        // producing an accel along the slope tangent.
+        constexpr int walking_speed = 0x1f;
+        constexpr int max_accel     = 0x10;
+        constexpr int player_weight = 3;
+        int target_vx = 0;
+        if (inp.move_left)  target_vx = -walking_speed;
+        if (inp.move_right) target_vx = +walking_speed;
+        int diff = target_vx - static_cast<int>(player.velocity_x);
+        int sign = (diff < 0) ? -1 : 1;
+        int abs_diff = (diff < 0) ? -diff : diff;
+        // &3208-&320c: LSR (weight+1) times, ROL once → divide by 2^weight.
+        abs_diff >>= player_weight;
+        if (abs_diff > max_accel) abs_diff = max_accel;
+        int8_t signed_accel = static_cast<int8_t>(sign * abs_diff);
+
+        // &3b31-&3b37 moving-left-vs-surface flag. bit 7 of
+        //   ((sign_bit(accel) XOR tcA) + 0x40)
+        // tells whether the player is moving "left along the surface
+        // normal frame" — flips for ceilings and steep slopes.
+        uint8_t accel_sign_bit = (signed_accel < 0) ? 0x80 : 0x00;
+        uint8_t mixed = static_cast<uint8_t>(accel_sign_bit ^ player_tile_collision_angle_);
+        uint8_t shifted = static_cast<uint8_t>(mixed + 0x40);
+        bool moving_left_vs_surface = (shifted & 0x80) != 0;
+
+        // &3b3e-&3b44: angle_base = 0x10 (moving right) or 0x6f (left)
+        //   then ADC tcA (carry from ASL A above is bit 7 of `shifted`,
+        //   which is the same as moving_left_vs_surface). The ADC's
+        //   carry adds 1 when moving_left_vs_surface — we replicate.
+        uint8_t angle_base = moving_left_vs_surface ? 0x6f : 0x10;
+        uint8_t angle = static_cast<uint8_t>(angle_base + player_tile_collision_angle_ +
+                                             (moving_left_vs_surface ? 1 : 0));
+
+        // &3b3a-&3b3c LDY #&00: when relative_tx is zero (no input),
+        // the magnitude is forced to 0 — so the player still gets the
+        // correct slope-aware angle but no accel applied. Slip-down-
+        // slope behaviour comes from elsewhere (collision response,
+        // future Step 3) — not from this branch when input is absent.
+        bool no_input = !inp.move_left && !inp.move_right;
+        uint8_t magnitude = no_input ? 0 : static_cast<uint8_t>(abs_diff);
+
+        int8_t out_vx = 0, out_vy = 0;
+        NPC::vector_from_magnitude_and_angle(magnitude, angle, out_vx, out_vy);
+        accel_x = out_vx;
+        accel_y = out_vy;
+    } else {
+        if (inp.move_left)  accel_x = static_cast<int8_t>(-4 * accel_scale);
+        if (inp.move_right) accel_x = static_cast<int8_t>( 4 * accel_scale);
     }
 
     // Lying down disables normal walking acceleration (the 6502 clears
@@ -317,6 +430,10 @@ void Game::apply_player_input(Object& player, const InputState& inp,
             if (new_slot > 0) {
                 HeldObject::pickup(object_mgr_.object(new_slot),
                                    player, held_object_slot_, new_slot);
+                // &351a-&351d: pickup chime — soft click as the
+                // retrieved item leaves the pocket and lands in hand.
+                static constexpr uint8_t kSoundRetrieve[4] = { 0x17, 0x82, 0x13, 0xc2 };
+                Audio::play(Audio::CH_ANY, kSoundRetrieve);
             } else {
                 // Couldn't allocate a primary slot — restore the pocket.
                 pockets_[pockets_used_] = ot;

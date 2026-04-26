@@ -73,6 +73,19 @@ void ObjectManager::init_object_from_type(Object& obj, ObjectType type) {
     obj.sprite = object_types_sprite[idx];
     obj.palette = object_types_palette_and_pickup[idx] & 0x7f;
     obj.energy = get_initial_energy(idx);
+    // Collectables (range 9, type >= 0x4a — pistol, grenades, RCD, flasks,
+    // mushroom balls, keys, etc.) spawn with the "undisturbed" pin armed
+    // (energy bit 7 set) so they sit still until something touches them.
+    // The 6502 ROM data has this set inconsistently per-instance via the
+    // packed secondary table; in our port object_update step 15 reads
+    // `obj.energy & 0x80 && type >= 0x4a` to skip physics until the pin
+    // is cleared by update_collectable's touch handler. Without this
+    // arming, get_initial_energy returns 0x7d (bit 7 clear) and freshly
+    // tertiary-spawned collectables drift downward each frame from the
+    // generic post-update gravity step.
+    if (idx >= 0x4a) {
+        obj.energy |= 0x80;
+    }
     obj.flags = ObjectFlags::NEWLY_CREATED | ObjectFlags::NOT_PLOTTED;
     obj.touching = 0xff; // Not touching anything
     obj.target_and_flags = 0; // Targets nothing
@@ -275,6 +288,15 @@ int ObjectManager::promote_from_secondary(int secondary_slot, int min_free_slots
     uint8_t energy, x_frac, y_frac;
     unpack_energy_fractions(sec.energy_and_fractions, energy, x_frac, y_frac);
     obj.energy = energy;
+    // Re-arm the collectable pin after overwriting from secondary.
+    // init_object_from_type set bit 7 for collectables, but we just
+    // overwrote with the secondary's high nibble (bit 7 may be 0 for
+    // ROM-init slots like the wasps-nest grenade entries). Force the
+    // pin armed on every promotion so collectables sit still until
+    // touched, even if the secondary data has bit 7 clear.
+    if (static_cast<uint8_t>(type) >= 0x4a) {
+        obj.energy |= 0x80;
+    }
     obj.x.fraction = x_frac;
     obj.y.fraction = y_frac;
 

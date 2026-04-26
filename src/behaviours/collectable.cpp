@@ -1,6 +1,7 @@
 #include "behaviours/collectable.h"
 #include "objects/object_data.h"
 #include "particles/particle_system.h"
+#include "audio/audio.h"
 #include "core/types.h"
 #include "world/water.h"
 #include <algorithm>
@@ -48,14 +49,21 @@ void update_collectable(Object& obj, UpdateContext& ctx) {
     bool held_by_player =
         ctx.held_object_slot == static_cast<uint8_t>(ctx.this_slot);
     if (held_by_player) {
+        // &4b93-&4b96 collect chime, played for any auto-collected
+        // pickup (whistles, keys). One sound shared across the three
+        // branches below — no need for distinct chimes per type.
+        static constexpr uint8_t kSoundCollect[4] = { 0x72, 0xa5, 0x7b, 0x85 };
+
         if (obj.type == ObjectType::WHISTLE_ONE && ctx.whistle_one_collected) {
             *ctx.whistle_one_collected = true;
             obj.flags |= ObjectFlags::PENDING_REMOVAL;
+            Audio::play(Audio::CH_ANY, kSoundCollect);
             return;
         }
         if (obj.type == ObjectType::WHISTLE_TWO && ctx.whistle_two_collected) {
             *ctx.whistle_two_collected = true;
             obj.flags |= ObjectFlags::PENDING_REMOVAL;
+            Audio::play(Audio::CH_ANY, kSoundCollect);
             return;
         }
         // Keys behave like whistles: auto-collect into
@@ -79,6 +87,7 @@ void update_collectable(Object& obj, UpdateContext& ctx) {
             if (key_index >= 0) {
                 ctx.player_keys_collected[key_index] = 0x80;
                 obj.flags |= ObjectFlags::PENDING_REMOVAL;
+                Audio::play(Audio::CH_ANY, kSoundCollect);
                 return;
             }
         }
@@ -188,7 +197,15 @@ void update_power_pod(Object& obj, UpdateContext& ctx) {
     uint8_t base_palette = object_types_palette_and_pickup[idx] & 0x7f;
     obj.palette = carry_clear ? static_cast<uint8_t>(base_palette ^ 0x30)
                               : base_palette;
-    // TODO: play pulsing sound (&436c) when audio is ported.
+    // &436a-&436f: BCS leave skips both palette and sound when carry
+    // is set; the sound only plays on the 2-in-16 flash frames where
+    // carry came back clear. Without the gate this hammers Audio::play
+    // every frame — the channel never gets to decay and we hear a
+    // sustained tone instead of a pulse.
+    if (carry_clear) {
+        static constexpr uint8_t kSoundPowerPodPulse[4] = { 0x05, 0xf2, 0xff, 0xc5 };
+        Audio::play_at(Audio::CH_ANY, kSoundPowerPodPulse, obj.x.whole, obj.y.whole);
+    }
     (void)ctx;
 }
 
@@ -332,6 +349,10 @@ void update_control_device(Object& obj, UpdateContext& ctx) {
     if (ctx.player_object_fired != static_cast<uint8_t>(ctx.this_slot)) {
         return;
     }
+
+    // &4356-&4359: play_sound — RCD firing pew. Bytes follow the JSR.
+    static constexpr uint8_t kSoundRCDFire[4] = { 0x57, 0x07, 0xc1, 0xd3 };
+    Audio::play(Audio::CH_ANY, kSoundRCDFire);
 
     // &435d JMP create_aim_particle: one PARTICLE_AIM per firing frame.
     // The 6502 also flips horizontally to "put aim particles on same

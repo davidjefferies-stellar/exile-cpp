@@ -3,6 +3,7 @@
 #include "behaviours/path.h"
 #include "objects/object_data.h"
 #include "particles/particle_system.h"
+#include "audio/audio.h"
 #include "core/types.h"
 #include <cstdlib>
 
@@ -229,6 +230,12 @@ void update_hovering_robot(Object& obj, UpdateContext& ctx) {
     NPC::cancel_gravity(obj);
     NPC::enforce_minimum_energy(obj, 0x81);
 
+    // &480c-&4811: 1-in-128 chance per frame of the ambient hover whine.
+    if ((ctx.rng.next() & 0x7f) == 0) {
+        static constexpr uint8_t kSoundHover[4] = { 0x33, 0xf3, 0x63, 0xe3 };
+        Audio::play_at(Audio::CH_ANY, kSoundHover, obj.x.whole, obj.y.whole);
+    }
+
     // Patrol: hover near player
     if (ctx.every_eight_frames) {
         NPC::seek_player(obj, ctx.mgr.player(), 3);
@@ -278,6 +285,13 @@ void update_clawed_robot(Object& obj, UpdateContext& ctx) {
         case ObjectType::GREEN_CLAWED_ROBOT:   min_energy = 0x80; break;
         case ObjectType::RED_CLAWED_ROBOT:     min_energy = 0x82; break;
         default: min_energy = 0x46; break;
+    }
+
+    // &4856-&485b: 1-in-128 chance per frame of the clawed robot's
+    // ambient growl.
+    if ((ctx.rng.next() & 0x7f) == 0) {
+        static constexpr uint8_t kSoundClawed[4] = { 0x17, 0x03, 0x68, 0xa3 };
+        Audio::play_at(Audio::CH_ANY, kSoundClawed, obj.x.whole, obj.y.whole);
     }
 
     // Gain 2 energy per update
@@ -380,7 +394,9 @@ void update_hovering_ball(Object& obj, UpdateContext& ctx) {
             other.type == ObjectType::INVISIBLE_HOVERING_BALL;
         if (!other_is_ball) {
             NPC::damage_player_if_touching(obj, ctx.mgr.player(), 3);
-            // TODO: sound &13fa 33 03 85 02.
+            // Hovering-ball impact zap. Bytes follow JSR play_sound at &13fa.
+            static constexpr uint8_t kSoundBallZap[4] = { 0x33, 0x03, 0x85, 0x02 };
+            Audio::play_at(Audio::CH_ANY, kSoundBallZap, obj.x.whole, obj.y.whole);
         }
     }
 

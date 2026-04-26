@@ -386,12 +386,26 @@ struct PixelRenderer::Impl {
         int dy = static_cast<int8_t>(wy - vp_center_y);
         int tpx = tile_px_x();
         int tpy = tile_px_y();
-        // Sub-tile offset: (wx_frac - vp_frac_x) is a signed 8.8 delta, scaled
-        // to pixels. Must use floor division — see floor_div_256 comment.
-        int sub_x = floor_div_256((int(wx_frac) - int(vp_frac_x)) * tpx);
-        int sub_y = floor_div_256((int(wy_frac) - int(vp_frac_y)) * tpy);
-        sx = f.width / 2 + dx * tpx + sub_x + pan_px_x;
-        sy = hud_y_px() / 2 + dy * tpy + sub_y + pan_px_y;
+        // Split the sub-tile offset into two independent floors instead of
+        // one combined `floor((wx_frac - vp_frac_x) * tpx / 256)`. The
+        // combined form snaps to a new pixel at different vp_frac_x values
+        // depending on `wx_frac`: a tile (wx_frac=0) snaps at one set of
+        // player-fraction crossings, an object (wx_frac=50) snaps at
+        // shifted crossings, so as the player walks the relative offset
+        // between a static object and the tile it sits on oscillates ±1px.
+        // That's the single-pixel "swim" you'd see on stationary items
+        // while the camera tracks the moving player.
+        //
+        // By computing the object's intra-tile pixel offset (`wx_frac * tpx /
+        // 256`) independently of the viewport's, the offset between an
+        // object and its tile becomes a constant `floor(wx_frac * tpx / 256)`
+        // — both shift together when the player moves, no relative drift.
+        int sub_x_view = floor_div_256(-int(vp_frac_x) * tpx);
+        int sub_y_view = floor_div_256(-int(vp_frac_y) * tpy);
+        int sub_x_obj  = floor_div_256( int(wx_frac)   * tpx);
+        int sub_y_obj  = floor_div_256( int(wy_frac)   * tpy);
+        sx = f.width / 2 + dx * tpx + sub_x_view + sub_x_obj + pan_px_x;
+        sy = hud_y_px() / 2 + dy * tpy + sub_y_view + sub_y_obj + pan_px_y;
         return sx > -tpx && sx < f.width && sy > -tpy && sy < hud_y_px();
     }
 
@@ -878,48 +892,109 @@ void PixelRenderer::render_hud(const PlayerState& player) {
     // Reinstate here later if gameplay needs the energy bar back.
     (void)player;
 
-    // Top-left pockets panel. One cell per pocket, slot 0 (the "top" of the
-    // stack — i.e. next to retrieve) drawn leftmost. Sprites render at a
-    // fixed BBC 2:1 aspect, independent of world zoom.
-    static constexpr int CELL     = 28;
-    static constexpr int CELL_PAD = 4;
-    static constexpr int ORIGIN_X = 4;
-    static constexpr int ORIGIN_Y = 4;
-    static constexpr int LABEL_H  = 9;
-    impl_->draw_text(ORIGIN_X, ORIGIN_Y, "POCKETS", 0xFFFFFF, 0x000000);
+    // Top-left HUD strip: POCKETS | KEYS | WEAPONS panels laid out
+    // horizontally. Sprites render at a fixed BBC 2:1 aspect, independent
+    // of world zoom.
+    static constexpr int CELL       = 28;
+    static constexpr int CELL_PAD   = 4;
+    static constexpr int PANEL_GAP  = 16;
+    static constexpr int ORIGIN_X   = 4;
+    static constexpr int ORIGIN_Y   = 4;
+    static constexpr int LABEL_H    = 9;
     int cells_y = ORIGIN_Y + LABEL_H;
+
+    // POCKETS — slot 0 ("top" of the stack, next to retrieve) drawn leftmost.
+    int px = ORIGIN_X;
+    impl_->draw_text(px, ORIGIN_Y, "POCKETS", 0xFFFFFF, 0x000000);
     for (int i = 0; i < 5; i++) {
-        int cx = ORIGIN_X + i * (CELL + CELL_PAD);
-        int cy = cells_y;
-        impl_->fill_rect(cx, cy, CELL, CELL, 0x000000);
+        int cx = px + i * (CELL + CELL_PAD);
         uint8_t ot = player.pockets[i];
+        impl_->fill_rect(cx, cells_y, CELL, CELL, 0x000000);
         uint32_t border = (ot == 0xff) ? 0x333333 : 0x888888;
-        impl_->stroke_rect(cx, cy, CELL, CELL, border);
-        if (ot == 0xff) continue;
-        uint8_t sprite_id = object_types_sprite[ot];
-        if (sprite_id > 0x7c) continue;
-        const SpriteAtlasEntry& e = sprite_atlas[sprite_id];
-        uint32_t lut[4];
-        resolve_palette(object_types_palette_and_pickup[ot] & 0x7f,
-                        /*is_tile=*/false, lut);
-        int sprite_w_px = e.w * 2;   // BBC 2:1 horizontal aspect
-        int sprite_h_px = e.h;
-        int blit_x = cx + (CELL - sprite_w_px) / 2;
-        int blit_y = cy + (CELL - sprite_h_px) / 2;
-        bool flip_h = (e.intrinsic_flip & 1) != 0;
-        bool flip_v = (e.intrinsic_flip & 2) != 0;
-        for (int sy = 0; sy < e.h; sy++) {
-            int src_y = e.y + (flip_v ? (e.h - 1 - sy) : sy);
-            for (int sx = 0; sx < e.w; sx++) {
-                int src_x = e.x + (flip_h ? (e.w - 1 - sx) : sx);
-                uint8_t idx = bbc_sprite_pixel(src_x, src_y);
-                if (idx == 0) continue;
-                uint32_t px = lut[idx];
-                int ox = blit_x + sx * 2;
-                int oy = blit_y + sy;
-                impl_->put_pixel(ox,     oy, px);
-                impl_->put_pixel(ox + 1, oy, px);
-            }
+        impl_->stroke_rect(cx, cells_y, CELL, CELL, border);
+        blit_obj_sprite_cell(cx, cells_y, CELL, ot, /*dim=*/false);
+    }
+    px += 5 * (CELL + CELL_PAD) + PANEL_GAP;
+
+    // KEYS — six collectable keys, indices match player_keys_collected_[0..5]
+    // (CYAN_YELLOW_GREEN_KEY=0x51 .. BLUE_CYAN_GREEN_KEY=0x57, skipping 0x55).
+    static constexpr uint8_t KEY_TYPES[6] = {
+        0x51, 0x52, 0x53, 0x54, 0x56, 0x57,
+    };
+    impl_->draw_text(px, ORIGIN_Y, "KEYS", 0xFFFFFF, 0x000000);
+    for (int i = 0; i < 6; i++) {
+        int cx = px + i * (CELL + CELL_PAD);
+        bool have = (player.keys[i] & 0x80) != 0;
+        impl_->fill_rect(cx, cells_y, CELL, CELL, 0x000000);
+        uint32_t border = have ? 0x888888 : 0x333333;
+        impl_->stroke_rect(cx, cells_y, CELL, CELL, border);
+        blit_obj_sprite_cell(cx, cells_y, CELL, KEY_TYPES[i],
+                             /*dim=*/!have);
+    }
+    px += 6 * (CELL + CELL_PAD) + PANEL_GAP;
+
+    // WEAPONS — slot 0 jetpack, 1 pistol, 2 icer, 3 blaster, 4 plasma. The
+    // 6502 weapon table also has slot 5 (suit) but it's never user-selectable
+    // so we leave it off the HUD. Selected slot is highlighted; the bottom
+    // strip shows energy as a 0..0x800 scaled bar (0x800 = full pip).
+    static constexpr uint8_t WEAPON_TYPES[5] = {
+        0x59, // JETPACK_BOOSTER
+        0x5a, // PISTOL
+        0x5b, // ICER
+        0x5c, // BLASTER
+        0x5d, // PLASMA_GUN
+    };
+    impl_->draw_text(px, ORIGIN_Y, "WEAPONS", 0xFFFFFF, 0x000000);
+    for (int i = 0; i < 5; i++) {
+        int cx = px + i * (CELL + CELL_PAD);
+        bool selected = (player.weapon == i);
+        uint16_t energy = player.weapon_energy[i];
+        bool have = energy > 0;
+        impl_->fill_rect(cx, cells_y, CELL, CELL, 0x000000);
+        uint32_t border = selected ? 0xFFFF44
+                                   : (have ? 0x888888 : 0x333333);
+        impl_->stroke_rect(cx, cells_y, CELL, CELL, border);
+        blit_obj_sprite_cell(cx, cells_y, CELL, WEAPON_TYPES[i],
+                             /*dim=*/!have);
+        // Energy bar along the bottom edge — full width at 0x800, clamped.
+        int max_w = CELL - 4;
+        int bar_w = (energy >= 0x800) ? max_w
+                                      : (int(energy) * max_w) / 0x800;
+        if (bar_w > 0) {
+            uint32_t bar_col = selected ? 0xFFCC44 : 0x44AA44;
+            impl_->fill_rect(cx + 2, cells_y + CELL - 4, bar_w, 2, bar_col);
+        }
+    }
+}
+
+void PixelRenderer::blit_obj_sprite_cell(int cx, int cy, int cell_size,
+                                         uint8_t obj_type, bool dim) {
+    if (obj_type == 0xff) return;
+    uint8_t sprite_id = object_types_sprite[obj_type];
+    if (sprite_id > 0x7c) return;
+    const SpriteAtlasEntry& e = sprite_atlas[sprite_id];
+    uint32_t lut[4];
+    resolve_palette(object_types_palette_and_pickup[obj_type] & 0x7f,
+                    /*is_tile=*/false, lut);
+    int sprite_w_px = e.w * 2;   // BBC 2:1 horizontal aspect
+    int sprite_h_px = e.h;
+    int blit_x = cx + (cell_size - sprite_w_px) / 2;
+    int blit_y = cy + (cell_size - sprite_h_px) / 2;
+    bool flip_h = (e.intrinsic_flip & 1) != 0;
+    bool flip_v = (e.intrinsic_flip & 2) != 0;
+    for (int sy = 0; sy < e.h; sy++) {
+        int src_y = e.y + (flip_v ? (e.h - 1 - sy) : sy);
+        for (int sx = 0; sx < e.w; sx++) {
+            int src_x = e.x + (flip_h ? (e.w - 1 - sx) : sx);
+            uint8_t idx = bbc_sprite_pixel(src_x, src_y);
+            if (idx == 0) continue;
+            uint32_t col = lut[idx];
+            // Dim by halving each channel — simple and palette-agnostic.
+            if (dim) col = (col >> 2) & 0x3F3F3F;
+            int ox = blit_x + sx * 2;
+            int oy = blit_y + sy;
+            impl_->put_pixel(ox,     oy, col);
+            impl_->put_pixel(ox + 1, oy, col);
         }
     }
 }

@@ -25,13 +25,20 @@ struct SpriteRenderInfo {
 struct PlayerState {
     uint8_t energy;
     uint8_t weapon;
-    uint8_t keys_collected;
     bool    has_jetpack_booster;
     // Port of &0848 player_pockets / &0847 player_pockets_used. Up to 5 stored
     // object types. Slot 0 is the "top" (most recently stored / next to
     // retrieve). Unused slots set to 0xff.
     uint8_t pockets[5] = {0xff, 0xff, 0xff, 0xff, 0xff};
     uint8_t pockets_used = 0;
+    // Port of &0806 player_keys_collected. Indices 0..5 map to the six
+    // collectable key types (CYAN_YELLOW_GREEN_KEY ... BLUE_CYAN_GREEN_KEY);
+    // 6..7 are unused. Each byte is 0x80 when collected, 0 otherwise.
+    uint8_t keys[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    // Port of &08?? weapon_energy table. One 16-bit counter per weapon slot:
+    // 0=jetpack, 1=pistol, 2=icer, 3=blaster, 4=plasma, 5=suit (see
+    // weapon.h). The HUD highlights `weapon` and shows non-zero energies.
+    uint16_t weapon_energy[6] = {0, 0, 0, 0, 0, 0};
 };
 
 namespace InputKey {

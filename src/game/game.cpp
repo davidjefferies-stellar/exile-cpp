@@ -1,5 +1,7 @@
 #include "game/game.h"
 #include "game/config.h"
+#include "audio/audio.h"
+#include "objects/collision.h"
 #include "objects/object_data.h"
 #include "objects/object_tables.h"
 #include "objects/held_object.h"
@@ -30,6 +32,11 @@ Game::Game(std::unique_ptr<IRenderer> renderer)
 
 bool Game::init() {
     if (!renderer_->init()) return false;
+
+    // Audio. Open lazily — if the platform refuses (no device, headless
+    // CI, etc.) Audio::open() returns false and every call site below
+    // becomes a silent no-op rather than blocking the game from running.
+    Audio::open();
 
     // Initialize object manager
     object_mgr_.init();
@@ -146,6 +153,22 @@ bool Game::init() {
     // sensible dx/dy relative to the player, not the default (0,0) anchor.
     // The main loop re-sets this every frame from the live player position.
     object_mgr_.set_activation_anchor(player.x.whole, player.y.whole);
+
+    // Promote every in-range secondary BEFORE the first tick. The 6502
+    // does this implicitly: the screen redraw at &15ce sets
+    // secondary_object_update_mode bit 7 = "consider all secondaries", and
+    // the first call to consider_promoting_secondary_objects (&0be8) takes
+    // the BMI to the full-scan path at &0c4e, bringing the destinator (and
+    // all the other near-player secondaries) up to primary in time for the
+    // first per-object update tick.
+    //
+    // Our promote_selective only checks one random secondary per frame, so
+    // without this seed call the destinator would still be sitting in
+    // secondary slot 16 when frame-1 update_triax runs, leaving
+    // obj.touching = 0xff (no destinator primary to overlap) — the
+    // absorb-and-teleport beat never fires, and Triax stays pinned inside
+    // the ship-roof tile he was spawned overlapping.
+    object_mgr_.promote_distance_check();
     flush_debug_log();
 
     running_ = true;
@@ -291,6 +314,21 @@ void Game::run() {
         }
 
         render();
+
+        // Update the audio listener position for distance-attenuated
+        // sounds (play_at). Tracks the player tile every frame so
+        // moving away from a creature or door drops its volume.
+        {
+            const Object& player = object_mgr_.player();
+            Audio::set_listener(player.x.whole, player.y.whole);
+        }
+
+        // Push one frame of audio. Has to happen every iteration of the
+        // main loop (paused or not) — the device's ring buffer drains
+        // continuously, and skipping a tick produces audible underrun
+        // clicks. Audio::tick is silent when no channels are active and
+        // a no-op when audio failed to open.
+        Audio::tick();
 
         // Flush lifecycle events AFTER render() so CREATE events emitted
         // by spawn_tertiary_object (which fires from the tile-plotting
@@ -650,9 +688,89 @@ void Game::update_player() {
 
     int8_t accel_x = 0;
     int8_t accel_y = 0;
+
+    // Snapshot pre-input state so the log shows what apply_player_input was
+    // looking at, and the post-integrate values can be compared.
+    int8_t pre_vx = player.velocity_x;
+    int8_t pre_vy = player.velocity_y;
+    uint8_t pre_xf = player.x.fraction;
+    uint8_t pre_yf = player.y.fraction;
+
     apply_player_input(player, inp, accel_x, accel_y);
     integrate_player_motion(player, accel_x, accel_y);
     update_player_sprite(accel_x, accel_y);
+
+    // Per-frame walking-diagnosis log. Only emits when motion-relevant input
+    // is held or the player is still moving — silent when stationary so the
+    // log doesn't flood. Goes to the same stream as flush_debug_log so the
+    // lifecycle events and the input frames interleave by frame number.
+    bool motion_input = inp.move_left || inp.move_right ||
+                        inp.move_up   || inp.move_down  ||
+                        inp.jetpack   || inp.boost;
+    if (debug_log_.is_open() &&
+        (motion_input || pre_vx != 0 || pre_vy != 0 ||
+         player.velocity_x != 0 || player.velocity_y != 0)) {
+        bool supported = (player.flags & ObjectFlags::SUPPORTED) != 0;
+        bool newly    = (player.flags & ObjectFlags::NEWLY_CREATED) != 0;
+        bool fliph    = (player.flags & ObjectFlags::FLIP_HORIZONTAL) != 0;
+        bool walking  = supported && !(inp.jetpack || inp.move_up || inp.move_down ||
+                                       (inp.boost && (inp.move_left || inp.move_right)));
+
+        // Re-resolve the tile under the player's feet so the log shows the
+        // exact inputs the grounded-check inside integrate_player_motion was
+        // looking at. Lets us see WHY sup=0 when the player is visually
+        // standing on a floor.
+        int sprite_h = (player.sprite <= 0x7c)
+                       ? sprite_atlas[player.sprite].h : 22;
+        int sprite_h_frac = (sprite_h > 0 ? sprite_h - 1 : 0) * 8;
+        int feet_abs_dbg = static_cast<int>(player.y.whole) * 256 +
+                           static_cast<int>(player.y.fraction) + sprite_h_frac;
+        uint8_t feet_ty  = static_cast<uint8_t>((feet_abs_dbg >> 8) & 0xff);
+        uint8_t feet_yf  = static_cast<uint8_t>(feet_abs_dbg & 0xff);
+        ResolvedTile fres_dbg = resolve_tile_with_tertiary(
+            landscape_, player.x.whole, feet_ty);
+        uint8_t raw_tile = Collision::substitute_door_for_obstruction(
+            fres_dbg.tile_and_flip, fres_dbg.data_offset,
+            reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
+                object_mgr_.object(0)),
+            object_mgr_.tertiary_data_byte(fres_dbg.data_offset));
+        uint8_t ftype = raw_tile & TileFlip::TYPE_MASK;
+        bool ffh = (raw_tile & TileFlip::HORIZONTAL) != 0;
+        bool ffv = (raw_tile & TileFlip::VERTICAL)   != 0;
+        bool ftype_solid = Collision::is_tile_type_solid(ftype);
+        bool fcoll_fv = ffv ^ tile_obstruction_v_flip_bit(ftype);
+        uint8_t fthresh = tile_threshold_at_x(ftype, ffh, ffv, player.x.fraction);
+        bool feet_in_obstr = fcoll_fv ? (feet_yf <= fthresh)
+                                      : (feet_yf >= fthresh);
+
+        char line[320];
+        std::snprintf(line, sizeof(line),
+                      "%u inp keys=%c%c%c%c%c%c facing=%s sup=%d new=%d fh=%d "
+                      "walk=%d pre_vel=%d,%d pre_frac=%u,%u accel=%d,%d "
+                      "post_vel=%d,%d post_frac=%u,%u pos=%u,%u "
+                      "feet=ty%u,yf%u tile=%02x type=%02x sol=%d cfv=%d "
+                      "thr=%u in_obs=%d tcA=%02x\n",
+                      static_cast<unsigned>(frame_counter_),
+                      inp.move_left  ? 'L' : '-',
+                      inp.move_right ? 'R' : '-',
+                      inp.move_up    ? 'U' : '-',
+                      inp.move_down  ? 'D' : '-',
+                      inp.jetpack    ? 'J' : '-',
+                      inp.boost      ? 'B' : '-',
+                      (player_facing_ & 0x80) ? "L" : "R",
+                      supported ? 1 : 0, newly ? 1 : 0, fliph ? 1 : 0,
+                      walking ? 1 : 0,
+                      pre_vx, pre_vy, pre_xf, pre_yf,
+                      accel_x, accel_y,
+                      player.velocity_x, player.velocity_y,
+                      player.x.fraction, player.y.fraction,
+                      player.x.whole, player.y.whole,
+                      feet_ty, feet_yf, raw_tile, ftype,
+                      ftype_solid ? 1 : 0, fcoll_fv ? 1 : 0,
+                      fthresh, feet_in_obstr ? 1 : 0,
+                      player_tile_collision_angle_);
+        debug_log_ << line;
+    }
 }
 
 // Port of &32c8 handle_dropping_object (simplified — we don't need the full
@@ -715,6 +833,12 @@ void Game::handle_player_teleporting(Object& player) {
 
     player.tx = player_teleports_x_[y];
     player.ty = player_teleports_y_[y];
+
+    // &0ce2 JSR play_sound_for_teleporting. Same sound effect the
+    // transporter beam plays — 4-byte block at &4410.
+    static constexpr uint8_t kSoundTeleport[4] = { 0x29, 0xc2, 0x37, 0xf3 };
+    Audio::play(Audio::CH_ANY, kSoundTeleport);
+
     player.flags |= ObjectFlags::TELEPORTING;
     player.timer = 0x20;   // 32 frames: 16 at old pos, 16 at new.
 }

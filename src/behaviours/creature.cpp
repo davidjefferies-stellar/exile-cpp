@@ -1,6 +1,7 @@
 #include "behaviours/creature.h"
 #include "behaviours/mood.h"
 #include "behaviours/path.h"
+#include "audio/audio.h"
 #include "world/water.h"
 #include "core/types.h"
 #include <cstdlib>
@@ -203,6 +204,17 @@ void update_fluffy(Object& obj, UpdateContext& ctx) {
 
     if (is_squealing) {
         obj.timer |= 0x80; // Set active flag (top bit of timer)
+        // &42be-&42c1 squeal sound. Fluffy's complaint when upset or
+        // when something nasty wanders near.
+        static constexpr uint8_t kSoundFluffySqueal[4] = { 0xb0, 0x24, 0xb6, 0xe2 };
+        Audio::play_at(Audio::CH_ANY, kSoundFluffySqueal, obj.x.whole, obj.y.whole);
+    } else if (mood != NPCMood::MINUS_TWO &&
+               (ctx.rng.next() & 0x7f) == 0) {
+        // &42d4-&42d7 purr. Plays when fluffy is in non-negative mood;
+        // 1-in-128 chance per frame keeps it ambient rather than
+        // continuous.
+        static constexpr uint8_t kSoundFluffyPurr[4] = { 0xc7, 0x81, 0xc1, 0xf3 };
+        Audio::play_at(Audio::CH_ANY, kSoundFluffyPurr, obj.x.whole, obj.y.whole);
     }
 
     // When not in negative mood, don't seek targets (target self)
@@ -385,6 +397,13 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                 b.velocity_x = (dx > 0) ?  0x18 : -0x18;
                 b.velocity_y = (dy > 0) ?  0x10 : -0x10;
                 NPC::offset_child_from_parent(b, obj);
+
+                // &460c imp_sound_parameters. The 6502 patches the
+                // pitch byte at runtime per imp variant; we use the
+                // default-table values as a stand-in. Mostly heard as
+                // a wide pitch range across the imp colours.
+                static constexpr uint8_t kSoundImp[4] = { 0x57, 0x07, 0x4f, 0x35 };
+                Audio::play_at(Audio::CH_ANY, kSoundImp, obj.x.whole, obj.y.whole);
             }
         }
     }
@@ -597,8 +616,11 @@ void update_piranha_or_wasp(Object& obj, UpdateContext& ctx) {
     bool damaging = (roll < obj.state) && (obj.touching == 0);
     if (damaging) {
         NPC::damage_player_if_touching(obj, ctx.mgr.player(), 24);
+        // &4f57-&4f5a: piranha / wasp attack sting sound (always plays
+        // when damage was inflicted).
+        static constexpr uint8_t kSoundPiranhaWasp[4] = { 0x33, 0xf3, 0x4f, 0x35 };
+        Audio::play_at(Audio::CH_ANY, kSoundPiranhaWasp, obj.x.whole, obj.y.whole);
     }
-    // Sound playback is TODO.
 
     // &4f5e-&4f65: sprite frame from velocity magnitude mod 0x0c, shift
     // right twice → 0..2. change_object_sprite_to_base_plus_A looks up
@@ -670,11 +692,12 @@ static void update_bird_common(Object& obj, UpdateContext& ctx) {
                    static_cast<uint8_t>(ObjectType::GREEN_YELLOW_BIRD);
     if (tidx >= 4) tidx = 0;
 
-    // &4631-&463f: 1-in-64 chance each frame of playing the bird's call
-    // sound. Sound playback is TODO; just roll the rng to keep the rng
-    // state in step with the original.
+    // &4631-&463f: 1-in-64 chance each frame of playing the bird's call.
+    // The 4 parameter bytes are the volume / frequency envelope block
+    // that follows the 6502's JSR play_sound at &4638.
     if ((ctx.rng.next() & 0x3f) == 0) {
-        // play_sound(57 07 43 f6) — not yet wired.
+        static constexpr uint8_t kSoundBirdCall[4] = { 0x57, 0x07, 0x43, 0xf6 };
+        Audio::play_at(Audio::CH_ANY, kSoundBirdCall, obj.x.whole, obj.y.whole);
     }
 
     // &4641-&464a: if touching the player, apply damage based on type.
@@ -708,13 +731,58 @@ static void update_bird_common(Object& obj, UpdateContext& ctx) {
         NPC::change_object_sprite_to_base_plus_A(obj, off);
     }
 
-    // &466b-&4672: eat any wasp we're touching, then consider a new
-    // target among wasps. consider_absorbing_object_touched and
-    // consider_finding_target are complex routines; a pragmatic stand-in
-    // is: if currently touching a wasp slot, zero its energy (pseudo-eat)
-    // and aim at it next. Full port is TODO.
-    // TODO: port &3be1 consider_absorbing_object_touched and &3bf8
-    //       consider_finding_target.
+    // &466b-&4670: eat any wasp we're touching, then aim at the next one.
+    //
+    // 6502:
+    //   LDA #&11 ; OBJECT_WASP
+    //   JSR &3be1 ; consider_absorbing_object_touched
+    //   LDA #&11
+    //   LDY #&00 ; no range
+    //   JSR &3bf8 ; consider_finding_target
+    //
+    // consider_absorbing_object_touched (&3be1): if `touching` slot holds an
+    // object of the requested type, mark that object PENDING_REMOVAL and
+    // play a low beep. We skip the &3bd5 check_object_touching_angle gate
+    // (which rejects wasps approaching from a glancing angle) — &3bd5
+    // requires the firing-vector angle table our port hasn't fully wired,
+    // and the bird's AABB is small enough that any touching wasp is "in
+    // mouth" anyway.
+    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
+        Object& touched = ctx.mgr.object(obj.touching);
+        if (touched.is_active() && touched.type == ObjectType::WASP) {
+            touched.flags |= ObjectFlags::PENDING_REMOVAL;
+            // &14ad-&14b0 play_low_beep — chatter "burp" on swallowing
+            // a wasp.
+            static constexpr uint8_t kSoundLowBeep[4] = { 0x5d, 0x04, 0xff, 0x05 };
+            Audio::play_at(Audio::CH_ANY, kSoundLowBeep, obj.x.whole, obj.y.whole);
+        }
+    }
+
+    // consider_finding_target (&3bf8): every 16 frames, scan primaries for
+    // the nearest wasp and set it as this bird's target with DIRECTNESS_ONE.
+    // The 6502 calls find_object (&3c2a) with Y=0 ("no range") which means
+    // "ignore the per-type range gate" — pick whichever wasp has the
+    // smallest centre-to-centre Chebyshev distance. update_npc_path runs
+    // next frame and feeds (tx, ty) into move_towards_target_with_probability.
+    if (ctx.every_sixteen_frames) {
+        int best_dist = 0x7fff;
+        int best_slot = -1;
+        for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+            const Object& w = ctx.mgr.object(i);
+            if (!w.is_active() || w.type != ObjectType::WASP) continue;
+            int8_t dx = static_cast<int8_t>(w.x.whole - obj.x.whole);
+            int8_t dy = static_cast<int8_t>(w.y.whole - obj.y.whole);
+            int adx = dx < 0 ? -dx : dx;
+            int ady = dy < 0 ? -dy : dy;
+            int d   = adx > ady ? adx : ady;
+            if (d < best_dist) { best_dist = d; best_slot = i; }
+        }
+        if (best_slot >= 0) {
+            obj.target_and_flags =
+                static_cast<uint8_t>(best_slot & TargetFlags::OBJECT_MASK) |
+                TargetFlags::DIRECTNESS_ONE;
+        }
+    }
 
     // &467a-&4686: NPC path update, then move towards the current target
     // with magnitude 0x40, max-accel 8, 1-in-4 probability (0x40 / 256).
@@ -751,8 +819,11 @@ void update_bird(Object& obj, UpdateContext& ctx) {
 void update_red_magenta_bird(Object& obj, UpdateContext& ctx) {
     uint8_t r = ctx.rng.next();
     if (r == 0) {
-        // TODO: play_whistle_two_sound — sets whistle_two_activator to
-        // this bird's slot, deactivating Chatter.
+        // &2c9e-&2ca1 play_whistle_two_sound. The wider effect (setting
+        // whistle_two_activating_object so Chatter deactivates) is a
+        // separate TODO; the audible whistle goes through here.
+        static constexpr uint8_t kSoundWhistleTwo[4] = { 0xb0, 0x24, 0xb6, 0xe2 };
+        Audio::play_at(Audio::CH_ANY, kSoundWhistleTwo, obj.x.whole, obj.y.whole);
     }
     update_bird_common(obj, ctx);
 }

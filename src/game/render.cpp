@@ -370,7 +370,11 @@ void Game::render() {
     // width = (pe.w-1)*16, height = (pe.h-1)*8, in 1/256-of-a-tile units).
     // Toggle with 'B'. Player is drawn in cyan; weight-7 statics (doors,
     // switches) in red so blocking boxes stand out; everything else yellow.
-    if (renderer_->aabb_overlay_enabled()) {
+    // Show object AABBs when EITHER the keyboard 'B' toggle is on OR the
+    // bottom-HUD "Collision" checkbox is ticked. The two debug overlays
+    // are usually wanted together — tile-shading shows where blocking
+    // geometry is, AABBs show what's bumping into it.
+    if (renderer_->aabb_overlay_enabled() || renderer_->collision_enabled()) {
         for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
             const Object& obj = object_mgr_.object(i);
             if (!obj.is_active()) continue;
@@ -606,10 +610,11 @@ void Game::render() {
     PlayerState ps;
     ps.energy = object_mgr_.player().energy;
     ps.weapon = player_weapon_;
-    ps.keys_collected = 0;
     ps.has_jetpack_booster = false;
     for (int i = 0; i < 5; i++) ps.pockets[i] = pockets_[i];
     ps.pockets_used = pockets_used_;
+    for (int i = 0; i < 8; i++) ps.keys[i] = player_keys_collected_[i];
+    for (int i = 0; i < 6; i++) ps.weapon_energy[i] = weapon_energy_[i];
     renderer_->render_hud(ps);
 
     renderer_->end_frame();

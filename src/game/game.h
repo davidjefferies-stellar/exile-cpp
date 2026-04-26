@@ -45,6 +45,13 @@ private:
     uint8_t player_aim_angle_ = 0;
     uint8_t player_angle_  = 0xc0;  // &de: current body angle (0xc0 = upright head-up)
     uint8_t player_facing_ = 0x00;  // &df: facing as an x_flip byte (0x00 right, 0x80 left)
+    // &1c tile_collision_angle: angle of the surface the player is standing
+    // on, in 8-bit units (0x00 = flat ground, 0xe0 = 45° rising right,
+    // 0x20 = 45° falling right). Refreshed each frame in
+    // integrate_player_motion's grounded check from the supporting tile's
+    // threshold gradient. Used by the walking branch in apply_player_input
+    // to point acceleration ALONG the slope instead of purely horizontal.
+    uint8_t player_tile_collision_angle_ = 0;
     uint8_t held_object_slot_ = 0x80; // 0x80+ = no object held
     // &29d7 player_object_fired: set to the held object's slot when the
     // player presses fire while holding something; 0xff when nothing was
