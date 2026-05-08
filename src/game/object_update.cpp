@@ -387,11 +387,27 @@ void Game::update_objects() {
                 // Object-object overlap revert. Newly-spawned bullets are
                 // exempt because their initial position deliberately
                 // overlaps the firer's AABB (port of &2afd-&2b0e).
+                //
+                // Projectile types (ICER_BULLET 0x13 .. PLASMA_BALL 0x19)
+                // also skip the revert. The 6502's check_for_collisions
+                // sets this_object_touching during overlap detection
+                // (&2b18) and the per-bullet update consumes that on
+                // the same beat — but our hard revert moves the bullet
+                // BACK out of the overlap and step 9b then re-probes
+                // touching from the post-revert position, finding no
+                // overlap. Letting the bullet penetrate the AABB for
+                // one frame lets step 9b on the NEXT frame catch the
+                // overlap; common_bullet_update then sets energy=0,
+                // and step 12 (which runs before step 15) explodes
+                // the bullet that same frame. Net delay: 1 frame.
                 {
+                    uint8_t self_idx = static_cast<uint8_t>(obj.type);
+                    bool is_projectile = (self_idx >= 0x13 && self_idx <= 0x19);
                     auto& all_primaries =
                         reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
                             object_mgr_.object(0));
-                    if (Collision::overlaps_solid_object(obj, slot, all_primaries) &&
+                    if (!is_projectile &&
+                        Collision::overlaps_solid_object(obj, slot, all_primaries) &&
                         !(obj.flags & ObjectFlags::NEWLY_CREATED) &&
                         !(tflags & ObjectTypeFlags::INTANGIBLE)) {
                         obj.x = ou_old_x;

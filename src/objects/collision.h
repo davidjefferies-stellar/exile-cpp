@@ -72,6 +72,17 @@ bool overlaps_solid_object(const Object& obj, int self_slot,
                            const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects,
                            int skip_slot = -1);
 
+// Same gate as `overlaps_solid_object` but returns the colliding slot
+// instead of a bool. -1 means no overlap. Used by the post-integrate
+// object-overlap revert in object_update.cpp so a bullet that bumps a
+// heavier static (turret, door, cannon) gets its `obj.touching` stamped
+// with the slot — the next update tick reads that and explodes the
+// bullet on the target. Without it, the revert just stops the bullet
+// dead and `obj.touching` from step 9b stays at 0x80.
+int overlapping_solid_slot(const Object& obj, int self_slot,
+                           const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects,
+                           int skip_slot = -1);
+
 // Port of calculate_transfer_velocities (&2bee-&2c14) +
 // apply_collision_to_object_velocity (&2bc6-&2bed). Given two objects'
 // velocity components on one axis and their weights, returns the new

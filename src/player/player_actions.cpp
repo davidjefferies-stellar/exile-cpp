@@ -133,17 +133,25 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     // velocity climbing 4 per frame from 0, the first ~8 frames look
     // motionless; then the player crosses ~32 and abruptly slides at
     // ~max speed — the user's "sticks until enough force to fly".
-    bool walking = (player.flags & ObjectFlags::SUPPORTED) && !flying;
+    // Walking gate — port of &3b0e-&3b10 update_walking_npc_or_player:
+    //   AND #&0f ; NPC_WALKING_MASK
+    //   BNE leave   ; non-zero counter → not walking
+    // The counter is in player.state's low nibble, reset to 0 on bottom
+    // collision and incremented otherwise (see integrate_player_motion).
+    // Bouncing on a partial pattern can keep the counter at 0 only on
+    // landing frames; that's exactly what the 6502 does too.
+    uint8_t walk_counter = player.state & 0x0f;
+    bool walking = (walk_counter == 0) && !flying;
     if (debug_log_.is_open()) {
-        char line[160];
+        char line[180];
         std::snprintf(line, sizeof(line),
-            "inp %u L=%d R=%d U=%d D=%d J=%d B=%d sup=%d fly=%d walk=%d "
+            "inp %u L=%d R=%d U=%d D=%d J=%d B=%d ctr=%x fly=%d walk=%d "
             "tcA=%02x v=(%+d,%+d)\n",
             static_cast<unsigned>(frame_counter_),
             inp.move_left ? 1 : 0, inp.move_right ? 1 : 0,
             inp.move_up ? 1 : 0, inp.move_down ? 1 : 0,
             inp.jetpack ? 1 : 0, inp.boost ? 1 : 0,
-            (player.flags & ObjectFlags::SUPPORTED) ? 1 : 0,
+            walk_counter,
             flying ? 1 : 0, walking ? 1 : 0,
             player_tile_collision_angle_,
             static_cast<int>(player.velocity_x),

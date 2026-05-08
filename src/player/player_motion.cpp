@@ -412,14 +412,33 @@ void Game::integrate_player_motion(Object& player,
         }
     }
 
-    // SUPPORTED flag: 6502 derives this from tile_collision_y_flags bit 7
-    // ("collision more to the bottom" of the AABB). The new TileCollision
-    // module surfaces it directly.
-    if (tcr.landed_on_bottom || object_supported) {
-        player.flags |=  ObjectFlags::SUPPORTED;
-    } else {
-        player.flags &= ~ObjectFlags::SUPPORTED;
+    // SUPPORTED flag — port of &1b86-&1b96. Cleared each frame, then set
+    // when (no top collision) AND (bottom collision). Bottom-collision
+    // input here mirrors &19 any_bottom_collision = tile_y_flags |
+    // object_y_flags. We don't yet track the object_collision_y_flags
+    // separately; tcr.landed_on_bottom plus object_supported together
+    // approximate the same disjunction.
+    bool any_bottom_collision = tcr.landed_on_bottom || object_supported;
+    bool any_top_collision    = tcr.top_or_bottom_collision && !tcr.landed_on_bottom;
+    player.flags &= ~ObjectFlags::SUPPORTED;
+    if (!any_top_collision && any_bottom_collision) {
+        player.flags |= ObjectFlags::SUPPORTED;
     }
+
+    // Frames-since-walkable counter — port of update_walking_state at
+    // &3a4c-&3a8a. Stored in the low nibble of player.state. Reset to 0
+    // on any_bottom_collision, otherwise incremented (cap at 0x0f).
+    // The walking branch in apply_player_input gates strictly on
+    // counter == 0 (port of &3b10 BNE leave); this also feeds
+    // check_if_player_or_npc_jumping (&3b8c) which considers the
+    // player jumping when counter ≥ 0x0a.
+    uint8_t counter = player.state & 0x0f;
+    if (any_bottom_collision) {
+        counter = 0;
+    } else if (counter < 0x0f) {
+        counter++;
+    }
+    player.state = static_cast<uint8_t>((player.state & 0xf0) | counter);
 
     // Slope angle for the walking branch in apply_player_input.
     // Sample the supporting tile's threshold left and right of the

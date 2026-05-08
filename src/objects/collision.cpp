@@ -227,6 +227,50 @@ ObjectCollisionResult check_object_collision(
     return result;
 }
 
+int overlapping_solid_slot(const Object& obj, int self_slot,
+                            const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects,
+                            int skip_slot) {
+    int this_x = obj.x.whole * 256 + obj.x.fraction;
+    int this_y = obj.y.whole * 256 + obj.y.fraction;
+    int this_w = sprite_width_units(obj.sprite);
+    int this_h = sprite_height_units(obj.sprite);
+    uint8_t self_weight = obj.weight();
+
+    for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
+        if (i == self_slot) continue;
+        if (i == skip_slot) continue;
+        const Object& other = all_objects[i];
+        if (!other.is_active()) continue;
+
+        uint8_t tidx = static_cast<uint8_t>(other.type);
+        uint8_t tflags = (tidx < static_cast<uint8_t>(ObjectType::COUNT))
+                         ? object_types_flags[tidx] : 0;
+        uint8_t other_weight = tflags & ObjectTypeFlags::WEIGHT_MASK;
+        if (other_weight <= self_weight) continue;
+        if (tflags & ObjectTypeFlags::INTANGIBLE) continue;
+
+        if (tidx >= 0x3c && tidx <= 0x3f) {
+            if (other.tertiary_data_offset & 0x02) continue;
+        }
+
+        int8_t tdx = static_cast<int8_t>(obj.x.whole - other.x.whole);
+        int8_t tdy = static_cast<int8_t>(obj.y.whole - other.y.whole);
+        if (std::abs(tdx) > 2 || std::abs(tdy) > 2) continue;
+
+        int other_x = other.x.whole * 256 + other.x.fraction;
+        int other_y = other.y.whole * 256 + other.y.fraction;
+        int other_w = sprite_width_units(other.sprite);
+        int other_h = sprite_height_units(other.sprite);
+
+        if (other_x + other_w <= this_x)  continue;
+        if (this_x  + this_w  <= other_x) continue;
+        if (other_y + other_h <= this_y)  continue;
+        if (this_y  + this_h  <= other_y) continue;
+        return i;
+    }
+    return -1;
+}
+
 bool overlaps_solid_object(const Object& obj, int self_slot,
                             const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects,
                             int skip_slot) {
