@@ -115,11 +115,37 @@ inline uint8_t resolve_tile_palette(uint8_t& tile_type, uint8_t tile_x,
             return pal;
         }
         case 0x03: {
-            // Bush — depends on tile_flip, tile_y, tile_x. Not bit-exact but
-            // gives the same 4-way cycling the original produces.
-            uint8_t a = static_cast<uint8_t>(tile_flip << 3);
-            a = static_cast<uint8_t>(a - tile_y);
-            a = static_cast<uint8_t>(a >> 1);
+            // Bush palette — bit-exact port of &23bf-&23cc:
+            //   ROL A; ROL A; ROL A   ; three rotates-through-carry of
+            //                          ; tile_flip, with c_in=1 from the
+            //                          ; CMP #&03 that brought us here
+            //   SBC tile_y            ; A -= tile_y + (1 - c)
+            //   ROR A                 ; rotate right through carry
+            //   CLC; ADC tile_x       ; A += tile_x with c=0
+            //   AND #&03              ; index into bushes_palette_table
+            //
+            // Earlier port did `tile_flip << 3 - tile_y >> 1 + tile_x`,
+            // which dropped the carry chain. Concrete fallout: TALL_BUSH
+            // (FLIP_H) at (139, 120) computed index 3 (red/cyan/white)
+            // instead of the 6502's 1 (green/magenta/red).
+            uint8_t a = tile_flip;
+            uint8_t c = 1;  // CMP #&03 at &23bb left c=1 (A==3, equal)
+            for (int i = 0; i < 3; ++i) {
+                uint8_t new_c = (a >> 7) & 1;
+                a = static_cast<uint8_t>((a << 1) | c);
+                c = new_c;
+            }
+            // SBC tile_y: A = A - tile_y - (1 - c). Borrow → new c=0.
+            int16_t sub = static_cast<int16_t>(a) - tile_y - (1 - c);
+            a = static_cast<uint8_t>(sub);
+            c = (sub < 0) ? 0 : 1;
+            // ROR A through carry: bit 0 → new c, old c → bit 7.
+            {
+                uint8_t new_c = a & 1;
+                a = static_cast<uint8_t>((a >> 1) | (c << 7));
+                c = new_c;
+            }
+            // CLC; ADC tile_x — c forced 0 by CLC, ignored carry.
             a = static_cast<uint8_t>(a + tile_x);
             return bushes_palette_table[a & 0x03];
         }

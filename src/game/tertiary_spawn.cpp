@@ -45,29 +45,24 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
     // duplicate rolling robots visible in the lifecycle log.
     bool switch_redirect = tile_is(raw_tile_type, TileType::INVISIBLE_SWITCH);
 
-    // Bit-7 gate: applies to everything except INVISIBLE_SWITCH
-    // redirects. If bit 7 is clear, the tertiary has already spawned
-    // its primary (which is either live or sitting in the secondary
-    // pool), so skip re-spawning.
-    if (!switch_redirect && data_offset != 0 &&
+    // Bit-7 "needs spawning" gate. Switch-redirects use bit 7 as part of
+    // the effect-id, and doors (&3e95/&3e98) recreate every frame with
+    // no bit-7 check, so both bypass.
+    bool is_door = (tile_type == static_cast<uint8_t>(TileType::METAL_DOOR) ||
+                    tile_type == static_cast<uint8_t>(TileType::STONE_DOOR));
+    if (!switch_redirect && !is_door && data_offset != 0 &&
         !(object_mgr_.tertiary_data_byte(data_offset) & 0x80)) {
         return;
     }
 
-    // Dedup scan for INVISIBLE_SWITCH redirects only: since bit 7 can't
-    // be used as a spawn flag there (it's part of the switch effect-id),
-    // guard against double-spawning by checking whether any live primary
-    // already owns this tertiary_slot. Note: this scan misses primaries
-    // that have demoted to secondary, so it only prevents intra-frame
-    // duplicates — not repeat spawns after a cache round-trip. For
-    // INVISIBLE_SWITCH redirects that's OK because they're statics
-    // (switches, doors) that the demote path catches via check_demotion's
-    // KEEP_AS_TERTIARY branch and return_to_tertiary re-arming.
-    if (switch_redirect && data_offset > 0) {
+    // Dedup scan for paths that bypass the bit-7 gate. Misses
+    // demoted-to-secondary primaries, but statics get re-armed via
+    // return_to_tertiary so duplicates only appear intra-frame.
+    if ((switch_redirect || is_door) && data_offset > 0) {
         for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
             const Object& p = object_mgr_.object(i);
             if (p.is_active() &&
-                p.tertiary_slot == static_cast<uint8_t>(data_offset)) {
+                p.tertiary_slot == static_cast<uint16_t>(data_offset)) {
                 return;
             }
         }
@@ -159,13 +154,25 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
         case TileType::STONE_HALF_WITH_OBJECT_FROM_TYPE:
         case TileType::SPACE_WITH_OBJECT_FROM_TYPE:
         case TileType::GREENERY_WITH_OBJECT_FROM_TYPE:
-            if (type_offset > 0 &&
-                type_offset < static_cast<int>(sizeof(tertiary_objects_type_data))) {
-                obj_type = tertiary_objects_type_data[type_offset];
-            }
+            // After Option B, the per-cell entry carries its own
+            // type byte (copied from the static tertiary_objects_type_
+            // data at bake) — read it directly.
+            obj_type = object_mgr_.tertiary_type_byte(type_offset);
             break;
         case TileType::SWITCH:
             obj_type = static_cast<uint8_t>(ObjectType::SWITCH);
+            break;
+        case TileType::NEST:
+        case TileType::PIPE:
+            // Port of &3e1b update_nest_or_pipe_tile / &3e34. When a NEST
+            // (0x09) or PIPE (0x0a) cell has a tertiary attached and its
+            // data byte's bit 7 is set ("needs spawning" — the bit-7
+            // gate above handles that for us), spawn a BUSH primary on
+            // top. Concrete fallout if missing: pipes that decoratively
+            // had bushes growing from them in the original (e.g. the
+            // SPACE_W_TYPE redirect at idx 190 that lands a PIPE tile-
+            // and-flip on column 138) drew bare pipes here.
+            obj_type = static_cast<uint8_t>(ObjectType::BUSH);
             break;
         default:
             return;  // Not an object-spawning tile type
@@ -179,7 +186,7 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
     uint8_t sprite_id = object_types_sprite[obj_type];
     uint8_t width_byte  = 0;
     uint8_t height_byte = 0;
-    if (sprite_id <= 0x7c) {
+    if (sprite_id <= 0x80) {
         const SpriteAtlasEntry& e = sprite_atlas[sprite_id];
         width_byte  = static_cast<uint8_t>((e.w > 0 ? (e.w - 1) : 0) * 16);
         height_byte = static_cast<uint8_t>((e.h > 0 ? (e.h - 1) : 0) * 8);
@@ -214,6 +221,24 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
         if (!(tile_flip & TileFlip::VERTICAL)) {
             y_frac = static_cast<uint8_t>(yhi << 4);
         }
+        // Per-state sub-pixel nudge on top of the tile_flip baseline.
+        // Replacing the baseline puts the button on the wrong side of
+        // h-flipped switch tiles, so add to it instead.
+        bool facing_right = data_offset > 0 &&
+            (object_mgr_.tertiary_data_byte(data_offset) & 0x01);
+        x_frac = static_cast<uint8_t>(x_frac + (facing_right ? -16 : -16));
+    }
+
+    // &3e39-&3e3e: nest/pipe BUSH overrides both fractions to 0x40 after
+    // create_primary_object_from_tertiary returns, regardless of flip.
+    // Without this the bush sits at the generic flip-aware corner of
+    // the tile (e.g. y_frac = -height for unflipped) instead of growing
+    // out of the pipe / nest mouth. Concrete fallout: the bush at
+    // (&8a, &78) — entry &be, SPACE_W_TYPE redirect to PIPE — drew at
+    // the wrong sub-tile position and read as missing.
+    if (ttype == TileType::NEST || ttype == TileType::PIPE) {
+        x_frac = 0x40;
+        y_frac = 0x40;
     }
 
     int slot = object_mgr_.create_object(
@@ -230,7 +255,11 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
             (tile_flip & (ObjectFlags::FLIP_HORIZONTAL | ObjectFlags::FLIP_VERTICAL)));
         // Remember the tertiary slot so return_to_tertiary can set bit 7
         // again when this object is demoted offscreen (port of &4081-&4083).
-        obj.tertiary_slot = static_cast<uint8_t>(data_offset);
+        // Stored as uint16_t: per-cell entry indices exceed 255 once the
+        // bake creates more than 256 entries, and truncating to uint8_t
+        // breaks dedup against the wiring overlay AND the demote → tertiary
+        // re-arm path (return_to_tertiary would re-arm the wrong slot).
+        obj.tertiary_slot = static_cast<uint16_t>(data_offset);
         // Copy the tertiary data byte into the primary's data field (&0966
         // objects_data). For doors this is locked/opening/colour flags; for
         // switches it's effect-id + toggle-mask + state; for transporter

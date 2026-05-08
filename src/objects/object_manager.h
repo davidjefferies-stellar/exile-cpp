@@ -3,6 +3,10 @@
 #include "core/types.h"
 #include "core/random.h"
 #include <array>
+#include <cstdarg>
+#include <cstdio>
+#include <string>
+#include <vector>
 
 class ObjectManager {
 public:
@@ -30,6 +34,11 @@ public:
 
     // Create with position copied from another object
     int create_object_at(ObjectType type, int min_free_slots, const Object& source);
+
+    // Create centred on the source's sprite-centre (port-only — the 6502
+    // mutated the source slot in-place via explode_object_with_duration).
+    int create_object_centered(ObjectType type, int min_free_slots,
+                                const Object& source);
 
     // ========================================================================
     // Secondary Object Management (ports of &0c6e and &0c38)
@@ -81,11 +90,11 @@ public:
     const SecondaryObject& secondary(int slot) const { return secondary_[slot]; }
     SecondaryObject&       secondary(int slot)       { return secondary_[slot]; }
 
-    // Direct access to the tertiary data byte array for save/load. Size is
-    // fixed at 235 bytes (see the array member below).
-    uint8_t* tertiary_data_ptr()       { return tertiary_data_; }
-    const uint8_t* tertiary_data_ptr() const { return tertiary_data_; }
-    static constexpr int TERTIARY_DATA_SIZE = 235;
+    // Tertiary state lives in Landscape now; save/load goes through
+    // the entry table directly (see save_load.cpp). Public accessors
+    // for the entries are exposed by Landscape — Game already has both
+    // the landscape and the object manager, so save/load can reach
+    // them without a passthrough here.
 
     // Check if an object is far from the activation anchor (see below).
     bool is_far_from_anchor(uint8_t obj_x, uint8_t obj_y, uint8_t distance) const;
@@ -150,28 +159,25 @@ public:
     int active_secondary_slots() const { return active_secondary_slots_; }
 
     // ========================================================================
-    // Tertiary data byte access (used by the tile update routines)
+    // Tertiary data byte access (used by the tile update routines).
     // ========================================================================
-    // Each tertiary object may have a mutable data byte — its top bit is set
-    // while the object still lives in tertiary storage, cleared once a
-    // primary object has been spawned from it (&4089).
-    uint8_t tertiary_data_byte(int offset) const {
-        return (offset > 0 && offset < static_cast<int>(sizeof(tertiary_data_)))
-             ? tertiary_data_[offset] : 0;
-    }
-    void clear_tertiary_spawn_bit(int offset) {
-        if (offset > 0 && offset < static_cast<int>(sizeof(tertiary_data_))) {
-            tertiary_data_[offset] &= 0x7f;
-        }
-    }
-    // Whole-byte write, used by process_switch_effects when a switch toggles
-    // bits in another object's tertiary data slot. Preserves no fields — the
-    // caller is responsible for keeping / stripping bit 7 as appropriate.
-    void set_tertiary_data_byte(int offset, uint8_t value) {
-        if (offset > 0 && offset < static_cast<int>(sizeof(tertiary_data_))) {
-            tertiary_data_[offset] = value;
-        }
-    }
+    //
+    // Reads and writes go through the live tertiary entries owned by
+    // Landscape. The "offset" parameter is now a tertiary entry index
+    // (0..n_tertiary_entries-1); legacy callers using the old
+    // data_offset/type_offset semantics get the same one int handle
+    // because resolve_tile_with_tertiary fills both fields with the
+    // same entry index after the Option-B refactor.
+    //
+    // A nullptr landscape (init not yet run) makes every read return 0
+    // and every write a no-op so any premature access fails safely
+    // rather than crashing.
+    void set_landscape(class Landscape& l) { landscape_ = &l; }
+
+    uint8_t tertiary_data_byte(int idx) const;
+    uint8_t tertiary_type_byte(int idx) const;
+    void    clear_tertiary_spawn_bit(int idx);
+    void    set_tertiary_data_byte(int idx, uint8_t value);
 
     // ========================================================================
     // Per-frame lifecycle counters (debug)
@@ -218,6 +224,23 @@ public:
     DebugEvent debug_events_[DEBUG_EVENT_CAP] = {};
     uint8_t    debug_events_n_ = 0;
 
+    // Free-form diagnostic lines, flushed by Game::flush_debug_log
+    // after the per-event lines. Behaviours push here when they need
+    // to log a transient state machine — currently only update_imp's
+    // at-home gift-drop trace. Capped to keep memory bounded if a
+    // logger is left enabled across many frames.
+    static constexpr size_t DIAG_LINE_CAP = 256;
+    std::vector<std::string> diag_lines_;
+    void log_diag(const char* fmt, ...) {
+        if (diag_lines_.size() >= DIAG_LINE_CAP) return;
+        char buf[256];
+        va_list ap;
+        va_start(ap, fmt);
+        std::vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        diag_lines_.emplace_back(buf);
+    }
+
     // Port of &0819 door_timer — the 6502's single global "hold door open"
     // countdown. update_door reads/writes this; the main loop decrements it
     // once per frame (same place as the mushroom timers at &19d4-&19dd,
@@ -230,6 +253,7 @@ public:
         debug_promotes_ = 0;
         debug_creates_  = 0;
         debug_events_n_ = 0;
+        diag_lines_.clear();
     }
     void record_debug_event(uint8_t kind, uint8_t slot, uint8_t type,
                             uint8_t x, uint8_t y) {
@@ -247,9 +271,12 @@ private:
     std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS> primary_;
     std::array<SecondaryObject, GameConstants::SECONDARY_OBJECT_SLOTS> secondary_;
 
-    // Tertiary objects: mutable because creature counts change
-    // We store copies of the original data that get modified at runtime
-    uint8_t tertiary_data_[235];  // Mutable copy of tertiary_objects_data_bytes
+    // Tertiary state lives in Landscape (per-cell entries with own data
+    // and type bytes). ObjectManager just holds a pointer set by
+    // Game::init via set_landscape(); the inline accessors above
+    // forward all reads and writes to the landscape's mutable entry
+    // table.
+    class Landscape* landscape_ = nullptr;
 
     // Selective promotion state
     uint8_t secondary_update_next_ = 0;

@@ -381,9 +381,14 @@ static void coronium_common(Object& obj, UpdateContext& ctx) {
             uint8_t duration = (obj.weight() + other_weight) * 2 + 3;
 
             // Create explosion at this location
-            int slot = ctx.mgr.create_object_at(ObjectType::EXPLOSION, 0, obj);
+            int slot = ctx.mgr.create_object_centered(ObjectType::EXPLOSION, 0, obj);
             if (slot >= 0) {
                 ctx.mgr.object(slot).tertiary_data_offset = duration;
+            }
+
+            // &41e5 flash_background — 11 frames of sky strobe.
+            if (ctx.background_flash_cooldown) {
+                *ctx.background_flash_cooldown = 0x0b;
             }
 
             // This object is also consumed
@@ -418,7 +423,7 @@ static void coronium_common(Object& obj, UpdateContext& ctx) {
 
         if (!immune && !underwater) {
             // Deal 8 radiation damage to player
-            NPC::damage_player_if_touching(obj, ctx.mgr.player(), 8);
+            NPC::damage_player_if_touching(obj, ctx.mgr.player(), 8, ctx.damage_events);
         }
     }
 
@@ -438,7 +443,7 @@ void update_coronium_crystal(Object& obj, UpdateContext& ctx) {
     obj.timer += 2;
     if (obj.timer & 0x80) {
         // Timer overflowed: explode with duration 10
-        int slot = ctx.mgr.create_object_at(ObjectType::EXPLOSION, 0, obj);
+        int slot = ctx.mgr.create_object_centered(ObjectType::EXPLOSION, 0, obj);
         if (slot >= 0) {
             ctx.mgr.object(slot).tertiary_data_offset = 10;
         }
@@ -450,9 +455,62 @@ void update_coronium_crystal(Object& obj, UpdateContext& ctx) {
     coronium_common(obj, ctx);
 }
 
-// &4216: Alien weapon - special weapon pickup
+// &4216 update_alien_weapon. The 6502 sequence is just:
+//   JSR &254e increase_energy_by_one_if_not_zero
+//   JSR &0bbf check_if_object_fired       (Z=1 iff player_object_fired
+//                                            == this slot)
+//   BNE  leave                              (not fired this frame)
+//   LDX  #&19 ; OBJECT_PLASMA_BALL
+//   LDA  #&40 ; x velocity
+//   JSR  &33a9 create_projectile_with_zero_velocity_y
+//                                          (BIT x_flip; invert_if_negative
+//                                            on vx; create child at parent's
+//                                            position; copy vector to
+//                                            objects_velocity)
+//   BCS  leave                              (no slot — silent)
+//   JMP  &14ad play_low_beep
+//
+// NB: the 6502 does NOT route the alien weapon through update_collectable
+// — its dispatch table at &03b9/&0432 sends type 0x47 directly to &4216,
+// not to &4b88. Calling our update_collectable() here turned out to be
+// fatal: the held-touch path clears energy bit 7 every frame, then the
+// regen above pushes the value through 0x80 (bit 7 set again). The next
+// frame's bit-7 clear hands back 0x00, and step 12 of the object loop
+// reads energy==0 and explodes the weapon.
 void update_alien_weapon(Object& obj, UpdateContext& ctx) {
-    update_collectable(obj, ctx);
+    // &4216 increase_energy_by_one_if_not_zero — slow regen toward 0xff
+    // when the weapon has any charge left. Clamps at 0xff so a freshly-
+    // spawned weapon doesn't roll over (port of the INC/BEQ/DEC chain at
+    // &2549-&254d).
+    if (obj.energy != 0 && obj.energy < 0xff) obj.energy++;
+
+    // &4219-&421c check_if_object_fired. The held-and-fired contract is
+    // wired via apply_player_input setting player_object_fired = held
+    // slot when SPACE is pressed; nothing else writes the flag.
+    if (ctx.player_object_fired != static_cast<uint8_t>(ctx.this_slot)) {
+        return;
+    }
+
+    // &421e-&4225 spawn PLASMA_BALL. vx=0x40 baseline, negated when the
+    // weapon faces left (held inherits the player's FLIP_HORIZONTAL via
+    // HeldObject::update_position). vy=0 — the plasma trajectory is
+    // horizontal, the bullet's own update tracks the player toward
+    // whichever lock-on it picks up.
+    int gslot = ctx.mgr.create_object_at(
+        ObjectType::PLASMA_BALL, /*min_free_slots=*/1, obj);
+    if (gslot < 0) return;
+    Object& ball = ctx.mgr.object(gslot);
+    int8_t vx = 0x40;
+    if (obj.is_flipped_h()) vx = static_cast<int8_t>(-vx);
+    ball.velocity_x = vx;
+    ball.velocity_y = 0;
+    NPC::offset_child_from_parent(ball, obj);
+
+    // &4227 JMP play_low_beep at &14ad. Sound parameter bytes from
+    // &14b0: 5d 04 ff 05 — same beep used by the plasma gun and the
+    // "object absorbed" cue.
+    static constexpr uint8_t kSoundLowBeep[4] = { 0x5d, 0x04, 0xff, 0x05 };
+    Audio::play(Audio::CH_ANY, kSoundLowBeep);
 }
 
 // &439C: Giant block - heavy physics object

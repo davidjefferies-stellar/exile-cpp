@@ -3,6 +3,8 @@
 #include "audio/audio.h"
 #include "core/types.h"
 #include "objects/object_data.h"
+#include "objects/object_tables.h"
+#include "world/landscape.h"
 #include "particles/particle_system.h"
 #include <algorithm>
 #include <cstdlib>
@@ -15,8 +17,19 @@ static constexpr uint8_t doors_speed_table[4]  = { 0x20, 0x10, 0x08, 0x20 };
 // energy threshold below which the door is "being destroyed".
 static constexpr uint8_t doors_energy_table[4] = { 0x80, 0x74, 0xc0, 0x80 };
 // palette table (low 4 bits AND'd if unlocked, hiding colour-3 = lock).
+// Port of &4d79-&4d80. Earlier copy mistakenly duplicated entries 0-3
+// into 4-7, turning every stone door (which uses colour index 4 = rmB)
+// into a cyG metal-door palette — concrete fallout: the stone door at
+// (184, 197) drew green/yellow/cyan instead of red/magenta/blue.
 static constexpr uint8_t doors_palette_table[8] = {
-    0x2b, 0x2d, 0x15, 0x1c, 0x2b, 0x2d, 0x15, 0x1c,
+    0x2b, // 0: cyG (metal)
+    0x2d, // 1: ryG (metal)
+    0x15, // 2: gyR (metal)
+    0x1c, // 3: ywR (metal)
+    0x42, // 4: rmB (stone)
+    0x12, // 5: rmR (metal)
+    0x26, // 6: bcG
+    0x4e, // 7: mwB
 };
 
 namespace DoorFlag {
@@ -316,16 +329,67 @@ static constexpr uint8_t switch_effects_table[] = {
     0x00,                                // end sentinel
 };
 
+// Decode a 6502-style data_offset (a position in the static
+// tertiary_objects_data_bytes array) back to the (tile_type, X) pair
+// that points at it, then find every world cell with that raw type at
+// that column and return their per-cell tertiary entry indices.
+//
+// In 6502 / Option-A semantics, a single byte at a given data_offset
+// is shared by every cell whose (tile_type, X) maps to that source
+// row — toggling the byte affects all of them. Option B's bake gives
+// each cell its own entry, so to preserve the "shared switch state"
+// behaviour we have to fan the toggle out across every sibling cell.
+//
+// Writes up to `max_out` indices into `out` and returns the count.
+static int find_shared_entries_for_data_offset(const Landscape& landscape,
+                                                uint8_t data_offset,
+                                                uint16_t* out, int max_out) {
+    if (data_offset == 0 || max_out <= 0) return 0;
+    int written = 0;
+    for (int type = 0; type <= static_cast<int>(TileType::SWITCH); ++type) {
+        uint8_t source_idx = static_cast<uint8_t>(
+            data_offset - tertiary_data_offset[type]);
+        if (source_idx <  tertiary_ranges[type]) continue;
+        if (source_idx >= tertiary_ranges[type + 1]) continue;
+        uint8_t target_x = tertiary_objects_x_data[source_idx];
+        for (int y = 0; y < 256; ++y) {
+            uint8_t raw = landscape.get_tile(target_x,
+                                              static_cast<uint8_t>(y));
+            if ((raw & TileFlip::TYPE_MASK) !=
+                static_cast<uint8_t>(type)) continue;
+            uint16_t cell_idx = landscape.tertiary_index_at(
+                target_x, static_cast<uint8_t>(y));
+            if (cell_idx == Landscape::NO_TERTIARY) continue;
+            if (written >= max_out) return written;
+            out[written++] = cell_idx;
+        }
+        // Each data_offset maps to exactly one (type, source_idx) tuple;
+        // no need to keep checking other types.
+        return written;
+    }
+    return written;
+}
+
 // Port of &49db process_switch_effects. Decodes (effect_id, toggle, mask)
 // from the switch's data byte and applies the toggle to every tertiary
 // target listed in the matching switch_effects_table group.
 //
-// Our primaries hold a live copy of the data byte (bit 7 stripped) and only
-// write back to tertiary_data_ on demote, so the tertiary copy is stale
-// while an object is onscreen. To avoid toggling a stale bit, read the
-// authoritative value from the primary when one owns the slot, and write
-// through to both stores when toggling.
-static void process_switch_effects(ObjectManager& mgr, uint8_t effect_id,
+// Each target byte is a 6502 data_offset. In the original game, the
+// data_offset addressed a single byte in the static data table that
+// every cell sharing the same source row read/wrote. Option B gave
+// each cell its own entry; we fan the toggle out across every cell
+// that maps to the same source row so shared-state switches still
+// behave like the 6502 (e.g. the two switches at (227,156) and
+// (227,188) both toggle the same pair of doors when either is pressed).
+//
+// Primaries hold a live copy of the data byte (bit 7 stripped) and only
+// write back to the tertiary entry on demote, so the entry's copy is
+// stale while an object is onscreen. To avoid toggling a stale bit,
+// read the authoritative value from the primary when one owns the
+// slot, and write through to both stores when toggling.
+static void process_switch_effects(ObjectManager& mgr,
+                                    const Landscape& landscape,
+                                    uint8_t effect_id,
                                     uint8_t mask, uint8_t toggle) {
     const int N = static_cast<int>(sizeof(switch_effects_table));
     int zeros_seen = 0;
@@ -339,40 +403,57 @@ static void process_switch_effects(ObjectManager& mgr, uint8_t effect_id,
         }
         if (zeros_seen != required) continue;  // in an earlier group
 
-        // Find the first primary that owns this tertiary slot (the live
-        // copy of the state is in its tertiary_data_offset). If the slot
-        // is currently unattached, fall back to the tertiary store.
-        int first_owner = -1;
-        for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
-            const Object& p = mgr.object(i);
-            if (p.is_active() && p.tertiary_slot == b) {
-                first_owner = i;
-                break;
-            }
-        }
-        uint8_t prev = (first_owner >= 0)
-            ? mgr.object(first_owner).tertiary_data_offset
-            : static_cast<uint8_t>(mgr.tertiary_data_byte(b) & 0x7f);
-        uint8_t newv = static_cast<uint8_t>((prev & mask) ^ toggle);
+        // Resolve target data_offset → list of per-cell entry indices
+        // sharing that source row. 16 fits the worst-case "many cells of
+        // the same raw type at one X" without overflow on Option-B
+        // worlds.
+        uint16_t entries[16];
+        int n_entries = find_shared_entries_for_data_offset(
+            landscape, b, entries, 16);
+        if (n_entries == 0) continue;
 
-        if (first_owner >= 0) {
-            // Update every primary tied to this slot — normally there's
-            // exactly one, but if a stray duplicate ever leaked through
-            // (old bug) we want both copies animating in lockstep rather
-            // than one stuck at the original state. Tertiary copy gets
-            // the live value without the spawn gate; return_to_tertiary
-            // re-applies bit 7 when a primary is demoted.
+        // Compute the new value once. The live source value comes from
+        // any primary that owns ANY of the sibling entries (they should
+        // all share state, but in practice live-vs-stale can drift, so
+        // prefer a primary's live byte; fall back to the first entry's
+        // stored byte).
+        int sample_owner = -1;
+        for (int e = 0; e < n_entries && sample_owner < 0; ++e) {
+            uint16_t slot = entries[e];
             for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
-                Object& p = mgr.object(i);
-                if (p.is_active() && p.tertiary_slot == b) {
-                    p.tertiary_data_offset = newv;
+                const Object& p = mgr.object(i);
+                if (p.is_active() && p.tertiary_slot == slot) {
+                    sample_owner = i;
+                    break;
                 }
             }
-            mgr.set_tertiary_data_byte(b, newv);
-        } else {
-            // Not currently primary — preserve the spawn gate so the tile
-            // still spawns the object next time it comes into view.
-            mgr.set_tertiary_data_byte(b, static_cast<uint8_t>(newv | 0x80));
+        }
+        uint8_t prev = (sample_owner >= 0)
+            ? mgr.object(sample_owner).tertiary_data_offset
+            : static_cast<uint8_t>(
+                mgr.tertiary_data_byte(entries[0]) & 0x7f);
+        uint8_t newv = static_cast<uint8_t>((prev & mask) ^ toggle);
+
+        // Apply newv to every sibling entry.
+        for (int e = 0; e < n_entries; ++e) {
+            uint16_t slot = entries[e];
+            bool live = false;
+            for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
+                Object& p = mgr.object(i);
+                if (p.is_active() && p.tertiary_slot == slot) {
+                    p.tertiary_data_offset = newv;
+                    live = true;
+                }
+            }
+            if (live) {
+                mgr.set_tertiary_data_byte(slot, newv);
+            } else {
+                // Not currently a primary — preserve the spawn gate so
+                // the tile still spawns the object next time it comes
+                // into view.
+                mgr.set_tertiary_data_byte(slot,
+                    static_cast<uint8_t>(newv | 0x80));
+            }
         }
     }
 }
@@ -423,7 +504,8 @@ void update_switch(Object& obj, UpdateContext& ctx) {
         if (obj.tertiary_slot > 0) {
             ctx.mgr.set_tertiary_data_byte(obj.tertiary_slot, data);
         }
-        process_switch_effects(ctx.mgr, effect, /*mask=*/0xff, toggle);
+        process_switch_effects(ctx.mgr, ctx.landscape,
+                                effect, /*mask=*/0xff, toggle);
         // &49b6-&49b9: switch click.
         static constexpr uint8_t kSoundSwitch[4] = { 0x3d, 0x04, 0x11, 0xd4 };
         Audio::play_at(Audio::CH_ANY, kSoundSwitch, obj.x.whole, obj.y.whole);
@@ -817,12 +899,17 @@ void update_sucking_nest(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4BA9: Bush - grows back, can be destroyed
+// &4ba9 update_bush. The 6502 routine is the shared "freeze" helper
+// set_this_object_velocities_to_zero_and_position_from_previous_position:
+//   JSR &28a3 ; set_this_object_velocities_to_zero
+//   JMP &28aa ; set_this_object_position_from_previous_position
+// We don't store previous_position per-frame; instead object_update.cpp
+// pins BUSH in the same path as weight-7 statics (search for `pin_bush`),
+// which both zeroes velocity and skips the integrator. That makes this
+// per-type stub a no-op. Bushes are indestructible per the object table
+// at &040d, so there's no energy regen logic in the original either.
 void update_bush(Object& obj, UpdateContext& ctx) {
-    // Bushes slowly regenerate
-    if (ctx.every_sixty_four_frames) {
-        if (obj.energy < 0xff) obj.energy++;
-    }
+    (void)obj; (void)ctx;
 }
 
 // &40EE update_cannon. The 6502 cannon has no internal timer: it fires a

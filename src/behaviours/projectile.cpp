@@ -2,6 +2,7 @@
 #include "behaviours/mood.h"
 #include "audio/audio.h"
 #include "core/types.h"
+#include "objects/collision.h"
 #include "objects/object_data.h"
 #include "objects/object_tables.h"
 #include "rendering/sprite_atlas.h"
@@ -51,7 +52,7 @@ static void explode_object_with_duration(Object& obj, uint8_t duration) {
     // visibly burned. The 6502's tile-granular display masks this; our
     // sub-tile fractions make it obvious.
     int old_w_frac = 0, old_h_frac = 0;
-    if (obj.sprite <= 0x7c) {
+    if (obj.sprite <= 0x80) {
         const SpriteAtlasEntry& e = sprite_atlas[obj.sprite];
         old_w_frac = (e.w > 0 ? (e.w - 1) : 0) * 16;
         old_h_frac = (e.h > 0 ? (e.h - 1) : 0) * 8;
@@ -70,7 +71,7 @@ static void explode_object_with_duration(Object& obj, uint8_t duration) {
     // Recenter on the old sprite's centre. Shift = (old_size − new_size)
     // / 2, applied to the position fraction + carry into whole.
     int new_w_frac = 0, new_h_frac = 0;
-    if (obj.sprite <= 0x7c) {
+    if (obj.sprite <= 0x80) {
         const SpriteAtlasEntry& e = sprite_atlas[obj.sprite];
         new_w_frac = (e.w > 0 ? (e.w - 1) : 0) * 16;
         new_h_frac = (e.h > 0 ? (e.h - 1) : 0) * 8;
@@ -104,6 +105,9 @@ static void add_to_player_mushroom_timer(UpdateContext& ctx, int which, bool ext
 // touched slot if damageable, or -1 if not touching / target is immune.
 // Explosions, bushes, and (red clawed robot..Triax) are immune per &1fb6-&1fc3.
 static int bullet_touching_damageable(const Object& obj, ObjectManager& mgr) {
+    // Spawn-frame skip: bullets sit inside their parent's AABB until
+    // velocity carries them out, so frame 1 obj.touching == parent.
+    if (obj.flags & ObjectFlags::NEWLY_CREATED) return -1;
     uint8_t t = obj.touching;
     if (t >= GameConstants::PRIMARY_OBJECT_SLOTS) return -1;
     const Object& target = mgr.object(t);
@@ -224,8 +228,38 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
     int tgt = bullet_touching_damageable(obj, ctx.mgr);
     if (tgt >= 0) {
         Object& target = ctx.mgr.object(tgt);
+
+        // Port of &2bb6 apply_collision_to_objects_velocities. The 6502
+        // runs check_for_collisions BEFORE the per-type update, so the
+        // mass-ratio kick has already landed on the target by the time
+        // update_bullet sees the touch and explodes itself. Apply both
+        // axes here, with doubling on whichever has the larger speed
+        // (smallest-overlap axis ≈ direction of approach).
+        bool x_dominant = std::abs(obj.velocity_x) >= std::abs(obj.velocity_y);
+        auto vx = Collision::apply_mass_ratio_velocity(
+            obj.velocity_x, target.velocity_x,
+            obj.weight(), target.weight(), x_dominant);
+        target.velocity_x = vx.other_v;
+        auto vy = Collision::apply_mass_ratio_velocity(
+            obj.velocity_y, target.velocity_y,
+            obj.weight(), target.weight(), !x_dominant);
+        target.velocity_y = vy.other_v;
+
+        uint16_t hurt = std::min<uint16_t>(damage, target.energy);
         if (target.energy > damage) target.energy -= damage;
         else                        target.energy = 0;
+        // 6502 &24a6 damage_object also sets WAS_DAMAGED on the target.
+        target.flags |= ObjectFlags::WAS_DAMAGED;
+        if (ctx.damage_events) {
+            DamageVisual ev;
+            ev.src_x = obj.x.whole; ev.src_y = obj.y.whole;
+            ev.src_x_frac = obj.x.fraction; ev.src_y_frac = obj.y.fraction;
+            ev.tgt_x = target.x.whole; ev.tgt_y = target.y.whole;
+            ev.tgt_x_frac = target.x.fraction; ev.tgt_y_frac = target.y.fraction;
+            ev.tgt_slot = static_cast<int8_t>(tgt);
+            ev.amount = hurt;
+            ctx.damage_events->push_back(ev);
+        }
         obj.energy = 0; // explode_bullet
         return;
     }
@@ -359,8 +393,19 @@ void update_cannonball(Object& obj, UpdateContext& ctx) {
     // Damage on touch (any object, not just player)
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
         Object& target = ctx.mgr.object(obj.touching);
+        uint16_t hurt = std::min<uint16_t>(170, target.energy);
         if (target.energy > 170) target.energy -= 170;
         else                     target.energy = 0;
+        if (ctx.damage_events) {
+            DamageVisual ev;
+            ev.src_x = obj.x.whole; ev.src_y = obj.y.whole;
+            ev.src_x_frac = obj.x.fraction; ev.src_y_frac = obj.y.fraction;
+            ev.tgt_x = target.x.whole; ev.tgt_y = target.y.whole;
+            ev.tgt_x_frac = target.x.fraction; ev.tgt_y_frac = target.y.fraction;
+            ev.tgt_slot = static_cast<int8_t>(obj.touching);
+            ev.amount = hurt;
+            ctx.damage_events->push_back(ev);
+        }
         obj.energy = 0; // explode
     }
     emit_projectile_trail(obj, ctx);
@@ -456,8 +501,19 @@ void update_lightning(Object& obj, UpdateContext& ctx) {
     if (touching) {
         Object& target = ctx.mgr.object(obj.touching);
         if (target.type != ObjectType::ACTIVE_CHATTER) {
+            uint16_t hurt = std::min<uint16_t>(80, target.energy);
             if (target.energy > 80) target.energy -= 80;
             else                    target.energy = 0;
+            if (ctx.damage_events) {
+                DamageVisual ev;
+                ev.src_x = obj.x.whole; ev.src_y = obj.y.whole;
+                ev.src_x_frac = obj.x.fraction; ev.src_y_frac = obj.y.fraction;
+                ev.tgt_x = target.x.whole; ev.tgt_y = target.y.whole;
+                ev.tgt_x_frac = target.x.fraction; ev.tgt_y_frac = target.y.fraction;
+                ev.tgt_slot = static_cast<int8_t>(obj.touching);
+                ev.amount = hurt;
+                ctx.damage_events->push_back(ev);
+            }
             damaged_something = true;
         }
     }
@@ -563,11 +619,45 @@ void update_invisible_debris(Object& obj, UpdateContext& ctx) {
     if (obj.timer >= 64) obj.energy = 0;
 }
 
-// &4799: Red drop - falls
+// &4799 update_red_drop. Explodes on tile or non-slime object contact.
+// 6502 lets gravity ramp the drop from spawn vy=4 toward the &40 cap;
+// our port's INTANGIBLE-gravity-exempt skips that, so re-add the +1/
+// frame ramp manually. Without it the drop crawls one tile and dies.
 void update_red_drop(Object& obj, UpdateContext& ctx) {
-    obj.timer++;
-    if (obj.timer >= 128) obj.energy = 0;
-    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 5);
+    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
+        Object& target = ctx.mgr.object(obj.touching);
+        ObjectType tt = target.type;
+        // &479e-&47a0: drop ignores its parent slime — fall-through.
+        if (tt != ObjectType::RED_SLIME) {
+            // &47a2-&47a4: yellow slime -> coronium boulder.
+            if (tt == ObjectType::YELLOW_SLIME) {
+                target.type = ObjectType::CORONIUM_BOULDER;
+            } else if (tt != ObjectType::PIRANHA) {
+                // &47ab: 100 damage to anyone else (incl. player).
+                uint16_t hurt = std::min<uint16_t>(100, target.energy);
+                if (target.energy > 100) target.energy -= 100;
+                else                     target.energy = 0;
+                target.flags |= ObjectFlags::WAS_DAMAGED;
+                if (ctx.damage_events) {
+                    DamageVisual ev;
+                    ev.src_x = obj.x.whole; ev.src_y = obj.y.whole;
+                    ev.src_x_frac = obj.x.fraction; ev.src_y_frac = obj.y.fraction;
+                    ev.tgt_x = target.x.whole; ev.tgt_y = target.y.whole;
+                    ev.tgt_x_frac = target.x.fraction; ev.tgt_y_frac = target.y.fraction;
+                    ev.tgt_slot = static_cast<int8_t>(obj.touching);
+                    ev.amount = hurt;
+                    ctx.damage_events->push_back(ev);
+                }
+            }
+            obj.energy = 0;
+            return;
+        }
+    }
+    if (obj.tile_collision) {
+        obj.energy = 0;
+        return;
+    }
+    if (obj.velocity_y < 0x40) obj.velocity_y++;
 }
 
 // &4AD6: Fireball — stationary fire. Port of update_fireball.
@@ -578,7 +668,7 @@ void update_red_drop(Object& obj, UpdateContext& ctx) {
 // particles the fire looks flat; our palette cycle was already in
 // place but the rising-ember effect was missing.
 void update_fireball(Object& obj, UpdateContext& ctx) {
-    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 8);
+    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 8, ctx.damage_events);
 
     if (ctx.every_four_frames) {
         obj.palette = (obj.palette & 0x70) | (ctx.rng.next() & 0x07);
@@ -619,58 +709,59 @@ void update_explosion(Object& obj, UpdateContext& ctx) {
     // Explosions are INTANGIBLE, so the main loop's physics gate already
     // skips the gravity tick for them — no explicit cancel_gravity needed.
 
-    // Random palette for visual effect
-    obj.palette = ctx.rng.next() & 0x0f;
+    // 6502 &4fbf: AND #&13 — cycles through the 8 explosion palettes
+    // {kyK,rgK,rmK,rcK,kyR,rgR,rmR,rcR}. &0f would mix in unrelated indices.
+    obj.palette = ctx.rng.next() & 0x13;
 
     // Emit explosion particles each frame while burning.
     if (ctx.particles)
         ctx.particles->emit(ParticleType::EXPLOSION, 2, obj, ctx.rng);
 
-    // Port of &4fd8-&4fe2 + accelerate_all_objects (&343a-&34b0).
-    //
-    //   LDA duration; CMP #&08; ROR &28    — damages targets when
-    //     duration >= 8 (long explosions only). Cleared again at the
-    //     end of accelerate_all_objects (&34a7 LSR), so it's effectively
-    //     a per-frame flag re-evaluated from current duration.
-    //   LDA duration; ASL; ASL; STA &35    — acceleration_power =
-    //     duration * 4. 1 duration → 4 sub-tile units = 0.5 tile radius.
-    //
-    // accelerate_all_objects then iterates every slot (skipping self)
-    // and computes, for each target:
-    //   weight_factor = weight * 2 + 8          (heavier = less pushable)
-    //   remaining     = power − weight_factor − distance
-    //   if remaining < 0            → skip (too far / too heavy / static)
-    //   if damages && remaining >=4 → damage_object(remaining * 2)
-    //   if weight == 7              → skip push (static)
-    //   push magnitude = remaining / 2, direction = source → target
-    //   add push to target.velocity_x / velocity_y
-    //
-    // distance is measured in sub-tile units (1 tile = 8), using max of
-    // the two axes (Chebyshev) which matches the 6502's LOS raycast.
-    uint8_t duration = obj.tertiary_data_offset;
-    uint8_t power    = static_cast<uint8_t>(duration << 2);
-    bool    damages  = duration >= 8;
+    apply_explosion_radius(ctx.mgr, obj, /*source_slot=*/-1,
+                           obj.tertiary_data_offset, ctx.damage_events);
+}
+
+// Port of &4fd8-&4fe2 + accelerate_all_objects (&343a-&34b0).
+//
+//   LDA duration; CMP #&08; ROR &28    — damages targets when
+//     duration >= 8 (long explosions only).
+//   LDA duration; ASL; ASL; STA &35    — acceleration_power =
+//     duration * 4. 1 duration → 4 sub-tile units = 0.5 tile radius.
+//
+// For each target slot (skipping source_slot, or the by-pointer source
+// if source_slot is negative):
+//   weight_factor = weight * 2 + 8          (heavier = less pushable)
+//   remaining     = power − weight_factor − distance
+//   if remaining < 0            → skip
+//   if damages && remaining >=4 → damage_object(remaining * 2)
+//   if weight == 7              → skip push (static)
+//   push magnitude = remaining / 2, direction = source → target
+void apply_explosion_radius(ObjectManager& mgr, const Object& source,
+                            int source_slot, uint8_t duration,
+                            std::vector<DamageVisual>* damage_events) {
+    uint8_t power   = static_cast<uint8_t>(duration << 2);
+    bool    damages = duration >= 8;
+    // Effective tile reach: max distance where remaining > 0 against a
+    // weight-0 target = power - 8 sub-tile units (weight_factor floor).
+    // Clamp at 0 if the explosion is too small to reach anything.
+    uint8_t radius_tiles = (power > 8)
+        ? static_cast<uint8_t>((power - 8 + 7) / 8) : 0;
 
     for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
-        Object& other = ctx.mgr.object(i);
+        if (i == source_slot) continue;
+        Object& other = mgr.object(i);
         if (!other.is_active()) continue;
-        if (&other == &obj) continue;    // don't push the explosion itself
+        if (&other == &source) continue;
 
-        // Fractional position deltas. Using only `.whole` zeros the
-        // direction vector when both objects share a tile (the most
-        // impactful near-ground-zero case), so damage would land but
-        // the target wouldn't move. Sub-tile precision matches the
-        // 6502's calculate_angle_from_vector (&22d4) which operates
-        // on the full 16-bit positions.
+        // Fractional position deltas — full 16-bit precision so a target
+        // sharing a tile with the source still gets a non-zero direction.
         int other_fx = int(other.x.whole) * 256 + int(other.x.fraction);
         int other_fy = int(other.y.whole) * 256 + int(other.y.fraction);
-        int obj_fx   = int(obj.x.whole)   * 256 + int(obj.x.fraction);
-        int obj_fy   = int(obj.y.whole)   * 256 + int(obj.y.fraction);
-        int dfx = other_fx - obj_fx;
-        int dfy = other_fy - obj_fy;
+        int src_fx   = int(source.x.whole) * 256 + int(source.x.fraction);
+        int src_fy   = int(source.y.whole) * 256 + int(source.y.fraction);
+        int dfx = other_fx - src_fx;
+        int dfy = other_fy - src_fy;
 
-        // Tile-granular distance still drives the power drop-off so
-        // radius behaviour matches the 6502's 8-units-per-tile scale.
         int adx_tiles = std::abs(dfx) / 256;
         int ady_tiles = std::abs(dfy) / 256;
         int dist_units = std::max(adx_tiles, ady_tiles) * 8;
@@ -682,24 +773,25 @@ void update_explosion(Object& obj, UpdateContext& ctx) {
         int remaining = int(power) - weight_factor - dist_units;
         if (remaining <= 0) continue;
 
-        // Damage — acceleration * 2 (port of &3485 ASL A / &3486 JSR
-        // damage_object). Cap at object's current energy.
         if (damages && remaining >= 4) {
-            uint8_t hurt = static_cast<uint8_t>(std::min(255, remaining * 2));
+            uint16_t hurt = static_cast<uint16_t>(std::min(255, remaining * 2));
+            uint16_t actual = std::min<uint16_t>(hurt, other.energy);
             other.energy = (other.energy > hurt) ? (other.energy - hurt) : 0;
+            if (damage_events && actual > 0) {
+                DamageVisual ev;
+                ev.src_x = source.x.whole; ev.src_y = source.y.whole;
+                ev.src_x_frac = source.x.fraction; ev.src_y_frac = source.y.fraction;
+                ev.tgt_x = other.x.whole; ev.tgt_y = other.y.whole;
+                ev.tgt_x_frac = other.x.fraction; ev.tgt_y_frac = other.y.fraction;
+                ev.tgt_slot = static_cast<int8_t>(i);
+                ev.amount = actual;
+                ev.radius_tiles = radius_tiles;
+                damage_events->push_back(ev);
+            }
         }
 
-        // Statics feel damage but don't get accelerated.
         if (static_target) continue;
 
-        // Push magnitude = remaining / 2, in the direction from the
-        // explosion to the target. Normalise by the Chebyshev length
-        // of the sub-tile delta so one axis always gets the full push
-        // and the other is proportional. When both deltas are exactly
-        // zero (perfect overlap), fall back to a purely upward kick —
-        // matches the feel of the 6502 where zero-vector targets end
-        // up with their acceleration_sign EOR'd angle defaulting
-        // "up" for the blast wave.
         int accel = remaining / 2;
         int abs_fx = std::abs(dfx);
         int abs_fy = std::abs(dfy);
@@ -721,6 +813,17 @@ void update_explosion(Object& obj, UpdateContext& ctx) {
         if (vy < -128) vy = -128;
         other.velocity_x = static_cast<int8_t>(vx);
         other.velocity_y = static_cast<int8_t>(vy);
+    }
+
+    // Always push a radius marker so the overlay can outline the
+    // effective area even on frames when no target was inside it.
+    if (damage_events && damages && radius_tiles > 0) {
+        DamageVisual ev;
+        ev.src_x = source.x.whole; ev.src_y = source.y.whole;
+        ev.src_x_frac = source.x.fraction; ev.src_y_frac = source.y.fraction;
+        ev.tgt_slot = -1;
+        ev.radius_tiles = radius_tiles;
+        damage_events->push_back(ev);
     }
 }
 

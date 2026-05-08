@@ -1,9 +1,34 @@
 #include "objects/object_manager.h"
 #include "objects/object_data.h"
 #include "objects/object_tables.h"
+#include "rendering/sprite_atlas.h"
+#include "world/landscape.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+
+// =============================================================================
+// Tertiary state accessors. Forward to Landscape's per-cell entry list.
+// idx == 0 is reserved for "none" (matches the legacy data_offset==0
+// sentinel that meant "no tertiary"); valid entries are 1..N.
+// =============================================================================
+uint8_t ObjectManager::tertiary_data_byte(int idx) const {
+    if (!landscape_ || idx <= 0) return 0;
+    return landscape_->tertiary_entry(idx).data;
+}
+uint8_t ObjectManager::tertiary_type_byte(int idx) const {
+    if (!landscape_ || idx <= 0) return 0;
+    return landscape_->tertiary_entry(idx).type;
+}
+void ObjectManager::clear_tertiary_spawn_bit(int idx) {
+    if (!landscape_ || idx <= 0) return;
+    TertiaryEntry& e = landscape_->tertiary_entry_mut(idx);
+    e.data = static_cast<uint8_t>(e.data & 0x7f);
+}
+void ObjectManager::set_tertiary_data_byte(int idx, uint8_t value) {
+    if (!landscape_ || idx <= 0) return;
+    landscape_->tertiary_entry_mut(idx).data = value;
+}
 
 void ObjectManager::init() {
     // Clear all primary slots
@@ -48,8 +73,9 @@ void ObjectManager::init() {
         }
     }
 
-    // Copy mutable tertiary data (creature counts etc. change at runtime)
-    std::memcpy(tertiary_data_, tertiary_objects_data_bytes, sizeof(tertiary_data_));
+    // Tertiary mutable state lives in the Landscape's entry table,
+    // populated by Landscape::bake_tertiary_lookup or load_from_file
+    // before init() runs.
 
     secondary_update_next_ = 0;
     secondary_update_shuffle_ = 0;
@@ -73,17 +99,10 @@ void ObjectManager::init_object_from_type(Object& obj, ObjectType type) {
     obj.sprite = object_types_sprite[idx];
     obj.palette = object_types_palette_and_pickup[idx] & 0x7f;
     obj.energy = get_initial_energy(idx);
-    // Collectables (range 9, type >= 0x4a — pistol, grenades, RCD, flasks,
-    // mushroom balls, keys, etc.) spawn with the "undisturbed" pin armed
-    // (energy bit 7 set) so they sit still until something touches them.
-    // The 6502 ROM data has this set inconsistently per-instance via the
-    // packed secondary table; in our port object_update step 15 reads
-    // `obj.energy & 0x80 && type >= 0x4a` to skip physics until the pin
-    // is cleared by update_collectable's touch handler. Without this
-    // arming, get_initial_energy returns 0x7d (bit 7 clear) and freshly
-    // tertiary-spawned collectables drift downward each frame from the
-    // generic post-update gravity step.
-    if (idx >= 0x4a) {
+    // Arm the "undisturbed" pin (energy bit 7) for collectables 0x4a..0x64
+    // — step 15 reads it to skip physics until update_collectable's touch
+    // clears it. Upper bound excludes pre-release NPCs DOG/CRAB at 0x65+.
+    if (idx >= 0x4a && idx <= 0x64) {
         obj.energy |= 0x80;
     }
     obj.flags = ObjectFlags::NEWLY_CREATED | ObjectFlags::NOT_PLOTTED;
@@ -178,6 +197,32 @@ int ObjectManager::create_object_at(ObjectType type, int min_free_slots, const O
     return create_object(type, min_free_slots,
                          source.x.whole, source.x.fraction,
                          source.y.whole, source.y.fraction);
+}
+
+int ObjectManager::create_object_centered(ObjectType type, int min_free_slots,
+                                           const Object& source) {
+    int slot = create_object_at(type, min_free_slots, source);
+    if (slot < 0) return slot;
+    Object& dst = primary_[slot];
+    // Shift = (src_size − dst_size) / 2 so the two sprites share a centre.
+    auto sprite_size = [](uint8_t sid, int& w_units, int& h_units) {
+        if (sid > 0x80) { w_units = h_units = 0; return; }
+        const SpriteAtlasEntry& e = sprite_atlas[sid];
+        w_units = (e.w > 0 ? (e.w - 1) : 0) * 16;
+        h_units = (e.h > 0 ? (e.h - 1) : 0) * 8;
+    };
+    int sw = 0, sh = 0, dw = 0, dh = 0;
+    sprite_size(source.sprite, sw, sh);
+    sprite_size(dst.sprite,    dw, dh);
+    auto shift_axis = [](uint8_t& whole, uint8_t& frac, int delta) {
+        int sum = (int(whole) << 8) + int(frac) + delta;
+        sum &= 0xffff;
+        whole = static_cast<uint8_t>((sum >> 8) & 0xff);
+        frac  = static_cast<uint8_t>(sum & 0xff);
+    };
+    shift_axis(dst.x.whole, dst.x.fraction, (sw - dw) / 2);
+    shift_axis(dst.y.whole, dst.y.fraction, (sh - dh) / 2);
+    return slot;
 }
 
 // ============================================================================
@@ -371,23 +416,23 @@ void ObjectManager::return_to_tertiary(int primary_slot) {
     uint8_t type_flags = (tidx < static_cast<uint8_t>(ObjectType::COUNT))
                          ? object_types_flags[tidx] : 0;
 
-    // tertiary_slot is the index directly into tertiary_data_, with
-    // 0 meaning "no tertiary storage" (matches the 6502's &bd convention at
-    // &4083 / &4087).
-    if (obj.tertiary_slot > 0 &&
-        obj.tertiary_slot < sizeof(tertiary_data_)) {
-        uint8_t& data = tertiary_data_[obj.tertiary_slot];
+    // tertiary_slot is the index into the Landscape's tertiary entry
+    // table. 0 means "no tertiary storage" (matches the 6502's &bd
+    // convention at &4083 / &4087); valid entries start at 1.
+    if (obj.tertiary_slot > 0 && landscape_) {
+        TertiaryEntry& entry =
+            landscape_->tertiary_entry_mut(obj.tertiary_slot);
 
         if (type_flags & ObjectTypeFlags::SPAWNED_FROM_NEST) {
-            // Return spawn to nest: increment creature count
-            data += 0x04; // Add 1 creature (count is in upper bits)
+            // Return spawn to nest: increment creature count.
+            entry.data = static_cast<uint8_t>(entry.data + 0x04);
         } else {
-            // For doors / switches / transporter beams the primary has been
-            // mutating its data byte while onscreen (locked→unlocked from a
-            // switch, beam destination changed, etc.). Copy the current
-            // state back so the next spawn sees it. Then set the spawn gate
-            // bit 7 to re-enable creation when the tile returns to view.
-            data = static_cast<uint8_t>(obj.tertiary_data_offset | 0x80);
+            // For doors / switches / transporter beams the primary has
+            // been mutating its data byte while onscreen (locked →
+            // unlocked from a switch, beam destination changed, etc.).
+            // Copy the current state back so the next spawn sees it,
+            // and set bit 7 to re-arm the spawn gate.
+            entry.data = static_cast<uint8_t>(obj.tertiary_data_offset | 0x80);
         }
     }
 

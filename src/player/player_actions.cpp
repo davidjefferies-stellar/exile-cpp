@@ -14,7 +14,7 @@ bool Game::try_store_held(Object& player, bool drain_power_pod) {
     int slot = held_object_slot_;
     Object& held = object_mgr_.object(slot);
     uint8_t sprite_id = held.sprite;
-    if (sprite_id > 0x7c || sprite_atlas[sprite_id].h >= 8) return false;
+    if (sprite_id > 0x80 || sprite_atlas[sprite_id].h >= 8) return false;
     uint8_t ot = static_cast<uint8_t>(held.type);
     if (drain_power_pod && ot == static_cast<uint8_t>(ObjectType::POWER_POD)) {
         // &34cd not_power_pod: power pods feed the jetpack, not a pocket.
@@ -272,7 +272,7 @@ void Game::apply_player_input(Object& player, const InputState& inp,
             player_object_fired_ = held_object_slot_;
         } else {
             Weapon::fire(object_mgr_, player, player_weapon_, player_aim_angle_,
-                         weapon_energy_[player_weapon_]);
+                         weapon_energy_[player_weapon_], blaster_timer_);
         }
     }
 
@@ -290,11 +290,82 @@ void Game::apply_player_input(Object& player, const InputState& inp,
 
     auto pickup_now = [&](void) {
         if (held_object_slot_ < 0x80) return;                  // already holding
-        if (player.touching >= GameConstants::PRIMARY_OBJECT_SLOTS) return;
-        Object& touched = object_mgr_.object(player.touching);
-        if (!HeldObject::is_pickupable(touched.type)) return;
+
+        // The 6502's handle_picking_up_object reads this_object_touching
+        // (&3b) directly, set by check_for_collisions earlier in the
+        // frame. Our port's player.touching is only refreshed at the
+        // end of integrate_player_motion (last frame), so by the time
+        // the user presses , the field can be stale — the player walks
+        // past the collectable's narrow AABB window faster than the
+        // user can press the key, and pickup misfires until a frame
+        // happens to land back on a stable overlap.
+        //
+        // Fix: do a fresh AABB scan against the player's current
+        // position when the key fires, with a small ±2 fraction-unit
+        // inflation in each direction to forgive sub-pixel
+        // misalignment. Falls back to player.touching if nothing
+        // overlaps the inflated AABB.
+        int target_slot = -1;
+        {
+            int p_x = static_cast<int>(player.x.whole) * 256 +
+                      static_cast<int>(player.x.fraction);
+            int p_y = static_cast<int>(player.y.whole) * 256 +
+                      static_cast<int>(player.y.fraction);
+            int p_w = (player.sprite <= 0x80 && sprite_atlas[player.sprite].w > 0)
+                ? (sprite_atlas[player.sprite].w - 1) * 16 : 0;
+            int p_h = (player.sprite <= 0x80 && sprite_atlas[player.sprite].h > 0)
+                ? (sprite_atlas[player.sprite].h - 1) * 8 : 0;
+            // Inflate ~half a tile so the user can pick up an item
+            // they're standing right next to without pixel-hunting.
+            constexpr int kInflate = 0x40;
+            int p_x_lo = p_x - kInflate;
+            int p_x_hi = p_x + p_w + kInflate;
+            int p_y_lo = p_y - kInflate;
+            int p_y_hi = p_y + p_h + kInflate;
+
+            int best_slot = -1;
+            int best_dist = 0x7fffffff;
+            for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+                const Object& cand = object_mgr_.object(i);
+                if (!cand.is_active()) continue;
+                if (!HeldObject::is_pickupable(cand.type)) continue;
+                int o_x = static_cast<int>(cand.x.whole) * 256 +
+                          static_cast<int>(cand.x.fraction);
+                int o_y = static_cast<int>(cand.y.whole) * 256 +
+                          static_cast<int>(cand.y.fraction);
+                int o_w = (cand.sprite <= 0x80 && sprite_atlas[cand.sprite].w > 0)
+                    ? (sprite_atlas[cand.sprite].w - 1) * 16 : 0;
+                int o_h = (cand.sprite <= 0x80 && sprite_atlas[cand.sprite].h > 0)
+                    ? (sprite_atlas[cand.sprite].h - 1) * 8 : 0;
+                if (o_x + o_w <= p_x_lo) continue;
+                if (p_x_hi   <= o_x)     continue;
+                if (o_y + o_h <= p_y_lo) continue;
+                if (p_y_hi   <= o_y)     continue;
+                // Pick the closest by centre-to-centre distance so a
+                // crowded floor doesn't grab a far item over a near one.
+                int o_cx = o_x + o_w / 2;
+                int o_cy = o_y + o_h / 2;
+                int p_cx = p_x + p_w / 2;
+                int p_cy = p_y + p_h / 2;
+                int dx = o_cx - p_cx;
+                int dy = o_cy - p_cy;
+                int d  = dx * dx + dy * dy;
+                if (d < best_dist) { best_dist = d; best_slot = i; }
+            }
+            target_slot = best_slot;
+        }
+        if (target_slot < 0 &&
+            player.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
+            Object& cand = object_mgr_.object(player.touching);
+            if (cand.is_active() && HeldObject::is_pickupable(cand.type)) {
+                target_slot = player.touching;
+            }
+        }
+        if (target_slot < 0) return;
+
+        Object& touched = object_mgr_.object(target_slot);
         HeldObject::pickup(touched, player, held_object_slot_,
-                           player.touching);
+                           static_cast<uint8_t>(target_slot));
         // First touch clears the collectable's undisturbed pin (port
         // of the ASL/LSR at &4ba1).
         touched.energy &= 0x7f;

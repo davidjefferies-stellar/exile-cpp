@@ -160,11 +160,11 @@ TileCollisionResult check_tile_collision(const Landscape& landscape, const Objec
 // sprites_height_and_vertical_flip_table (atlas: (h-1)*8), which live in the
 // x.fraction / y.fraction space directly.
 static int sprite_width_units(uint8_t sprite) {
-    if (sprite > 0x7c) return 0;
+    if (sprite > 0x80) return 0;
     return (sprite_atlas[sprite].w > 0 ? sprite_atlas[sprite].w - 1 : 0) * 16;
 }
 static int sprite_height_units(uint8_t sprite) {
-    if (sprite > 0x7c) return 0;
+    if (sprite > 0x80) return 0;
     return (sprite_atlas[sprite].h > 0 ? sprite_atlas[sprite].h - 1 : 0) * 8;
 }
 
@@ -228,7 +228,8 @@ ObjectCollisionResult check_object_collision(
 }
 
 bool overlaps_solid_object(const Object& obj, int self_slot,
-                            const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects) {
+                            const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects,
+                            int skip_slot) {
     int this_x = obj.x.whole * 256 + obj.x.fraction;
     int this_y = obj.y.whole * 256 + obj.y.fraction;
     int this_w = sprite_width_units(obj.sprite);
@@ -237,6 +238,11 @@ bool overlaps_solid_object(const Object& obj, int self_slot,
 
     for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
         if (i == self_slot) continue;
+        // Held-object exclusion (port of &2afd-&2b0e). The carried primary's
+        // AABB overlaps the player's whenever HeldObject::update_position
+        // pins it flush; without this skip, a heavier held (coronium
+        // boulder, weight 5) blocks the player's own X motion.
+        if (i == skip_slot) continue;
         const Object& other = all_objects[i];
         if (!other.is_active()) continue;
 
@@ -289,63 +295,61 @@ bool overlaps_solid_object(const Object& obj, int self_slot,
     return false;
 }
 
+// Sign-preserving signed halve: floor toward -infinity. Matches the
+// 6502's CMP #&80 / ROR A idiom (&2bca, &2c05) that brings the prior
+// sign back into bit 7 after the shift.
+static int asr1_floor(int x) {
+    if (x >= 0) return x / 2;
+    return -((-x + 1) / 2);
+}
+
+// Apply one side of the transfer (port of &2bc6-&2bed). The transfer is
+// halved and, if the smallest overlap is in this axis, the original is
+// added back to give a 1.5× kick (the &2bcf ADC &a2,X "doubling" path).
+// Result is clamped to signed 8-bit per &327f prevent_overflow.
+static int process_one_side(int transfer, bool double_it, int start_v) {
+    int processed = asr1_floor(transfer);
+    if (double_it) processed += transfer;
+    int sum = start_v + processed;
+    if (sum >  127) sum =  127;
+    if (sum < -128) sum = -128;
+    return sum;
+}
+
 // Port of &2bee calculate_transfer_velocities + &2bc6 apply_collision_
-// to_object_velocity. The 6502 computes a half-velocity-difference,
-// divides it down by weight_difference halvings (giving the transfer
-// applied to the heavier side), and subtracts to get the greater half
-// applied to the lighter side. Each is then halved, optionally doubled
-// when the collision came from that direction, and added/subtracted to
-// the appropriate side's velocity.
+// to_object_velocity. Computes lesser/greater transfer values from the
+// half-velocity-difference and weight ratio, then routes them to the
+// two sides per the BMI / DEX-LDX swap at &2bd6-&2bde.
 //
-// All arithmetic is signed 8-bit; we use int to avoid undefined
-// overflow and clamp at the end with prevent_overflow semantics.
+// Heavier side (this_heavier): adds `greater` (negative-signed when
+//   this_v > other_v) to itself; adds `lesser` (positive) to other.
+// Lighter side: adds -lesser to itself; adds -greater to other (the
+//   `invert_if_positive` + index swap at &2bd8-&2bde inverts both).
+//
+// `smallest_overlap_in_this_axis` mirrors the per-axis bit pattern in
+// `collision_velocity_direction_flags_table` (&29dc): both transfers on
+// the impact axis are doubled, the other axis isn't.
 VelocityTransfer apply_mass_ratio_velocity(
         int8_t this_v_in, int8_t other_v_in,
         uint8_t this_weight, uint8_t other_weight,
-        bool hit_from_this_side) {
-    auto clamp_i8 = [](int v) {
-        if (v >  127) v =  127;
-        if (v < -128) v = -128;
-        return v;
-    };
+        bool smallest_overlap_in_this_axis) {
 
-    // &2bee-&2bfc: half_velocity_difference.
-    int half_diff = (int(this_v_in) - int(other_v_in)) / 2;
+    int half_diff = asr1_floor(int(this_v_in) - int(other_v_in));
 
-    // &2bfe-&2c07: halve half_diff for each unit of weight difference,
-    // keeping sign. Same weight = halve once.
     int wdiff = int(this_weight) - int(other_weight);
     int wdiff_abs = wdiff < 0 ? -wdiff : wdiff;
     int shifts = wdiff_abs == 0 ? 1 : wdiff_abs;
     int lesser = half_diff;
-    for (int i = 0; i < shifts; i++) lesser = lesser / 2;    // ASR-style
-    // &2c09-&2c0d: "round up if negative" (adc #0 after ror shifts in 1).
-    if (half_diff < 0 && (half_diff & 1)) lesser += 0;  // approximation
-    int greater = half_diff - lesser;
+    for (int i = 0; i < shifts; i++) lesser = asr1_floor(lesser);
+    // &2c09-&2c0b CMP #&80 / ADC #0: round up by 1 if negative.
+    if (lesser < 0) lesser += 1;
+    int greater = lesser - half_diff;
 
-    // &2bc6-&2bed: each half is applied halved, optionally doubled when
-    // the collision came from that side ("skip_doubling" branch).
-    auto apply = [&](int transfer, bool doubled, int start_v, bool negate) {
-        int half = transfer / 2;
-        int add  = doubled ? (half + transfer) : half;   // doubled = +transfer
-        if (negate) add = -add;
-        return clamp_i8(start_v + add);
-    };
+    int this_xfer  = (wdiff > 0) ?  greater : -lesser;
+    int other_xfer = (wdiff > 0) ?  lesser  : -greater;
 
-    // this_object is heavier when wdiff > 0. Lighter side gets `greater`,
-    // heavier side gets `lesser`. The sign flip (invert_if_positive at
-    // &2bd8) makes the heavier-side addition move AWAY from the other.
-    bool this_heavier = wdiff > 0;
-    int this_out, other_out;
-    if (this_heavier) {
-        // this gets lesser (heavier-side), other gets greater (lighter).
-        this_out  = apply(lesser,  hit_from_this_side, this_v_in,  true);
-        other_out = apply(greater, !hit_from_this_side, other_v_in, false);
-    } else {
-        // this gets greater (lighter-side), other gets lesser (heavier).
-        this_out  = apply(greater, hit_from_this_side, this_v_in,  false);
-        other_out = apply(lesser,  !hit_from_this_side, other_v_in, true);
-    }
+    int this_out  = process_one_side(this_xfer,  smallest_overlap_in_this_axis, this_v_in);
+    int other_out = process_one_side(other_xfer, smallest_overlap_in_this_axis, other_v_in);
 
     VelocityTransfer out;
     out.this_v  = static_cast<int8_t>(this_out);
@@ -372,7 +376,7 @@ uint8_t substitute_door_for_obstruction(
         for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
             const Object& obj = all_objects[i];
             if (obj.is_active() &&
-                obj.tertiary_slot == static_cast<uint8_t>(data_offset)) {
+                obj.tertiary_slot == static_cast<uint16_t>(data_offset)) {
                 data = obj.tertiary_data_offset;
                 break;
             }

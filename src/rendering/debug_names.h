@@ -178,6 +178,8 @@ inline const char* object_type_name(ObjectType t) {
         case ObjectType::WHISTLE_TWO: return "WHISTLE_TWO";
         case ObjectType::RADIATION_IMMUNITY_PILL: return "RAD_IMMUNE_PILL";
         case ObjectType::INVISIBLE_INERT: return "INVIS_INERT";
+        case ObjectType::DOG: return "DOG";
+        case ObjectType::CRAB: return "CRAB";
         default: return "UNKNOWN";
     }
 }

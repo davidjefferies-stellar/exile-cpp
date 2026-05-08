@@ -1,5 +1,6 @@
 #pragma once
 #include "core/types.h"
+#include "core/damage_visual.h"
 #include "core/random.h"
 #include "world/landscape.h"
 #include "objects/object.h"
@@ -9,6 +10,7 @@
 #include "rendering/camera.h"
 #include "particles/particle_system.h"
 #include <fstream>
+#include <vector>
 #include <memory>
 #include <string>
 
@@ -45,6 +47,11 @@ private:
     uint8_t player_aim_angle_ = 0;
     uint8_t player_angle_  = 0xc0;  // &de: current body angle (0xc0 = upright head-up)
     uint8_t player_facing_ = 0x00;  // &df: facing as an x_flip byte (0x00 right, 0x80 left)
+    // Damage-flash bookkeeping (port-only). 6502's continuous low-energy
+    // flash at &38d9 was too slow / too constant to read as a "hit"
+    // event; track previous energy and trigger a short strobe instead.
+    uint8_t player_prev_energy_     = 0xff;
+    uint8_t player_damage_flash_    = 0;
     // &1c tile_collision_angle: angle of the surface the player is standing
     // on, in 8-bit units (0x00 = flat ground, 0xe0 = 45° rising right,
     // 0x20 = 45° falling right). Refreshed each frame in
@@ -61,6 +68,44 @@ private:
     uint8_t player_object_fired_ = 0xff;
     uint16_t weapon_energy_[6] = {0x0800, 0, 0, 0, 0, 0}; // Jetpack starts with energy
     bool jetpack_active_ = false;
+    // &36 player_blaster_timer. Set to -5 by Weapon::fire when the blaster
+    // is triggered; tick_blaster increments it each frame while negative,
+    // running a duration-10 explosion centred on the player on every tick.
+    // Clears to 0 once the discharge sequence finishes.
+    int8_t blaster_timer_ = 0;
+
+    // &081d explosion_timer. Set to -50 by start_explosion_timer (&40e8),
+    // INC'd to 0 each frame at &19df-&19e4. AI stimulus flag (read by
+    // worm/maggot emergence at &267d and the stimuli responder at
+    // &282b); does NOT drive the screen flash. Distinct from the
+    // background-flash cooldown below.
+    int8_t explosion_timer_ = 0;
+
+    // &2a background_flash_cooldown. Set to 11 by flash_background
+    // (&1f92); update_background_flash (&1f97) DECs it each frame and
+    // randomises colour 0 (the sky) while > 0, restoring black on the
+    // tick it reaches 0. Triggered by coronium chains (&41e5) and the
+    // "no free slot — object lost" path (&0c78). The blaster does NOT
+    // call this in the 6502; we add a port-only call from tick_blaster
+    // so the discharge has a visible sky flash.
+    uint8_t background_flash_cooldown_ = 0;
+
+    // [player] invincible — when true, gates every player-damage path
+    // (damage_player_if_touching, common_bullet_update target hit when
+    // touching == player slot 0, explosion radius hits, coronium
+    // radiation). Set from cfg.invincible at startup.
+    bool invincible_ = false;
+
+    // Per-frame damage log for the "Damage" debug overlay. Updated only
+    // when the renderer's checkbox is on. Cleared at the top of every
+    // tick so the overlay reflects exactly what happened this frame.
+    std::vector<DamageVisual> damage_events_;
+
+    // Always-on transient text notifications. Pushed by update routines
+    // on rare game events (imp fed, key collected, …) and rendered
+    // unconditionally so the feedback isn't gated by a debug toggle.
+    // TTL decays each tick; entries are erased when they hit 0.
+    std::vector<FloatingLabel> floating_labels_;
 
     // Player pockets (&0848-&084c): up to 5 stored object types, slot 0 is
     // the "top" of the stack (next to retrieve). Unused slots = 0xff.
@@ -105,6 +150,16 @@ private:
     uint8_t earthquake_state_ = 0;
     uint8_t clawed_robot_availability_[4]   = {0, 0, 0, 0};
     uint8_t clawed_robot_teleport_energy_[4] = {0, 0, 0, 0};
+
+    // Per-variant remaining-gift counters for the imps' fed-then-home
+    // gift drop (port of &083a..&083e). Decremented when a fed imp
+    // returns to its pipe. Initial counts from the 6502 are:
+    //   red/magenta  → 4 power pods
+    //   red/yellow   → 10 active grenades
+    //   blue/cyan    → 1 alien weapon
+    //   cyan/yellow  → 1 alien weapon
+    //   red/cyan     → 10 active grenades
+    uint8_t imp_gifts_remaining_[5] = {4, 10, 1, 1, 10};
 
     // Player teleport tables (&0821-&082c). Slots 0-3 are rewritten by
     // handle_remembering_position; slot 4 is the fallback used when no
@@ -162,6 +217,35 @@ private:
     //   T → handle_teleporting          (&0cc1)
     bool remember_key_prev_    = false;
     bool teleport_key_prev_    = false;
+    bool save_map_key_prev_    = false;
+
+    // Tile-editor state. The "Edit" HUD checkbox (read via
+    // IRenderer::editor_enabled) flips left-click between SELECT and
+    // PAINT. SELECT writes the clicked tile into editor_paint_tile_ and
+    // populates the info overlay; PAINT writes editor_paint_tile_ into
+    // landscape_ at the clicked cell. Default 0x19 = TILE_SPACE so the
+    // first paint with no prior selection erases.
+    uint8_t editor_paint_tile_ = 0x19;
+    // Right-click action selector: 0 = paint tile, 1 = place object.
+    // Toggled by the user clicking either palette panel.
+    int     editor_paint_kind_ = 0;
+    int     editor_paint_object_idx_ = -1;
+    // Last cell the user left-clicked, in world coordinates. Used by
+    // the editor's tertiary controls (Detach button, [ / ] data-byte
+    // bump keys) so they know which cell to act on.
+    uint8_t  editor_highlight_x_ = 0;
+    uint8_t  editor_highlight_y_ = 0;
+    bool     editor_has_highlight_ = false;
+    bool     tert_data_inc_prev_ = false;
+    bool     tert_data_dec_prev_ = false;
+    // Frame at which the last "Saved" feedback overlay should disappear.
+    // Zero means no message active.
+    uint64_t editor_save_msg_until_frame_ = 0;
+    // Whether the last save attempt succeeded (true) or failed (false);
+    // controls "Saved" vs "Save FAILED" text in the banner.
+    bool     editor_save_msg_ok_           = false;
+
+    void refresh_selected_tile_info(uint8_t tx, uint8_t ty);
 
     // Spawn diagnostics — incremented from spawn_tertiary_object so the
     // map-mode HUD banner can show whether spawns are actually firing.
@@ -206,6 +290,25 @@ private:
     void integrate_player_motion(Object& player,
                                  int8_t accel_x, int8_t accel_y);
     void update_player_sprite(int8_t accel_x, int8_t accel_y);
+    // &4a70-&4a87 blaster discharge tick. While blaster_timer_ < 0,
+    // INC the timer and run update_explosion centred on the player at
+    // duration 10 — same damage radius as a duration-10 EXPLOSION primary.
+    void tick_blaster();
+
+    // &40e8 start_explosion_timer. Sets explosion_timer_ = -50 so AI
+    // stimuli code can read "explosion in progress" for the next 50
+    // frames (&267d / &282b). Does not drive any visual.
+    void start_explosion_timer() { explosion_timer_ = -50; }
+
+    // &1f92 flash_background. Sets background_flash_cooldown_ = 11 so
+    // update_background_flash randomises the sky for the next 11 frames.
+    void flash_background() { background_flash_cooldown_ = 0x0b; }
+
+    // &1f97 update_background_flash. Per-frame DEC + colour-0 swap.
+    // Called once per game tick. While the cooldown is > 0, picks a
+    // random sky colour (1-in-8 chance of white-ish, otherwise random
+    // logical colour); restores black on the tick the cooldown hits 0.
+    void update_background_flash();
 
     // Port of &34b4 store_object: pocket the currently-held primary (or
     // drain it into the jetpack if it's a power pod). Returns true if the

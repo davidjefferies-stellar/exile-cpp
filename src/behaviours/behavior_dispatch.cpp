@@ -4,6 +4,7 @@
 #include "behaviours/robot.h"
 #include "behaviours/environment.h"
 #include "behaviours/collectable.h"
+#include "behaviours/exile1_creatures.h"
 
 namespace AI {
 
@@ -125,6 +126,10 @@ static const UpdateFunc dispatch_table[] = {
     Behaviors::update_collectable,          // 0x62 WHISTLE_TWO      (&4B88)
     Behaviors::update_collectable,          // 0x63 RADIATION_IMMUNITY (&4B88)
     Behaviors::update_inert,                // 0x64 INVISIBLE_INERT  (&43AD)
+
+    // EXILE1 pre-release creatures (recovered from 8-March-1988 master).
+    Behaviors::update_dog,                  // 0x65 DOG  (EXILE1 &3cb5)
+    Behaviors::update_crab,                 // 0x66 CRAB (EXILE1 &3e67)
 };
 
 static_assert(sizeof(dispatch_table) / sizeof(dispatch_table[0]) ==

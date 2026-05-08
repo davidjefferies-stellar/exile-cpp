@@ -168,6 +168,13 @@ StartupConfig load_startup_config(const std::string& path) {
             else if (key == "weapon") {
                 int w = parse_weapon(value);
                 if (w >= 0) cfg.weapon = static_cast<uint8_t>(w);
+            } else {
+                bool b = false;
+                if (key == "give_protection_suit" && parse_bool(value, b)) {
+                    cfg.give_protection_suit = b;
+                } else if (key == "invincible" && parse_bool(value, b)) {
+                    cfg.invincible = b;
+                }
             }
         } else if (section == "weapon_energy") {
             int slot = parse_weapon(key);
@@ -247,6 +254,57 @@ StartupConfig load_startup_config(const std::string& path) {
             if (key == "use_cpp_impl" && parse_bool(value, b)) {
                 cfg.use_cpp_landscape = b;
             }
+        } else if (section == "creatures") {
+            bool b = false;
+            if (key == "pipe_198_190_crab" && parse_bool(value, b)) {
+                cfg.pipe_198_190_crab = b;
+            }
+        } else if (section == "startup_spawns") {
+            // Format: <key> = <type>, <tile_x>, <tile_y>[, <x_frac>][, <y_frac>]
+            // Key is just a uniqueness handle — slot0..slotN, names,
+            // anything that doesn't collide. Type accepts ObjectType
+            // names (case-insensitive) or numeric ids; coordinates can
+            // be decimal or 0xNN hex. Fractions default to 0x80 (tile
+            // centre) when omitted.
+            std::vector<std::string> tokens;
+            std::string current;
+            for (char c : value) {
+                if (c == ',') {
+                    tokens.push_back(trim(current));
+                    current.clear();
+                } else {
+                    current.push_back(c);
+                }
+            }
+            if (!current.empty()) tokens.push_back(trim(current));
+            if (tokens.size() < 3 || tokens.size() > 5) {
+                std::fprintf(stderr,
+                    "exile.ini:%d: [startup_spawns] expected "
+                    "type,x,y[,x_frac,y_frac]\n", line_no);
+                continue;
+            }
+            int t_id = parse_object_type(tokens[0]);
+            unsigned long tx = 0, ty = 0, xf = 0x80, yf = 0x80;
+            bool ok = (t_id >= 0)
+                   && parse_uint(tokens[1], tx) && tx <= 0xff
+                   && parse_uint(tokens[2], ty) && ty <= 0xff;
+            if (ok && tokens.size() >= 4)
+                ok = parse_uint(tokens[3], xf) && xf <= 0xff;
+            if (ok && tokens.size() >= 5)
+                ok = parse_uint(tokens[4], yf) && yf <= 0xff;
+            if (!ok) {
+                std::fprintf(stderr,
+                    "exile.ini:%d: [startup_spawns] could not parse '%s'\n",
+                    line_no, value.c_str());
+                continue;
+            }
+            cfg.startup_spawns.push_back({
+                static_cast<uint8_t>(t_id),
+                static_cast<uint8_t>(tx),
+                static_cast<uint8_t>(ty),
+                static_cast<uint8_t>(xf),
+                static_cast<uint8_t>(yf),
+            });
         } else if (section == "pockets") {
             // Keys are slot0..slot4. slot0 = top of stack.
             if (key.size() == 5 && key.rfind("slot", 0) == 0 &&

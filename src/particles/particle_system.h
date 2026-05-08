@@ -64,7 +64,13 @@ enum class ParticleType : uint8_t {
 
 class ParticleSystem {
 public:
-    static constexpr int MAX_PARTICLES = 32;
+    // 6502 had 32 slots (matched its tiny visible area). Our viewport can
+    // be 8-10× wider, so the star-field spawn rate scales proportionally
+    // — bump the pool to keep the same on-screen density without evicting
+    // every other emit (explosions burst 32 at once on their own).
+    // allocate_slot's full-pool eviction uses `& (MAX_PARTICLES - 1)` so
+    // this must stay a power of two.
+    static constexpr int MAX_PARTICLES = 256;
 
     void clear() { n_ = 0; }
 

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // Startup configuration loaded from exile.ini. Everything is optional —
 // missing fields fall back to the hard-coded defaults (which reproduce
@@ -20,6 +21,15 @@ struct StartupConfig {
     uint8_t weapon         = 2;      // selected weapon slot (0=jetpack,
                                      // 1=pistol, 2=icer, 3=blaster,
                                      // 4=plasma, 5=suit)
+    // Force-fill weapon_energy[5] (the suit slot) to 0xffff at init —
+    // shorthand for "wear the suit from the start" so [weapon_energy]'s
+    // numeric `suit` doesn't have to be touched.
+    bool    give_protection_suit = false;
+
+    // Player invincibility — when true, every damage path that targets
+    // the player (slot 0) silently no-ops. Useful for level-walking and
+    // testing AI without dying. Defaults off so normal play is unchanged.
+    bool    invincible = false;
 
     // [weapon_energy] — one 16-bit counter per weapon slot.
     std::array<uint16_t, 6> weapon_energy = { 0x0800, 0, 0x0800, 0, 0, 0 };
@@ -96,6 +106,27 @@ struct StartupConfig {
     // maps; this toggle exists for A/B testing and as a safety net while
     // the rewrite settles. Default false → reference implementation.
     bool use_cpp_landscape = false;
+
+    // [creatures] — pre-release crab swap. Default true re-types the
+    // PIPE tertiary at (198, 190) from BLUE_CYAN_IMP to CRAB so the
+    // EXILE1 sprite is reachable in-game. Set false to keep the original
+    // imp spawn.
+    bool pipe_198_190_crab = true;
+
+    // [startup_spawns] — list of primary objects to drop into the world
+    // during Game::init, after the landscape is baked. Each entry maps a
+    // unique key (slot0..slotN, or any other distinct name) to a tuple
+    // of <type, tile_x, tile_y[, x_frac, y_frac]>. Used for testing
+    // specific creatures / pickups in specific locations without having
+    // to author a new tertiary entry.
+    struct StartupSpawn {
+        uint8_t type;     // ObjectType value (0..0x66)
+        uint8_t tile_x;
+        uint8_t tile_y;
+        uint8_t x_frac;   // 0..255 within tile; default 0x80 (centred)
+        uint8_t y_frac;
+    };
+    std::vector<StartupSpawn> startup_spawns;
 };
 
 // Load the config from the given path. Returns the populated struct;

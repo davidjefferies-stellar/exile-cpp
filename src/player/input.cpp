@@ -39,6 +39,14 @@ void InputHandler::process_key(int key) {
         case 'q': case 'Q': state_.quit         = true; break;
         case ';': case ':': state_.save_game     = true; break;
         case '\'': case '"': state_.load_game    = true; break;
+        case '\\': case '|': state_.save_map     = true; break;
+        // Editor data-byte bump: bracket pair OR -/= as a fallback for
+        // keyboards / fenster mappings where the bracket scancodes
+        // don't surface cleanly.
+        case '[': case '{': case '-': case '_':
+                              state_.tert_data_dec = true; break;
+        case ']': case '}': case '=': case '+':
+                              state_.tert_data_inc = true; break;
         case '1': state_.weapon_select = 0; break;
         case '2': state_.weapon_select = 1; break;
         case '3': state_.weapon_select = 2; break;

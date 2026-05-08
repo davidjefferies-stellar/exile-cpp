@@ -1,6 +1,7 @@
 #include "behaviours/npc_helpers.h"
 #include "objects/object_data.h"
 #include "rendering/sprite_atlas.h"
+#include "audio/audio.h"
 #include "core/types.h"
 #include <cstdlib>
 
@@ -60,23 +61,38 @@ void animate_walking(Object& obj, uint8_t base_sprite, uint8_t frame_counter) {
 // A = damage, Y = target slot and applies damage to this_object_energy.
 // Our helper folds in the "touching the player?" guard — callers
 // previously had to do it themselves and many forgot.
-void damage_player_if_touching(Object& obj, Object& player, uint8_t damage) {
+void damage_player_if_touching(Object& obj, Object& player, uint8_t damage,
+                               std::vector<DamageVisual>* damage_events) {
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
         if (obj.touching == 0) { // Touching player (slot 0)
+            uint16_t hurt = std::min<uint16_t>(damage, player.energy);
             if (player.energy > damage) {
                 player.energy -= damage;
             } else {
                 player.energy = 0;
             }
+            if (damage_events && hurt > 0) {
+                DamageVisual ev;
+                ev.src_x = obj.x.whole; ev.src_y = obj.y.whole;
+                ev.src_x_frac = obj.x.fraction; ev.src_y_frac = obj.y.fraction;
+                ev.tgt_x = player.x.whole; ev.tgt_y = player.y.whole;
+                ev.tgt_x_frac = player.x.fraction; ev.tgt_y_frac = player.y.fraction;
+                ev.tgt_slot = 0;
+                ev.amount = hurt;
+                damage_events->push_back(ev);
+            }
         }
     }
 }
 
-// Port of give_object_minimum_energy (&352e). The 6502 leaves early if
-// energy is 0 (object is exploding); we skip that guard because our
-// caller never passes a zero-energy object here. Called as "hold this
-// type's minimum energy" by most creature updates (bird, wasp, robots).
+// Port of give_object_minimum_energy (&352e). Holds the type's HP floor
+// each frame so weak attacks regenerate away. The &3530 BEQ leave
+// short-circuit is critical: when damage has just brought energy to
+// exactly 0, the object is mid-explode and must NOT be healed —
+// otherwise step 12's explosion path never fires and the NPC feels
+// immortal.
 void enforce_minimum_energy(Object& obj, uint8_t min_energy) {
+    if (obj.energy == 0) return;
     if (obj.energy < min_energy) {
         obj.energy = min_energy;
     }
@@ -143,7 +159,7 @@ int fire_projectile(Object& obj, ObjectType bullet_type, UpdateContext& ctx) {
 // the same spawn geometry. Skipping this causes the bullet to spawn
 // inside the parent's tile and explode on frame 1.
 void offset_child_from_parent(Object& child, const Object& parent) {
-    if (child.sprite > 0x7c || parent.sprite > 0x7c) return;
+    if (child.sprite > 0x80 || parent.sprite > 0x80) return;
 
     const SpriteAtlasEntry& pe = sprite_atlas[parent.sprite];
     const SpriteAtlasEntry& be = sprite_atlas[child.sprite];
@@ -263,7 +279,7 @@ bool compute_firing_vector(const Object& from, const Object& target,
     // --- &22a0 centre-to-centre 16-bit delta -----------------------------
     auto centre = [](const Object& o, bool is_x) -> int {
         int pixels = 0;
-        if (o.sprite <= 0x7c) {
+        if (o.sprite <= 0x80) {
             const SpriteAtlasEntry& e = sprite_atlas[o.sprite];
             pixels = is_x ? (e.w * 16) : (e.h * 8);  // match 6502 byte units
         } else {
@@ -404,12 +420,55 @@ uint8_t update_sprite_offset_using_velocities(Object& obj, uint8_t modulus) {
 
 // Port of change_object_sprite_to_base_plus_A (&3292). Indexes the
 // per-type base sprite in object_types_sprite[] and adds `offset` for
-// the animation frame. Pairs with update_sprite_offset_using_velocities
-// (&2555) — that routine picks the offset, this one commits it.
+// the animation frame. Also runs the &329e-&32b3 centring shim:
+// position += (old_size - new_size) / 2 on both axes so a sprite swap
+// keeps the visual centre fixed (otherwise the red slime cycle pulses
+// from its left edge instead of around the middle).
+//
+// Width/height are stored as (n-1) << shift in the 6502 tables — same
+// fraction-unit scale (1px = 16 x-units, 1row = 8 y-units) used by the
+// position fraction byte, so we can add directly to obj.x/y.fraction.
+static int sprite_width_units(uint8_t s) {
+    if (s > 0x80) return 0;
+    int w = sprite_atlas[s].w;
+    return (w > 0 ? (w - 1) * 16 : 0);
+}
+static int sprite_height_units(uint8_t s) {
+    if (s > 0x80) return 0;
+    int h = sprite_atlas[s].h;
+    return (h > 0 ? (h - 1) * 8 : 0);
+}
+static void shift_position_signed(uint8_t& whole, uint8_t& frac, int delta) {
+    int combined = int(whole) * 256 + int(frac) + delta;
+    whole = static_cast<uint8_t>((combined >> 8) & 0xff);
+    frac  = static_cast<uint8_t>(combined & 0xff);
+}
 void change_object_sprite_to_base_plus_A(Object& obj, uint8_t offset) {
     uint8_t tidx = static_cast<uint8_t>(obj.type);
     if (tidx >= static_cast<uint8_t>(ObjectType::COUNT)) return;
-    obj.sprite = static_cast<uint8_t>(object_types_sprite[tidx] + offset);
+    uint8_t new_sprite = static_cast<uint8_t>(object_types_sprite[tidx] + offset);
+    if (new_sprite == obj.sprite) return;
+    int dx = (sprite_width_units(obj.sprite)  - sprite_width_units(new_sprite))  / 2;
+    int dy = (sprite_height_units(obj.sprite) - sprite_height_units(new_sprite)) / 2;
+    obj.sprite = new_sprite;
+    shift_position_signed(obj.x.whole, obj.x.fraction, dx);
+    shift_position_signed(obj.y.whole, obj.y.fraction, dy);
+}
+
+// Port of the slime's sprite-update path: store sprite directly, then
+// JMP &32aa subtract_width_from_position. X-only centring — used by
+// ceiling-mounted breathing creatures whose y-anchor must stay pinned.
+// Skipping the Y shift is critical: the slime spawns with y_frac=0
+// (v-flipped), and a -20 dy on the first cycle would underflow y.whole
+// by 1, putting subsequent RED_DROP spawns in the solid ceiling tile.
+void change_object_sprite_x_only(Object& obj, uint8_t offset) {
+    uint8_t tidx = static_cast<uint8_t>(obj.type);
+    if (tidx >= static_cast<uint8_t>(ObjectType::COUNT)) return;
+    uint8_t new_sprite = static_cast<uint8_t>(object_types_sprite[tidx] + offset);
+    if (new_sprite == obj.sprite) return;
+    int dx = (sprite_width_units(obj.sprite) - sprite_width_units(new_sprite)) / 2;
+    obj.sprite = new_sprite;
+    shift_position_signed(obj.x.whole, obj.x.fraction, dx);
 }
 
 // Port of dampen_this_object_velocities_twice (&321f). Two consecutive
@@ -428,8 +487,6 @@ void dampen_velocities_twice(Object& obj) {
 //   delta = desired_vel - current_vel      ; signed
 //   delta = clamp(delta, -max_accel, max_accel)
 //   current_vel += delta
-//
-// Free function (not a lambda) per CLAUDE.md.
 static void apply_weighted_acceleration(int8_t& v, int8_t desired,
                                          uint8_t max_accel) {
     int delta = int(desired) - int(v);
@@ -440,6 +497,62 @@ static void apply_weighted_acceleration(int8_t& v, int8_t desired,
     if (nv >  127) nv =  127;
     if (nv < -128) nv = -128;
     v = static_cast<int8_t>(nv);
+}
+
+// Reduced port of consider_absorbing_object_touched (&3be1). The 6502:
+//
+//   LDY this_object_touching
+//   CMP objects_type, Y      ; A = prey type passed in
+//   BNE leave
+//   JSR check_object_touching_angle  ; rejected at glancing angles
+//   BMI leave
+//   JSR set_object_for_removal
+//   JSR play_low_beep
+//
+// We skip the &3bd5 angle gate (see header). PENDING_REMOVAL is the
+// port's set_object_for_removal equivalent — the main loop's GC pass
+// reaps the slot.
+void consider_absorbing_object_touched(Object& obj, ObjectType prey_type,
+                                       ObjectManager& mgr) {
+    if (obj.touching >= GameConstants::PRIMARY_OBJECT_SLOTS) return;
+    Object& touched = mgr.object(obj.touching);
+    if (!touched.is_active() || touched.type != prey_type) return;
+    touched.flags |= ObjectFlags::PENDING_REMOVAL;
+    // &14ad-&14b0 play_low_beep — the 4-byte sound block from &14b0.
+    static constexpr uint8_t kSoundLowBeep[4] = { 0x5d, 0x04, 0xff, 0x05 };
+    Audio::play_at(Audio::CH_ANY, kSoundLowBeep, obj.x.whole, obj.y.whole);
+}
+
+// Reduced port of consider_finding_target (&3bf8) for the simplest
+// "nearest object of type X" case (Y = 0 / no range gate). The 6502
+// runs find_object (&3c2a) which considers obstructions and uses a
+// distance-randomised LOS cutoff; this helper does a plain Chebyshev-
+// distance scan over primaries — cheaper, faithful enough for the two
+// callers that want it (bird → wasp at &4671, fish → piranha at &4774).
+//
+// Byte-wrapped deltas via int8_t cast match the 6502's 8-bit unsigned
+// SBC; |dx|/|dy| max gives Chebyshev distance, the same metric the
+// 6502's find_object derives from get_range_of_object_Y.
+void consider_finding_target(Object& obj, ObjectType prey_type,
+                             UpdateContext& ctx) {
+    if (!ctx.every_sixteen_frames) return;
+    int best_dist = 0x7fff;
+    int best_slot = -1;
+    for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+        const Object& cand = ctx.mgr.object(i);
+        if (!cand.is_active() || cand.type != prey_type) continue;
+        int8_t dx = static_cast<int8_t>(cand.x.whole - obj.x.whole);
+        int8_t dy = static_cast<int8_t>(cand.y.whole - obj.y.whole);
+        int adx = dx < 0 ? -dx : dx;
+        int ady = dy < 0 ? -dy : dy;
+        int d   = adx > ady ? adx : ady;
+        if (d < best_dist) { best_dist = d; best_slot = i; }
+    }
+    if (best_slot >= 0) {
+        obj.target_and_flags =
+            static_cast<uint8_t>(best_slot & TargetFlags::OBJECT_MASK) |
+            TargetFlags::DIRECTNESS_ONE;
+    }
 }
 
 // Port of move_towards_target_with_probability_X (&31da). The 6502

@@ -145,14 +145,14 @@ void ParticleSystem::emit(ParticleType type, int count, const Object& src, Rando
     // object_types_sprite[type] picks the default spritesheet index; fall
     // back to the object's overridden sprite (used by direction animations).
     uint8_t sprite_id = src.sprite;
-    if (sprite_id > 0x7c) {
+    if (sprite_id > 0x80) {
         uint8_t tidx = static_cast<uint8_t>(src.type);
         if (tidx < static_cast<uint8_t>(ObjectType::COUNT)) {
             sprite_id = object_types_sprite[tidx];
         }
     }
     int sw_units = 0, sh_units = 0;
-    if (sprite_id <= 0x7c) {
+    if (sprite_id <= 0x80) {
         const SpriteAtlasEntry& e = sprite_atlas[sprite_id];
         sw_units = (e.w > 0 ? (e.w - 1) : 0) * 16;   // 1 sprite-px = 16 frac
         sh_units = (e.h > 0 ? (e.h - 1) : 0) * 8;    // 1 sprite-row = 8 frac
@@ -289,7 +289,7 @@ void ParticleSystem::emit_at(ParticleType type, uint8_t wx, uint8_t wy,
 // Per-axis particle position+velocity randomisation used by emit_directed.
 // Mirrors the inner add_particles_loop body at &2230-&2263: the velocity is
 // the caller's base ± (rnd >> 1) & v_rand, the position is src + (rnd &
-// pos_rand). Extracted to a static helper to avoid lambdas per CLAUDE.md.
+// pos_rand). 
 static void emit_directed_axis(Random& rng,
                                int8_t base_v, uint8_t v_rand,
                                uint8_t base_pos, uint8_t base_frac, uint8_t pos_rand,

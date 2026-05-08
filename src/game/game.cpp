@@ -9,7 +9,11 @@
 #include "rendering/sprite_atlas.h"
 #include "world/tertiary.h"
 #include "world/tile_data.h"
+#include "behaviours/environment.h"
+#include "behaviours/projectile.h"
+#include "objects/object_tables.h"
 #include "world/water.h"
+#include <algorithm>
 #include <chrono>
 #include <thread>
 
@@ -38,7 +42,10 @@ bool Game::init() {
     // becomes a silent no-op rather than blocking the game from running.
     Audio::open();
 
-    // Initialize object manager
+    // Initialize object manager. Hand it the landscape so its tertiary
+    // accessors (tertiary_data_byte etc) can read/write the per-cell
+    // entries owned by the landscape.
+    object_mgr_.set_landscape(landscape_);
     object_mgr_.init();
 
     // Load startup config (player position, energy, weapon, pockets,
@@ -73,6 +80,8 @@ bool Game::init() {
     for (size_t i = 0; i < kWeapons && i < cfg.weapon_energy.size(); i++) {
         weapon_energy_[i] = cfg.weapon_energy[i];
     }
+    if (cfg.give_protection_suit) weapon_energy_[5] = 0xffff;
+    invincible_ = cfg.invincible;
     player_weapon_ = cfg.weapon;
 
     // Whistle collected flags (ports of &0816 / &0817). Default true so
@@ -104,11 +113,20 @@ bool Game::init() {
     object_mgr_.set_promote_distance(cfg.promote_secondary);
     spawn_tertiary_distance_ = cfg.spawn_tertiary;
 
-    // Pick which landscape generator runs. The two implementations are
-    // intended to produce byte-identical maps; the toggle exists so the
-    // C++ rewrite (landscape_cpp.cpp) can be A/B-tested against the
-    // pseudo-6502 reference (landscape.cpp).
+    // Pick which landscape generator runs at bake time. The two
+    // implementations are intended to produce byte-identical maps; the
+    // toggle exists so the C++ rewrite (landscape_cpp.cpp) can be A/B-
+    // tested against the pseudo-6502 reference (landscape.cpp).
     landscape_.set_use_cpp_impl(cfg.use_cpp_landscape);
+
+    // Try to load a hand-edited map first; fall back to baking from
+    // the procedural generator when the file is missing / invalid.
+    // The format is documented in landscape.cpp's save_to_file. This
+    // is the hook the future editor saves through; nothing else in
+    // the game cares whether the grid came from algorithm or disk.
+    if (!landscape_.load_from_file("exile.map")) {
+        landscape_.bake();
+    }
 
     // Cache sizes. object_manager's backing arrays are sized at compile
     // time to GameConstants::PRIMARY/SECONDARY_OBJECT_SLOTS; these
@@ -137,6 +155,41 @@ bool Game::init() {
         triax.y = {0x3b, 0x20};
     }
 
+    // EXILE1 dog placement test — no tertiary entry for OBJECT_DOG yet.
+    {
+        int dog_slot = object_mgr_.create_object(ObjectType::DOG, /*min_free_slots=*/0,
+                                                  /*x=*/141, /*x_frac=*/0x80,
+                                                  /*y=*/129, /*y_frac=*/0x80);
+        (void)dog_slot;
+    }
+
+    // PIPE at (198, 190) re-typed BLUE_CYAN_IMP -> CRAB when
+    // [creatures] pipe_198_190_crab is true (default).
+    if (cfg.pipe_198_190_crab) {
+        constexpr uint8_t pipe_x = 198;
+        constexpr uint8_t pipe_y = 190;
+        uint16_t idx = landscape_.tertiary_index_at(pipe_x, pipe_y);
+        if (idx != Landscape::NO_TERTIARY) {
+            TertiaryEntry& entry = landscape_.tertiary_entry_mut(idx);
+            entry.type = static_cast<uint8_t>(ObjectType::CRAB);
+        }
+    }
+
+    // [startup_spawns] — one create_object per entry. min_free_slots=0
+    // so an entry can fill the last free slot if the user has stacked a
+    // lot of them. Skipped silently when the slot pool is exhausted —
+    // create_object's "replace most distant" path already handles that
+    // gracefully, but we don't want to thrash it during startup.
+    for (const auto& s : cfg.startup_spawns) {
+        if (s.type >= static_cast<uint8_t>(ObjectType::COUNT)) continue;
+        int slot = object_mgr_.create_object(
+            static_cast<ObjectType>(s.type),
+            /*min_free_slots=*/0,
+            s.tile_x, s.x_frac,
+            s.tile_y, s.y_frac);
+        (void)slot;
+    }
+
     // Truncate + open the lifecycle log. Any previous session's data is
     // discarded — we only ever want the current run's churn record. Each
     // non-paused frame flushes its events here via flush_debug_log().
@@ -145,6 +198,224 @@ bool Game::init() {
     if (debug_log_.is_open()) {
         debug_log_ << "# exile-cpp lifecycle log\n"
                    << "# cols: frame kind p<slot> TYPE @x,y anchor=ax,ay dx=DX dy=DY\n";
+
+        // One-shot diagnostic for the user-reported "missing bush" at
+        // (138, 120) — the SPACE_W_TYPE redirect at idx 190 (entry &be)
+        // that should resolve to PIPE + bush. Logs the raw landscape
+        // tile, tertiary attachment and resolved tile_and_flip / data.
+        {
+            uint8_t tile = landscape_.get_tile(138, 120);
+            uint16_t tidx = landscape_.tertiary_index_at(138, 120);
+            debug_log_ << "# (138,120) raw_tile=0x"
+                       << std::hex << (int)tile << std::dec
+                       << " tertiary_idx=" << tidx;
+            if (tidx != Landscape::NO_TERTIARY) {
+                const TertiaryEntry& te = landscape_.tertiary_entry(tidx);
+                debug_log_ << " tile_and_flip=0x"
+                           << std::hex << (int)te.tile_and_flip
+                           << " data=0x" << (int)te.data
+                           << " type=0x" << (int)te.type << std::dec;
+            }
+            debug_log_ << "\n";
+        }
+
+        // One-shot dump of every cell the grid overlay's yellow shade
+        // would mark — i.e. SWITCH cells whose tertiary resolves to a
+        // SWITCH-typed tile_and_flip and whose X column holds another
+        // such cell. Helps verify whether the gate is producing zero
+        // hits because no aliases exist or because it's over-tightened.
+        int aliased_count = 0;
+        for (int y = 0; y < 256; ++y) {
+            for (int x = 0; x < 256; ++x) {
+                if (landscape_.switch_x_aliased(
+                        static_cast<uint8_t>(x),
+                        static_cast<uint8_t>(y))) {
+                    debug_log_ << "# switch_x_aliased @"
+                               << x << "," << y << "\n";
+                    aliased_count++;
+                }
+            }
+        }
+        debug_log_ << "# switch_x_aliased total: "
+                   << aliased_count << "\n";
+
+        // Looser diagnostic: count raw SWITCH (tile_type 0x08) cells per
+        // X column, no tertiary / resolved-type gate. Tells us whether
+        // the strict gate is pruning real aliases or there genuinely
+        // aren't any raw-SWITCH X collisions in the loaded map.
+        int raw_switch_x_count[256] = {};
+        for (int y = 0; y < 256; ++y) {
+            for (int x = 0; x < 256; ++x) {
+                uint8_t tile = landscape_.get_tile(
+                    static_cast<uint8_t>(x), static_cast<uint8_t>(y));
+                uint8_t type = tile & TileFlip::TYPE_MASK;
+                if (type == static_cast<uint8_t>(TileType::SWITCH)) {
+                    raw_switch_x_count[x]++;
+                }
+            }
+        }
+        int loose_aliased_count = 0;
+        for (int x = 0; x < 256; ++x) {
+            if (raw_switch_x_count[x] > 1) {
+                debug_log_ << "# raw_switch_x x=" << x
+                           << " count=" << raw_switch_x_count[x] << "\n";
+                loose_aliased_count += raw_switch_x_count[x];
+            }
+        }
+        debug_log_ << "# raw_switch_x_aliased total cells: "
+                   << loose_aliased_count << "\n";
+
+        // Tertiary-entry capacity check. If close to TERTIARY_CAPACITY
+        // the bake will have run out and silently dropped entries —
+        // every cell after the threshold ends up NO_TERTIARY even when
+        // its X matched a source row.
+        debug_log_ << "# tertiary_entries used: "
+                   << landscape_.tertiary_count()
+                   << " / capacity " << Landscape::TERTIARY_CAPACITY
+                   << "\n";
+
+        // Catalogue of every aliased switch group in the world. Walks
+        // each source row whose tile_and_flip resolves to SWITCH (0x08),
+        // looks up its column X via x_data, and lists every world cell
+        // with the matching raw type on that column. Groups with > 1
+        // cell are switches that share state — pressing any one toggles
+        // every other in the group via process_switch_effects's sibling
+        // fan-out.
+        debug_log_ << "# Aliased switch groups (cells sharing a source row):\n";
+        int alias_groups = 0;
+        for (int T = 0; T <= static_cast<int>(TileType::SWITCH); ++T) {
+            int rs = tertiary_ranges[T];
+            int re = tertiary_ranges[T + 1];
+            for (int i = rs; i < re; ++i) {
+                uint8_t tf = tertiary_objects_tile_and_flip_data[i];
+                if ((tf & TileFlip::TYPE_MASK) !=
+                    static_cast<uint8_t>(TileType::SWITCH)) continue;
+                uint8_t source_x = tertiary_objects_x_data[i];
+                uint8_t cells_y[256];
+                int n_cells = 0;
+                for (int y = 0; y < 256; ++y) {
+                    uint8_t tile = landscape_.get_tile(
+                        source_x, static_cast<uint8_t>(y));
+                    if ((tile & TileFlip::TYPE_MASK) !=
+                        static_cast<uint8_t>(T)) continue;
+                    cells_y[n_cells++] = static_cast<uint8_t>(y);
+                }
+                if (n_cells <= 1) continue;
+                ++alias_groups;
+                int data_off = static_cast<int>(static_cast<uint8_t>(
+                    i + static_cast<int8_t>(tertiary_data_offset[T])));
+                uint8_t data = static_cast<uint8_t>(
+                    tertiary_objects_data_bytes[data_off] & 0x7f);
+                uint8_t effect_id = static_cast<uint8_t>(data >> 3);
+                debug_log_ << "#   raw_type=0x"
+                           << std::hex << T << std::dec
+                           << " source_idx=" << i
+                           << " X=" << (int)source_x
+                           << " effect_id=" << (int)effect_id
+                           << " cells=" << n_cells << ":\n";
+                for (int c = 0; c < n_cells; ++c) {
+                    debug_log_ << "#       @" << (int)source_x
+                               << "," << (int)cells_y[c] << "\n";
+                }
+            }
+        }
+        debug_log_ << "# Aliased switch groups total: "
+                   << alias_groups << "\n";
+
+        // Detailed dump for X=227 — the column that holds the user-
+        // reported switches at (227,188) and (227,156). Log every
+        // CHECK_TERTIARY landscape cell on that column (raw types
+        // 0x00..0x08), so we catch redirects: e.g. a raw METAL_DOOR
+        // cell whose tertiary tile_and_flip is 0x08 SWITCH — that
+        // renders as a switch even though the landscape byte is a
+        // door marker.
+        for (int y = 0; y < 256; ++y) {
+            uint8_t tile = landscape_.get_tile(227,
+                                                static_cast<uint8_t>(y));
+            uint8_t type = tile & TileFlip::TYPE_MASK;
+            if (type > static_cast<uint8_t>(TileType::SWITCH)) continue;
+            uint16_t t_idx = landscape_.tertiary_index_at(
+                227, static_cast<uint8_t>(y));
+            bool from_map = landscape_.tile_from_map_data(
+                227, static_cast<uint8_t>(y));
+            debug_log_ << "# switch @227," << y
+                       << " tile=0x" << std::hex << (int)tile << std::dec
+                       << " from_map=" << (from_map ? "yes" : "no")
+                       << " tertiary_idx=" << t_idx;
+            if (t_idx == Landscape::NO_TERTIARY) {
+                debug_log_ << " (no tertiary attached)\n";
+                continue;
+            }
+            // The tertiary's tile_and_flip + data byte. The data offset
+            // into the live runtime store is computed the same way as
+            // the wiring overlay does.
+            const TertiaryEntry& te = landscape_.tertiary_entry(t_idx);
+            // The wiring overlay walks the SWITCH range to recover the
+            // source-table index; we know it via tertiary_source_idx_
+            // but that's private. Use the live data byte from the entry
+            // directly — the bake stores it unchanged from the source.
+            uint8_t data = te.data & 0x7f;
+            uint8_t effect_id = static_cast<uint8_t>(data >> 3);
+            uint8_t resolved_type = te.tile_and_flip & TileFlip::TYPE_MASK;
+            debug_log_ << " resolved_tile=0x"
+                       << std::hex << (int)te.tile_and_flip << std::dec
+                       << " (type=0x" << std::hex << (int)resolved_type
+                       << std::dec << ") data=0x"
+                       << std::hex << (int)data << std::dec
+                       << " effect_id=" << (int)effect_id << "\n";
+            uint8_t targets[8];
+            int n = Behaviors::switch_effect_targets(effect_id, targets, 8);
+            for (int t = 0; t < n; t++) {
+                // Decode the 6502 data_offset back to (tile_type, X) and
+                // list every cell on that column that matches the raw
+                // type — i.e. every door / target the press toggles in
+                // lockstep under the new fan-out semantics.
+                uint8_t b = targets[t];
+                debug_log_ << "#   target[" << t
+                           << "] data_offset=0x"
+                           << std::hex << (int)b << std::dec;
+                int matched_type = -1;
+                int source_idx_match = -1;
+                for (int tt = 0;
+                     tt <= static_cast<int>(TileType::SWITCH); ++tt) {
+                    uint8_t s = static_cast<uint8_t>(
+                        b - tertiary_data_offset[tt]);
+                    if (s <  tertiary_ranges[tt]) continue;
+                    if (s >= tertiary_ranges[tt + 1]) continue;
+                    matched_type = tt;
+                    source_idx_match = s;
+                    break;
+                }
+                if (matched_type < 0) {
+                    debug_log_ << " (no source row matches)\n";
+                    continue;
+                }
+                uint8_t target_x =
+                    tertiary_objects_x_data[source_idx_match];
+                debug_log_ << " -> tile_type=0x"
+                           << std::hex << matched_type
+                           << " source_idx=" << std::dec << source_idx_match
+                           << " X=" << (int)target_x << "\n";
+                int hits = 0;
+                for (int yy = 0; yy < 256; ++yy) {
+                    uint8_t raw = landscape_.get_tile(
+                        target_x, static_cast<uint8_t>(yy));
+                    if ((raw & TileFlip::TYPE_MASK) !=
+                        static_cast<uint8_t>(matched_type)) continue;
+                    uint16_t cell_idx = landscape_.tertiary_index_at(
+                        target_x, static_cast<uint8_t>(yy));
+                    debug_log_ << "#       cell @" << (int)target_x
+                               << "," << yy
+                               << " raw=0x" << std::hex << (int)raw
+                               << std::dec
+                               << " entry_idx=" << cell_idx << "\n";
+                    hits++;
+                }
+                if (hits == 0) {
+                    debug_log_ << "#       (no cells of that type at X)\n";
+                }
+            }
+        }
         debug_log_.flush();
     }
 
@@ -177,7 +448,8 @@ bool Game::init() {
 
 void Game::flush_debug_log() {
     if (!debug_log_.is_open()) return;
-    if (object_mgr_.debug_events_n_ == 0) return;
+    if (object_mgr_.debug_events_n_ == 0 &&
+        object_mgr_.diag_lines_.empty()) return;
 
     uint8_t ax = object_mgr_.activation_anchor_x();
     uint8_t ay = object_mgr_.activation_anchor_y();
@@ -224,6 +496,11 @@ void Game::flush_debug_log() {
         }
         debug_log_ << line;
     }
+    for (const std::string& s : object_mgr_.diag_lines_) {
+        debug_log_ << static_cast<unsigned>(frame_counter_) << " diag "
+                   << s;
+        if (s.empty() || s.back() != '\n') debug_log_ << '\n';
+    }
     debug_log_.flush();
 }
 
@@ -256,6 +533,63 @@ void Game::run() {
             pause_key_prev_ = down;
         }
 
+        // Rising-edge save-map ('\' key) — write the current 256×256
+        // landscape grid to exile.map so the next launch picks it up
+        // via load_from_file. Surfaces a short "Saved" / "Save FAILED"
+        // banner via editor_save_msg_until_frame_; the overlay-compose
+        // block in render() reads that to know whether to draw it.
+        {
+            bool down = input_.state().save_map;
+            if (down && !save_map_key_prev_) {
+                bool ok = landscape_.save_to_file("exile.map");
+                editor_save_msg_until_frame_ =
+                    frame_counter_ + (ok ? 100 : 200); // ~2s / 4s
+                editor_save_msg_ok_ = ok;
+            }
+            save_map_key_prev_ = down;
+        }
+
+        // Rising-edge tertiary data-byte bumps ('[' / ']'). Always sync
+        // the prev-state at the end so a held key only fires once per
+        // press; gate the actual mutation on editor mode + highlight +
+        // valid entry.
+        {
+            bool inc = input_.state().tert_data_inc;
+            bool dec = input_.state().tert_data_dec;
+            bool inc_edge = inc && !tert_data_inc_prev_;
+            bool dec_edge = dec && !tert_data_dec_prev_;
+            if ((inc_edge || dec_edge) &&
+                renderer_->editor_enabled() && editor_has_highlight_) {
+                uint16_t idx = landscape_.tertiary_index_at(
+                    editor_highlight_x_, editor_highlight_y_);
+                if (idx != Landscape::NO_TERTIARY) {
+                    TertiaryEntry& e = landscape_.tertiary_entry_mut(idx);
+                    if (inc_edge) e.data = static_cast<uint8_t>(e.data + 1);
+                    if (dec_edge) e.data = static_cast<uint8_t>(e.data - 1);
+                    // Push the change into any live primary spawned
+                    // from this entry, so the in-flight door / switch /
+                    // transporter sees the new state immediately.
+                    // Primaries strip bit 7 from the data byte at spawn
+                    // (it's the "needs spawn" gate), so we mirror that
+                    // here. This is what makes the visual update — the
+                    // entry's data byte alone only affects the next
+                    // (re)spawn.
+                    for (int i = 1;
+                         i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
+                        Object& p = object_mgr_.object(i);
+                        if (p.is_active() && p.tertiary_slot == idx) {
+                            p.tertiary_data_offset =
+                                static_cast<uint8_t>(e.data & 0x7f);
+                        }
+                    }
+                    editor_save_msg_until_frame_ = frame_counter_ + 50;
+                    editor_save_msg_ok_ = true;
+                }
+            }
+            tert_data_inc_prev_ = inc;
+            tert_data_dec_prev_ = dec;
+        }
+
         // Pick the anchor for this frame and hand it to ObjectManager before
         // any lifecycle decisions happen. Player-mode mirrors the 6502 and
         // the camera follows the player anyway; camera-mode lets the user
@@ -278,7 +612,35 @@ void Game::run() {
 
         if (!paused_) {
             object_mgr_.reset_debug_counters();
+            // [player] invincible — reset HP to full at the top of every
+            // tick so any damage applied during this frame is undone
+            // before the next visual update. Cheap, doesn't need to
+            // touch any per-source damage path.
+            if (invincible_) object_mgr_.player().energy = 0xff;
             update_timers();
+            // &19c9 update_background_flash — tick the sky-flash cooldown
+            // before any updates so renderer sees the latest clear colour.
+            update_background_flash();
+            // Damage debug overlay: tick TTLs and drop expired entries
+            // at the start of every frame so numbers linger long enough
+            // to read (~30 frames / 0.6s) before being recycled.
+            for (auto& ev : damage_events_) {
+                if (ev.ttl > 0) ev.ttl--;
+            }
+            damage_events_.erase(
+                std::remove_if(damage_events_.begin(), damage_events_.end(),
+                               [](const DamageVisual& e){ return e.ttl == 0; }),
+                damage_events_.end());
+
+            // Always-on floating labels (e.g. "FED!"): same TTL pattern
+            // as damage_events_ but rendered unconditionally.
+            for (auto& f : floating_labels_) {
+                if (f.ttl > 0) f.ttl--;
+            }
+            floating_labels_.erase(
+                std::remove_if(floating_labels_.begin(), floating_labels_.end(),
+                               [](const FloatingLabel& f){ return f.ttl == 0; }),
+                floating_labels_.end());
             update_player();
             update_objects();
 
@@ -365,6 +727,11 @@ void Game::update_timers() {
     every_sixteen_frames_    = (a & 0x0f) == 0;
     every_thirty_two_frames_ = (a & 0x1f) == 0;
     every_sixty_four_frames_ = (a & 0x3f) == 0;
+
+    // &19df-&19e4: while explosion_timer is non-zero (negative since
+    // start_explosion_timer set it to -50), INC toward 0. AI uses this
+    // as the "explosion in progress" flag — see start_explosion_timer.
+    if (explosion_timer_ != 0) explosion_timer_++;
 }
 
 void Game::process_input() {
@@ -413,18 +780,57 @@ void Game::update_events() {
     // The 6502 picks a random tile ±3-4 of the player and, if it's above
     // the surface line and not inside a spaceship, drops a STAR_OR_
     // MUSHROOM particle. STAR TTL range is 8..0x23 frames, so one spawn
-    // per frame settles into ~20 stars visible at once.
+    // per frame settles into ~20 stars visible at once on the BBC's
+    // tiny ~7×8 visible area.
+    //
+    // Our viewport is much larger (a 1920×1080 framebuffer at 1× zoom is
+    // ~60×33 tiles), so the BBC's ±4 spawn box only fills a small patch
+    // around the player. Sample across the actual viewport extent
+    // instead, and scale the per-frame spawn count proportionally so
+    // density stays comparable to the original.
+    int vp_w = renderer_->viewport_width_tiles();
+    int vp_h = renderer_->viewport_height_tiles();
+    if (vp_w < 8) vp_w = 8;
+    if (vp_h < 8) vp_h = 8;
+    int half_w = vp_w / 2;
+    int half_h = vp_h / 2;
+    // Scale spawn count to viewport area vs the 6502's ~7×7 = 49 tiles.
+    // Cap at 16/frame so a maximised window doesn't burst the pool.
+    int spawn_count = (vp_w * vp_h) / 64;
+    if (spawn_count < 1)  spawn_count = 1;
+    if (spawn_count > 16) spawn_count = 16;
+    // Player teleport suppression — &26da reads `player_is_completely_
+    // dematerialised` at &19b5, which the teleport state machine sets at
+    // mid-animation while the player is briefly removed from the world.
+    // Our analogue is the TELEPORTING object flag on the player; the
+    // generic teleport handler arms it for the full 32-frame animation
+    // (close enough to the 6502's "completely dematerialised" window for
+    // the purpose of suppressing ambient stars).
+    bool player_teleporting =
+        (player.flags & ObjectFlags::TELEPORTING) != 0;
+    for (int i = 0; i < spawn_count; i++) {
+        int dx = (rng_.next() % vp_w) - half_w;
+        int dy = (rng_.next() % vp_h) - half_h;
+        uint8_t tx = static_cast<uint8_t>(camera_.center_x + dx);
+        uint8_t ty = static_cast<uint8_t>(camera_.center_y + dy);
+        // &26ca CMP #&4e / BCS skip: sky ends at world y = 0x4e.
+        if (ty >= 0x4e) continue;
+        // &26da-&26df: ORA player_is_completely_dematerialised /
+        // ORA tile_was_from_map_data / BMI skip. Suppresses stars while
+        // the player is teleporting  and inside the player's spaceship and Triax's lab
+        if (player_teleporting) continue;
+        if (landscape_.tile_from_map_data(tx, ty)) continue;
+        particles_.emit_at(ParticleType::STAR_OR_MUSHROOM, tx, ty, rng_);
+    }
+    // Mushroom-tile EVENTS branch below still needs ONE random tile near
+    // the player (the 6502 uses the same picked tile for both star and
+    // mushroom paths). Pick fresh ±3-4 coords in player space so mushroom
+    // ball spawns stay tied to the player rather than the camera anchor.
     {
         uint8_t dx_rand = static_cast<uint8_t>(rng_.next() & 0x07);
         uint8_t dy_rand = static_cast<uint8_t>(rng_.next() & 0x07);
         uint8_t tx = static_cast<uint8_t>(player.x.whole + dx_rand - 3);
         uint8_t ty = static_cast<uint8_t>(player.y.whole + dy_rand - 3);
-        // &26ca CMP #&4e / BCS skip: sky ends at world y = 0x4e. The
-        // 6502 also suppresses inside spaceships (tile_was_from_map_data)
-        // and during player teleport; we don't expose those yet.
-        if (ty < 0x4e) {
-            particles_.emit_at(ParticleType::STAR_OR_MUSHROOM, tx, ty, rng_);
-        }
 
         // &3fd2 update_mushroom_tile's EVENTS branch (&3fde-&3fe9). The
         // 6502 reaches this via get_random_tile_near_player calling each
@@ -496,10 +902,7 @@ void Game::update_events() {
             // &3e5b AND #&06; BNE leave — bits 1..0 are the "inactive" flag.
             bool active = (data & 0x03) == 0;
             if (!has_creatures || !active) continue;
-            if (res.type_offset <= 0 ||
-                res.type_offset >=
-                    static_cast<int>(sizeof(tertiary_objects_type_data))) continue;
-            uint8_t ctype = tertiary_objects_type_data[res.type_offset];
+            uint8_t ctype = object_mgr_.tertiary_type_byte(res.type_offset);
             if (ctype >= static_cast<uint8_t>(ObjectType::COUNT)) continue;
 
             // &3e68 create_primary_object_from_tertiary_if_Y_slots_free —
@@ -513,7 +916,7 @@ void Game::update_events() {
             uint8_t sid = spawn.sprite;
             uint8_t sprite_h_byte = 0;
             uint8_t sprite_w_byte = 0;
-            if (sid <= 0x7c) {
+            if (sid <= 0x80) {
                 int w = sprite_atlas[sid].w;
                 int h = sprite_atlas[sid].h;
                 sprite_w_byte = static_cast<uint8_t>((w > 0 ? (w - 1) : 0) * 16);
@@ -538,6 +941,18 @@ void Game::update_events() {
                 ? 0x00
                 : static_cast<uint8_t>(~sprite_h_byte & 0xff);
 
+            // PIPE: the 6502 formula's "tile edge" lands inside the
+            // pipe's solid band (y_offset 0x8f / 0xcf), unlike NEST.
+            // Lift into the opening with an 8-frac margin.
+            if (ttype == static_cast<uint8_t>(TileType::PIPE)) {
+                if (v_flipped) {
+                    spawn.y.fraction =
+                        static_cast<uint8_t>(0xf8 - sprite_h_byte);
+                } else {
+                    spawn.y.fraction = 0x08;
+                }
+            }
+
             // &3e7d-&3e83 centre the spawn horizontally within the tile.
             // This overrides whatever &4072 set.
             spawn.x.fraction = static_cast<uint8_t>((~sprite_w_byte & 0xff) >> 1);
@@ -547,7 +962,8 @@ void Game::update_events() {
             // to the nest. Without this the nest drains permanently —
             // birds never come back, and after four spawns the tile is
             // silent forever.
-            spawn.tertiary_slot = static_cast<uint8_t>(res.data_offset);
+            // uint16_t — see tertiary_spawn.cpp:253 for why not uint8_t.
+            spawn.tertiary_slot = static_cast<uint16_t>(res.data_offset);
 
             // &3e6d-&3e6f SBC #&03 with carry clear = subtract four: clears
             // bit 2 of the data byte (the lowest creature-count bit),
@@ -699,6 +1115,7 @@ void Game::update_player() {
     apply_player_input(player, inp, accel_x, accel_y);
     integrate_player_motion(player, accel_x, accel_y);
     update_player_sprite(accel_x, accel_y);
+    tick_blaster();
 
     // Per-frame walking-diagnosis log. Only emits when motion-relevant input
     // is held or the player is still moving — silent when stationary so the
@@ -720,7 +1137,7 @@ void Game::update_player() {
         // exact inputs the grounded-check inside integrate_player_motion was
         // looking at. Lets us see WHY sup=0 when the player is visually
         // standing on a floor.
-        int sprite_h = (player.sprite <= 0x7c)
+        int sprite_h = (player.sprite <= 0x80)
                        ? sprite_atlas[player.sprite].h : 22;
         int sprite_h_frac = (sprite_h > 0 ? sprite_h - 1 : 0) * 8;
         int feet_abs_dbg = static_cast<int>(player.y.whole) * 256 +
@@ -779,6 +1196,74 @@ void Game::drop_held_object(Object& player) {
     if (held_object_slot_ >= 0x80) return;
     Object& held = object_mgr_.object(held_object_slot_);
     HeldObject::drop(held, player, held_object_slot_);
+}
+
+// Port of &4a70-&4a87 blaster discharge tick. While the timer is negative
+// the player acts as a duration-10 explosion source for a frame: damage
+// and push radiate out via apply_explosion_radius (the same accelerate_
+// all_objects routine update_explosion uses). The timer was set to -5 by
+// Weapon::fire so the discharge runs for 5 frames; energy is paid up
+// front, not per tick.
+// Port of &1f97 update_background_flash. Per-frame DEC of the cooldown;
+// while it's still > 0, flicker the sky between black (7-in-8) and
+// white (1-in-8). When the cooldown reaches 0, restore black. The
+// random-byte test (`AND #&20; BEQ`) gives the same 1/8 split as the
+// 6502.
+//
+// The 6502 writes palette register 0 (`STA &11e5`); we don't have BBC
+// palette registers so we route the chosen colour into the renderer's
+// clear_colour, which begin_frame uses for the framebuffer fill.
+void Game::update_background_flash() {
+    if (background_flash_cooldown_ == 0) return;
+    background_flash_cooldown_--;
+    uint32_t sky;
+    if (background_flash_cooldown_ == 0) {
+        sky = 0x000000;                  // restore black
+    } else if (rng_.next() & 0x20) {
+        sky = 0xCCCCCC;                  // 1-in-8: white
+    } else {
+        sky = 0x000000;                  // 7-in-8: black
+    }
+    if (renderer_) renderer_->set_clear_colour(sky);
+}
+
+void Game::tick_blaster() {
+    if (blaster_timer_ >= 0) return;
+    blaster_timer_++;
+    Object& player = object_mgr_.player();
+    // &4a76 start_explosion_timer: arms the AI "explosion in progress"
+    // flag for 50 frames (worm/maggot emergence rate, stimuli detection).
+    start_explosion_timer();
+    // Port-only: the 6502's blaster path doesn't call flash_background,
+    // but without it the discharge is invisible at the screen-flash
+    // level. Coronium chains and the "no slot" path (the original
+    // callers of &1f92) still trigger it via their own routines.
+    flash_background();
+
+    // &4a7d play_sound_on_channel_zero. Retriggers each tick on the
+    // priority channel — same sound bytes used by a generic explosion
+    // (&40db); 5 retriggers in 5 frames give the discharge a continuous
+    // boom.
+    static constexpr uint8_t kSoundBlaster[4] = { 0x17, 0x03, 0x11, 0x04 };
+    Audio::play_at(Audio::CH_PRIORITY, kSoundBlaster,
+                   player.x.whole, player.y.whole);
+
+    // &4f9c update_explosion's per-frame palette cycle and particle
+    // emit, applied to the player while discharging. The 8-entry mask
+    // (&4fbf AND #&13) cycles {kyK,rgK,rmK,rcK,kyR,rgR,rmR,rcR}.
+    // update_player_sprite ran earlier this frame so this palette
+    // overwrite wins for the duration of the discharge, then the suit /
+    // damage-flash logic returns once the timer reaches 0.
+    player.palette = rng_.next() & 0x13;
+    particles_.emit(ParticleType::EXPLOSION, 2, player, rng_);
+
+    // accelerate_all_objects (&343a-&34b0). Duration = 9 matches the
+    // 6502: &4a79-&4a7b sets tertiary_data_offset to 10, then
+    // update_explosion DECs to 9 before running the damage loop.
+    Behaviors::apply_explosion_radius(object_mgr_, player,
+                                       /*source_slot=*/0, /*duration=*/9,
+                                       renderer_ && renderer_->damage_overlay_enabled()
+                                           ? &damage_events_ : nullptr);
 }
 
 // Port of &4096 consider_teleporting_damaged_player. Runs only when the
@@ -875,8 +1360,8 @@ bool Game::advance_player_teleport(Object& player) {
         // pattern lands on ~0x80 which is tile centre.
         player.x.whole = player.tx;
         player.y.whole = player.ty;
-        int sw = (player.sprite <= 0x7c) ? sprite_atlas[player.sprite].w : 1;
-        int sh = (player.sprite <= 0x7c) ? sprite_atlas[player.sprite].h : 1;
+        int sw = (player.sprite <= 0x80) ? sprite_atlas[player.sprite].w : 1;
+        int sh = (player.sprite <= 0x80) ? sprite_atlas[player.sprite].h : 1;
         int wfrac = (sw > 0 ? sw - 1 : 0) * 16;
         int hfrac = (sh > 0 ? sh - 1 : 0) * 8;
         player.x.fraction = static_cast<uint8_t>((~wfrac & 0xff) >> 1);
@@ -915,8 +1400,8 @@ void Game::handle_remembering_position(Object& player) {
     // The earlier port added the half-width in *pixels* directly to the
     // whole byte, which shifted the remembered tile two tiles east on the
     // player's 5-pixel sprite — so teleport landed ~2 tiles off.
-    int sw = (player.sprite <= 0x7c) ? sprite_atlas[player.sprite].w : 1;
-    int sh = (player.sprite <= 0x7c) ? sprite_atlas[player.sprite].h : 1;
+    int sw = (player.sprite <= 0x80) ? sprite_atlas[player.sprite].w : 1;
+    int sh = (player.sprite <= 0x80) ? sprite_atlas[player.sprite].h : 1;
     int half_w_frac = ((sw > 0 ? sw - 1 : 0) * 16) / 2;
     int half_h_frac = ((sh > 0 ? sh - 1 : 0) *  8) / 2;
     int cx_16 = static_cast<int>(player.x.whole) * 256 +

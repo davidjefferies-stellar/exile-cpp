@@ -171,7 +171,8 @@ static void apply_object_field(Object& o, const std::vector<std::string>& t) {
     else if (k == "state")            o.state = parse_u8(v);
     else if (k == "tx")               o.tx = parse_u8(v);
     else if (k == "ty")               o.ty = parse_u8(v);
-    else if (k == "tertiary_slot")    o.tertiary_slot = parse_u8(v);
+    else if (k == "tertiary_slot")    o.tertiary_slot =
+                                          static_cast<uint16_t>(parse_num(v));
     else if (k == "tertiary_data")    o.tertiary_data_offset = parse_u8(v);
 }
 
@@ -244,14 +245,23 @@ bool Game::save_game(const std::string& path) const {
     }
 
     // -------- tertiary data dump -----------------------------------------
+    //
+    // After the Option-B refactor each cell with a CHECK_TERTIARY tile
+    // owns its own TertiaryEntry in the landscape. We dump the live
+    // data byte for every entry (1..n; entry 0 is reserved as a
+    // permanent unused sentinel). The map file persists tile_and_flip
+    // and type bytes; only the data byte mutates at runtime, so that's
+    // all the game-state save needs.
     f << "[tertiary]\n";
-    const uint8_t* td = object_mgr_.tertiary_data_ptr();
-    for (int i = 0; i < ObjectManager::TERTIARY_DATA_SIZE; i++) {
-        f << std::hex << std::setw(2) << std::setfill('0') << (unsigned)td[i];
+    int n_entries = landscape_.tertiary_count();
+    f << "count " << n_entries << "\n";
+    for (int i = 0; i < n_entries; ++i) {
+        f << std::hex << std::setw(2) << std::setfill('0')
+          << (unsigned)landscape_.tertiary_entry(i).data;
         if ((i & 0x0f) == 0x0f) f << "\n";
         else                    f << " ";
     }
-    if (ObjectManager::TERTIARY_DATA_SIZE % 16 != 0) f << "\n";
+    if (n_entries == 0 || (n_entries % 16) != 0) f << "\n";
     f << std::dec << "\n";
 
     // -------- RNG state ---------------------------------------------------
@@ -401,9 +411,15 @@ bool Game::load_game(const std::string& path) {
 
         // --- [tertiary] ---
         if (section == "tertiary") {
+            // Skip the optional "count N" header line — it's a hint
+            // for human readers, the in-memory entry count is what
+            // bounds the writeback below.
+            if (!t.empty() && t[0] == "count") continue;
             for (auto& tok : t) {
-                tertiary_buf.push_back(static_cast<uint8_t>(std::stoul(tok, nullptr, 16)));
-                if ((int)tertiary_buf.size() >= ObjectManager::TERTIARY_DATA_SIZE) break;
+                tertiary_buf.push_back(
+                    static_cast<uint8_t>(std::stoul(tok, nullptr, 16)));
+                if ((int)tertiary_buf.size() >=
+                    Landscape::TERTIARY_CAPACITY) break;
             }
             continue;
         }
@@ -420,10 +436,13 @@ bool Game::load_game(const std::string& path) {
         }
     }
 
-    // Commit tertiary buffer (pad / truncate to the exact size).
-    uint8_t* td = object_mgr_.tertiary_data_ptr();
-    for (int i = 0; i < ObjectManager::TERTIARY_DATA_SIZE; i++) {
-        td[i] = (i < (int)tertiary_buf.size()) ? tertiary_buf[i] : 0;
+    // Commit tertiary data bytes back into the live landscape entries.
+    // Entries beyond the saved buffer's length keep whatever value
+    // bake / load_from_file populated — typically the ROM default
+    // with bit 7 (spawn gate) still set.
+    int n_entries = landscape_.tertiary_count();
+    for (int i = 0; i < n_entries && i < (int)tertiary_buf.size(); ++i) {
+        landscape_.tertiary_entry_mut(i).data = tertiary_buf[i];
     }
 
     return true;

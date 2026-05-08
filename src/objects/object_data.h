@@ -24,6 +24,11 @@ static constexpr uint8_t object_types_flags[] = {
     0x02, 0x26, 0x23, 0x23, 0x23, 0x23, 0x26, 0x25,
     // &60-&64
     0x22, 0x22, 0x22, 0x25, 0xe7,
+    // &65 DOG, &66 CRAB — flags chosen by analogy with the closest
+    // standard-release creature:
+    //   DOG  ≈ FROGMAN (ground walker, takeable target):    0x6e
+    //   CRAB ≈ GARGOYLE (stationary, fires projectiles):    0x68
+    0x6e, 0x68,
 };
 
 // Default sprite per object type, from &028a
@@ -48,6 +53,12 @@ static constexpr uint8_t object_types_sprite[] = {
     0x22, 0x6b, 0x6c, 0x6c, 0x79, 0x6c, 0x04, 0x7a,
     // &60-&64
     0x63, 0x7c, 0x7c, 0x79, 0x77,
+    // &65 DOG, &66 CRAB — pre-release-only.
+    //   DOG_FRAME_1 = 0x7d at atlas (1, 82) 11x11
+    //   DOG_FRAME_2 = 0x7e at atlas (13, 82) 11x11 — direction frame
+    //   CRAB_FRAME_1 = 0x7f at atlas (0, 93) 8x14
+    //   CRAB_FRAME_2 = 0x80 at atlas (8, 93) 8x14 — walk-cycle frame
+    0x7d, 0x7f,
 };
 
 // Palette and pickup flags per object type, from &02ef
@@ -74,4 +85,8 @@ static constexpr uint8_t object_types_palette_and_pickup[] = {
     0x91, 0xb1, 0x8e, 0xe0, 0xa2, 0xb5, 0xb3, 0xe3,
     // &60-&64
     0xd5, 0xe3, 0xd7, 0xf0, 0xf1,
+    // &65 DOG, &66 CRAB — palette guesses based on visual inspection
+    // of the EXILE1 sheet (mostly red on black, similar to frogman).
+    // Bit 7 clear (not pickable). Tune after the sprites are wired up.
+    0x32, 0x35,
 };

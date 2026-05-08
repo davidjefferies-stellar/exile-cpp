@@ -1,8 +1,10 @@
 #pragma once
+#include "core/damage_visual.h"
 #include "objects/object.h"
 #include "objects/object_manager.h"
 #include "core/random.h"
 #include "world/landscape.h"
+#include <vector>
 
 class ParticleSystem;
 
@@ -54,6 +56,29 @@ struct UpdateContext {
     // (the 6502's &aa this_object). update_collectable compares against
     // held_object_slot to decide whether the player is carrying it.
     int this_slot;
+    // Per-variant remaining-gift counters for fed imps that return home
+    // (port of &083a..&083e). 5 entries indexed by tidx = type −
+    // RED_MAGENTA_IMP. update_imp decrements when dropping a gift.
+    uint8_t* imp_gifts_remaining;
+    // &2a background_flash_cooldown — write 0x0b here from a behaviour
+    // (e.g. coronium chain explosion at &41e5) to trigger the screen
+    // flash. Game::update_background_flash decrements it each frame.
+    uint8_t* background_flash_cooldown;
+    // Per-frame damage event log. Push a DamageVisual every time a
+    // behaviour deals damage; render.cpp draws floating numbers and
+    // explosion radius rings when the "Damage" checkbox is on. Null is
+    // treated as "no overlay requested" — pushes are skipped.
+    std::vector<DamageVisual>* damage_events;
+    // &081d explosion_timer (signed: -50..0). Read by NPC stimuli at
+    // &282b for "start of explosion" detection.
+    const int8_t* explosion_timer;
+    // &081e flooding_state (bit 7 = endgame flood active). Read by NPC
+    // stimuli at &2834 for the "world flooding" stimulus.
+    const uint8_t* flooding_state;
+    // Always-on transient text notifications. Behaviours push to this
+    // when a rare gameplay event needs visual feedback (e.g. imp fed).
+    // Renderer draws regardless of debug-overlay toggles.
+    std::vector<FloatingLabel>* floating_labels;
 };
 
 // Common NPC movement helpers
@@ -71,8 +96,10 @@ void set_sprite_from_velocity(Object& obj, uint8_t base_sprite, int num_frames);
 // Update walking animation sprite
 void animate_walking(Object& obj, uint8_t base_sprite, uint8_t frame_counter);
 
-// Apply damage to player if touching
-void damage_player_if_touching(Object& obj, Object& player, uint8_t damage);
+// Apply damage to player if touching. When damage_events is non-null
+// and damage actually lands, push a DamageVisual for the debug overlay.
+void damage_player_if_touching(Object& obj, Object& player, uint8_t damage,
+                               std::vector<DamageVisual>* damage_events = nullptr);
 
 // Check if object has minimum energy, gain if below
 void enforce_minimum_energy(Object& obj, uint8_t min_energy);
@@ -167,10 +194,36 @@ uint8_t update_sprite_offset_using_velocities(Object& obj, uint8_t modulus);
 // obj.sprite = base + offset. Used for directional / walk-cycle frames.
 void change_object_sprite_to_base_plus_A(Object& obj, uint8_t offset);
 
+// Port of the slime's &47fd-&4801 path (STA sprite + JMP &32aa). Sets
+// the sprite as base + offset and centres only on X — the ceiling-
+// mounted creatures (red slime) must keep their y-anchor pinned.
+void change_object_sprite_x_only(Object& obj, uint8_t offset);
+
 // Port of &321f dampen_this_object_velocities_twice. Halves both axes
 // of velocity via arithmetic shift right, twice. Used by birds when
 // they wander into water.
 void dampen_velocities_twice(Object& obj);
+
+// Reduced port of consider_absorbing_object_touched (&3be1). If `obj` is
+// touching another primary of `prey_type`, mark that primary
+// PENDING_REMOVAL and play the low-beep "absorbed" sound (&14ad,
+// 5d 04 ff 05) at `obj`'s position. We skip the &3bd5
+// check_object_touching_angle gate the 6502 applies — fine for tight-
+// AABB predators (bird/fish) where any touching pair is a viable bite.
+// Used by birds eating wasps and big fish eating piranhas.
+void consider_absorbing_object_touched(Object& obj, ObjectType prey_type,
+                                       ObjectManager& mgr);
+
+// Reduced port of consider_finding_target (&3bf8) for the simplest
+// "nearest object of type X" case (Y=0 / no range gate). Walks the
+// primary slots, picks the active object of `prey_type` with the
+// smallest Chebyshev distance, and stamps its slot into
+// obj.target_and_flags with DIRECTNESS_ONE. No-op when
+// ctx.every_sixteen_frames is false. update_npc_path picks up the new
+// target on the next path tick. Used by birds → wasps and big fish →
+// piranhas.
+void consider_finding_target(Object& obj, ObjectType prey_type,
+                             UpdateContext& ctx);
 
 // Port of &31da move_towards_target_with_probability_X in a reduced form.
 // Each frame with probability X/256 (X is the threshold byte), nudges

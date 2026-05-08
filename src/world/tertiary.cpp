@@ -21,87 +21,88 @@ ResolvedTile resolve_tile_with_tertiary(const Landscape& landscape,
         return r;
     }
 
-    int range_start = tertiary_ranges[tile_type];
-    int range_end   = tertiary_ranges[tile_type + 1];
-    int found = -1;
-    for (int i = range_start; i < range_end; i++) {
-        if (tertiary_objects_x_data[i] == tile_x) { found = i; break; }
-    }
-
-    if (found < 0) {
+    // Per-cell tertiary index, populated by Landscape::bake_tertiary_lookup
+    // or loaded from the map file. The editor will eventually route
+    // mutations through Landscape::set_tertiary_index_at, so this is
+    // the single authoritative mapping from (x, y) → entry index.
+    uint16_t cell_idx = landscape.tertiary_index_at(tile_x, tile_y);
+    if (cell_idx == Landscape::NO_TERTIARY) {
         r.tile_and_flip = feature_tiles_table[tile_type] | (raw & TileFlip::MASK);
         return r;
     }
 
-    r.tertiary_index = found;
-    // Data/type offsets: 8-bit modular adds against signed offset tables,
-    // exactly matching &1749-&1752 in the disassembly.
-    r.data_offset = static_cast<uint8_t>(
-        found + static_cast<int8_t>(tertiary_data_offset[tile_type]));
-    r.type_offset = static_cast<uint8_t>(
-        r.data_offset + static_cast<int8_t>(tertiary_type_offset[tile_type]));
-    r.tile_and_flip = tertiary_objects_tile_and_flip_data[found];
+    // After Option B, all three legacy fields collapse onto the same
+    // entry index — there's one TertiaryEntry per cell carrying its
+    // own data byte, type byte, and tile_and_flip. Callers that used
+    // to read the static tertiary_objects_*_data arrays via separate
+    // offsets now go through ObjectManager::tertiary_*_byte(idx) or
+    // landscape.tertiary_entry(idx).tile_and_flip.
+    int idx = static_cast<int>(cell_idx);
+    r.tertiary_index = idx;
+    r.data_offset    = idx;
+    r.type_offset    = idx;
+    r.tile_and_flip  = landscape.tertiary_entry(idx).tile_and_flip;
     return r;
 }
 
-bool find_tertiary_tile(const Landscape& landscape,
-                        int tile_type, int tertiary_index,
-                        uint8_t& out_x, uint8_t& out_y) {
-    if (tile_type < 0 || tile_type > 8) return false;
-    if (tertiary_index < tertiary_ranges[tile_type] ||
-        tertiary_index >= tertiary_ranges[tile_type + 1]) return false;
-    uint8_t tx = tertiary_objects_x_data[tertiary_index];
-    for (int y = 0; y < 256; y++) {
-        uint8_t raw = landscape.get_tile(tx, static_cast<uint8_t>(y));
-        if ((raw & TileFlip::TYPE_MASK) != tile_type) continue;
-        ResolvedTile r = resolve_tile_with_tertiary(
-            landscape, tx, static_cast<uint8_t>(y));
-        if (r.tertiary_index != tertiary_index) continue;
-        out_x = tx;
-        out_y = static_cast<uint8_t>(y);
-        return true;
-    }
-    return false;
-}
-
-bool resolve_data_offset_to_tile(const Landscape& landscape,
-                                 uint8_t data_offset,
+// Both reverse lookups have the same shape after Option B: scan the
+// per-cell tertiary index array for the cell pointing at the given
+// entry. find_tertiary_tile / resolve_data_offset_to_tile take
+// different "find what" arguments but the search is identical.
+static bool find_cell_for_entry(const Landscape& landscape, int target_idx,
                                  uint8_t& out_x, uint8_t& out_y) {
-    if (data_offset == 0) return false;
-    // Walk every tile-type-with-tertiary (0..8) and its tertiary-index range.
-    // For each index i, the forward map is data_offset = i + tertiary_data_
-    // offset[T] (mod 256); finding the (T, i) pair whose modular sum equals
-    // the target gives us tile_x from tertiary_objects_x_data. tile_y is
-    // recovered by scanning the landscape column for a matching tile type.
-    //
-    // Validation: tertiary_objects_x_data has duplicate x's in the same
-    // range — only the LOWEST matching index is ever reached by the 6502's
-    // forward resolver (first-match-wins at resolve_tile_with_tertiary).
-    // A column-scan without validation would attribute the real tile to
-    // the higher-index duplicate too, producing spurious wires. So after
-    // locating a candidate (tx, y) we run the forward resolver and keep
-    // it only when its tertiary_index matches THIS i — which cleanly
-    // filters out dead duplicates and unreachable entries.
-    for (int T = 0; T <= 8; T++) {
-        int range_start = tertiary_ranges[T];
-        int range_end   = tertiary_ranges[T + 1];
-        for (int i = range_start; i < range_end; i++) {
-            uint8_t off = static_cast<uint8_t>(
-                i + static_cast<int8_t>(tertiary_data_offset[T]));
-            if (off != data_offset) continue;
-            uint8_t tx = tertiary_objects_x_data[i];
-            for (int y = 0; y < 256; y++) {
-                uint8_t raw =
-                    landscape.get_tile(tx, static_cast<uint8_t>(y));
-                if ((raw & TileFlip::TYPE_MASK) != T) continue;
-                ResolvedTile r = resolve_tile_with_tertiary(
-                    landscape, tx, static_cast<uint8_t>(y));
-                if (r.tertiary_index != i) continue;
-                out_x = tx;
+    if (target_idx <= 0) return false;
+    for (int y = 0; y < 256; ++y) {
+        for (int x = 0; x < 256; ++x) {
+            uint16_t cell = landscape.tertiary_index_at(
+                static_cast<uint8_t>(x), static_cast<uint8_t>(y));
+            if (cell == static_cast<uint16_t>(target_idx)) {
+                out_x = static_cast<uint8_t>(x);
                 out_y = static_cast<uint8_t>(y);
                 return true;
             }
         }
+    }
+    return false;
+}
+
+bool find_tertiary_tile(const Landscape& landscape,
+                        int /*tile_type*/, int tertiary_index,
+                        uint8_t& out_x, uint8_t& out_y) {
+    return find_cell_for_entry(landscape, tertiary_index, out_x, out_y);
+}
+
+// Reverse-map a 6502-style data_offset (index into the static
+// tertiary_objects_data_bytes, partitioned by tile_type) back to a
+// world cell. Decode: subtract tertiary_data_offset[T] until the
+// remainder lands in tertiary_ranges[T]..[T+1), then x_data[idx] gives
+// the column and a Y scan finds the matching cell.
+bool resolve_data_offset_to_tile(const Landscape& landscape,
+                                 uint8_t data_offset,
+                                 uint8_t& out_x, uint8_t& out_y) {
+    if (data_offset == 0) return false;
+    for (int type = 0; type <= static_cast<int>(TileType::SWITCH); ++type) {
+        uint8_t source_idx = static_cast<uint8_t>(
+            data_offset - tertiary_data_offset[type]);
+        if (source_idx <  tertiary_ranges[type]) continue;
+        if (source_idx >= tertiary_ranges[type + 1]) continue;
+        uint8_t target_x = tertiary_objects_x_data[source_idx];
+        for (int y = 0; y < 256; ++y) {
+            uint8_t raw = landscape.get_tile(target_x,
+                                              static_cast<uint8_t>(y));
+            if ((raw & TileFlip::TYPE_MASK) ==
+                static_cast<uint8_t>(type)) {
+                out_x = target_x;
+                out_y = static_cast<uint8_t>(y);
+                return true;
+            }
+        }
+        // Type matched but no cell of that raw type at X — fall through
+        // and report the column anyway so the wire still terminates at
+        // the right place.
+        out_x = target_x;
+        out_y = 0;
+        return true;
     }
     return false;
 }

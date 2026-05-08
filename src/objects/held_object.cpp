@@ -12,10 +12,10 @@ namespace HeldObject {
 //   1 screen pixel in X = 0x10 x-fraction units   (16 px per tile)
 //   1 screen row    in Y = 8    y-fraction units  (32 rows per tile)
 void update_position(Object& held, const Object& player) {
-    uint8_t player_w_px = (player.sprite <= 0x7c) ? sprite_atlas[player.sprite].w : 5;
-    uint8_t player_h_px = (player.sprite <= 0x7c) ? sprite_atlas[player.sprite].h : 22;
-    uint8_t held_w_px   = (held.sprite   <= 0x7c) ? sprite_atlas[held.sprite].w   : 4;
-    uint8_t held_h_px   = (held.sprite   <= 0x7c) ? sprite_atlas[held.sprite].h   : 6;
+    uint8_t player_w_px = (player.sprite <= 0x80) ? sprite_atlas[player.sprite].w : 5;
+    uint8_t player_h_px = (player.sprite <= 0x80) ? sprite_atlas[player.sprite].h : 22;
+    uint8_t held_w_px   = (held.sprite   <= 0x80) ? sprite_atlas[held.sprite].w   : 4;
+    uint8_t held_h_px   = (held.sprite   <= 0x80) ? sprite_atlas[held.sprite].h   : 6;
 
     // X: signed offset in fraction units, applied across (whole, fraction).
     int32_t x_offset;
@@ -70,6 +70,9 @@ bool should_drop(const Object& held, const Object& player) {
 
 void pickup(Object& held, Object& player, uint8_t& held_slot, int slot) {
     held_slot = static_cast<uint8_t>(slot);
+    // Clear the collectable "undisturbed" pin (energy bit 7) — held items
+    // may never overlap player's AABB, so update_collectable wouldn't.
+    held.energy &= 0x7f;
     update_position(held, player);
 }
 

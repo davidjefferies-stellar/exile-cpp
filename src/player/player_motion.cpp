@@ -2,6 +2,7 @@
 #include "behaviours/npc_helpers.h"
 #include "objects/physics.h"
 #include "objects/collision.h"
+#include "objects/object_data.h"
 #include "objects/object_manager.h"
 #include "audio/audio.h"
 #include "rendering/sprite_atlas.h"
@@ -198,6 +199,44 @@ static bool player_aabb_obstructed(
     return false;
 }
 
+// AABB scan for a lighter active primary overlapping the player. Used
+// by both axes' &2bb6 heavier-hits-lighter branch. Returns the slot, or
+// -1 if none. Skips held<->player (&2afd-&2b0e), intangible (&0354 bit
+// 7), and zero-weight types.
+static int find_lighter_overlap(const Object& player, ObjectManager& mgr,
+                                uint8_t held_slot,
+                                int sprite_w_frac, int sprite_h_frac) {
+    int px = player.x.whole * 256 + player.x.fraction;
+    int py = player.y.whole * 256 + player.y.fraction;
+    uint8_t pw_weight = player.weight();
+    for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+        if (i == held_slot) continue;
+        const Object& other = mgr.object(i);
+        if (!other.is_active()) continue;
+        uint8_t idx = static_cast<uint8_t>(other.type);
+        if (idx >= static_cast<uint8_t>(ObjectType::COUNT)) continue;
+        uint8_t tflags = object_types_flags[idx];
+        if (tflags & ObjectTypeFlags::INTANGIBLE) continue;
+        uint8_t ow = tflags & ObjectTypeFlags::WEIGHT_MASK;
+        if (ow == 0 || ow >= pw_weight) continue;
+        int8_t tdx = static_cast<int8_t>(player.x.whole - other.x.whole);
+        int8_t tdy = static_cast<int8_t>(player.y.whole - other.y.whole);
+        if (std::abs(tdx) > 2 || std::abs(tdy) > 2) continue;
+        int ox = other.x.whole * 256 + other.x.fraction;
+        int oy = other.y.whole * 256 + other.y.fraction;
+        int ow_ = (other.sprite <= 0x80)
+                  ? (sprite_atlas[other.sprite].w > 0
+                     ? (sprite_atlas[other.sprite].w - 1) * 16 : 0) : 0;
+        int oh_ = (other.sprite <= 0x80)
+                  ? (sprite_atlas[other.sprite].h > 0
+                     ? (sprite_atlas[other.sprite].h - 1) * 8 : 0) : 0;
+        if (ox + ow_ <= px || px + sprite_w_frac <= ox) continue;
+        if (oy + oh_ <= py || py + sprite_h_frac <= oy) continue;
+        return i;
+    }
+    return -1;
+}
+
 // Physics / integration half of the player update. Takes the frame's
 // acceleration vector produced by apply_player_input and runs the chain:
 // wind → acceleration → axis-separated integration with solid-tile revert
@@ -205,6 +244,11 @@ static bool player_aabb_obstructed(
 // does not touch inputs or actions — that's apply_player_input's job.
 void Game::integrate_player_motion(Object& player,
                                    int8_t accel_x, int8_t accel_y) {
+    // Snapshot the pre-motion y so the splash check below knows whether
+    // the integrator just dropped the player across the waterline. Mirrors
+    // the per-object splash detection in object_update.cpp.
+    Fixed8_8 pre_motion_y = player.y;
+
     // Apply wind (surface only)
     Wind::apply_surface_wind(player);
 
@@ -229,15 +273,15 @@ void Game::integrate_player_motion(Object& player,
     // (same as collision.cpp::sprite_height_units and
     // sprites_height_and_vertical_flip_table at &5e89). Used by both the
     // X-motion feet-row probe and the Y-motion ground clamp.
-    int sprite_h = (player.sprite <= 0x7c)
+    int sprite_h = (player.sprite <= 0x80)
                    ? sprite_atlas[player.sprite].h : 22;
     int sprite_h_frac = (sprite_h > 0 ? sprite_h - 1 : 0) * 8;
-    int sprite_w = (player.sprite <= 0x7c)
+    int sprite_w = (player.sprite <= 0x80)
                    ? sprite_atlas[player.sprite].w : 5;
     int sprite_w_frac = (sprite_w > 0 ? sprite_w - 1 : 0) * 16;
 
     // AABB-spanning obstruction probe lives in player_aabb_obstructed at
-    // TU scope above (per CLAUDE.md: no lambdas). Walks sections across
+    // TU scope above  Walks sections across
     // tile boundaries so moving right into a wall is caught, and false
     // blocks on left-edge tiles that spill into the next column are
     // avoided.
@@ -308,9 +352,11 @@ void Game::integrate_player_motion(Object& player,
         if (!blocked) {
             auto& all = reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
                 object_mgr_.object(0));
-            if (Collision::overlaps_solid_object(player, 0, all)) {
+            if (Collision::overlaps_solid_object(player, 0, all,
+                                                 static_cast<int>(held_object_slot_))) {
                 // Find the specific blocker for the transfer math.
                 for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+                    if (i == static_cast<int>(held_object_slot_)) continue;
                     const Object& other = all[i];
                     if (!other.is_active()) continue;
                     uint8_t ow = other.weight();
@@ -320,14 +366,14 @@ void Game::integrate_player_motion(Object& player,
                     int py = player.y.whole * 256 + player.y.fraction;
                     int ox = other.x.whole * 256 + other.x.fraction;
                     int oy = other.y.whole * 256 + other.y.fraction;
-                    int pw = (player.sprite <= 0x7c)
+                    int pw = (player.sprite <= 0x80)
                         ? (sprite_atlas[player.sprite].w > 0
                             ? (sprite_atlas[player.sprite].w - 1) * 16 : 0) : 0;
                     int ph = sprite_h_frac;
-                    int ow_ = (other.sprite <= 0x7c)
+                    int ow_ = (other.sprite <= 0x80)
                         ? (sprite_atlas[other.sprite].w > 0
                             ? (sprite_atlas[other.sprite].w - 1) * 16 : 0) : 0;
-                    int oh_ = (other.sprite <= 0x7c)
+                    int oh_ = (other.sprite <= 0x80)
                         ? (sprite_atlas[other.sprite].h > 0
                             ? (sprite_atlas[other.sprite].h - 1) * 8 : 0) : 0;
                     if (ox + ow_ > px && px + pw > ox &&
@@ -343,15 +389,37 @@ void Game::integrate_player_motion(Object& player,
             player.x = old_x;
             if (obj_blocker >= 0) {
                 Object& other = object_mgr_.object(obj_blocker);
-                bool hit_from_right = player.velocity_x > 0;
+                bool smallest_in_x = player.velocity_x != 0;
                 auto t = Collision::apply_mass_ratio_velocity(
                     player.velocity_x, other.velocity_x,
                     player.weight(), other.weight(),
-                    hit_from_right);
+                    smallest_in_x);
                 player.velocity_x = t.this_v;
                 other.velocity_x  = t.other_v;
             } else {
                 player.velocity_x = 0;    // tile block — hard stop
+            }
+        } else {
+            // Heavier-hits-lighter half of &2bb6
+            // apply_collision_to_objects_velocities. The block path above
+            // only fires for HEAVIER overlaps; without this branch the
+            // player walks straight through a flask/RCD without giving
+            // it a kick. Revert position so we don't pass through, and
+            // apply mass-ratio transfer to push the lighter primary.
+            // Skip held<->player (port of &2afd-&2b0e).
+            int pushee = find_lighter_overlap(player, object_mgr_,
+                                               held_object_slot_,
+                                               sprite_w_frac, sprite_h_frac);
+            if (pushee >= 0) {
+                player.x = old_x;
+                Object& other = object_mgr_.object(pushee);
+                bool smallest_in_x = player.velocity_x != 0;
+                auto t = Collision::apply_mass_ratio_velocity(
+                    player.velocity_x, other.velocity_x,
+                    player.weight(), other.weight(),
+                    smallest_in_x);
+                player.velocity_x = t.this_v;
+                other.velocity_x  = t.other_v;
             }
         }
     }
@@ -401,8 +469,10 @@ void Game::integrate_player_motion(Object& player,
         if (!y_blocked) {
             auto& all = reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
                 object_mgr_.object(0));
-            if (Collision::overlaps_solid_object(player, 0, all)) {
+            if (Collision::overlaps_solid_object(player, 0, all,
+                                                 static_cast<int>(held_object_slot_))) {
                 for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+                    if (i == static_cast<int>(held_object_slot_)) continue;
                     const Object& other = all[i];
                     if (!other.is_active()) continue;
                     uint8_t ow = other.weight();
@@ -411,14 +481,14 @@ void Game::integrate_player_motion(Object& player,
                     int py = player.y.whole * 256 + player.y.fraction;
                     int ox = other.x.whole * 256 + other.x.fraction;
                     int oy = other.y.whole * 256 + other.y.fraction;
-                    int pw = (player.sprite <= 0x7c)
+                    int pw = (player.sprite <= 0x80)
                         ? (sprite_atlas[player.sprite].w > 0
                             ? (sprite_atlas[player.sprite].w - 1) * 16 : 0) : 0;
                     int ph = sprite_h_frac;
-                    int ow_ = (other.sprite <= 0x7c)
+                    int ow_ = (other.sprite <= 0x80)
                         ? (sprite_atlas[other.sprite].w > 0
                             ? (sprite_atlas[other.sprite].w - 1) * 16 : 0) : 0;
-                    int oh_ = (other.sprite <= 0x7c)
+                    int oh_ = (other.sprite <= 0x80)
                         ? (sprite_atlas[other.sprite].h > 0
                             ? (sprite_atlas[other.sprite].h - 1) * 8 : 0) : 0;
                     if (ox + ow_ > px && px + pw > ox &&
@@ -471,10 +541,27 @@ void Game::integrate_player_motion(Object& player,
                     int target_feet_abs = static_cast<int>(lead_ty_for_snap) * 256 +
                                           static_cast<int>(snap_y);
                     int target_top_abs  = target_feet_abs - sprite_h_frac;
-                    player.y.whole    = static_cast<uint8_t>((target_top_abs >> 8) & 0xff);
-                    player.y.fraction = static_cast<uint8_t>(target_top_abs & 0xff);
-                    player.flags |= ObjectFlags::SUPPORTED;
-                    object_supported = true;
+                    int current_top_abs = static_cast<int>(old_y.whole) * 256 +
+                                          static_cast<int>(old_y.fraction);
+                    // Reject snaps that would lift the player upward —
+                    // gravity should never warp him onto something above
+                    // his current position. STONE_SLOPE_78 used as a
+                    // closed-vertical-door substitute has threshold 0 in
+                    // its left quarter, so a player walking into the door
+                    // from the side at floor height would otherwise be
+                    // teleported onto the door's "ceiling" pattern,
+                    // landing him in the tile above. Falls through to the
+                    // plain old_y revert below.
+                    if (target_top_abs < current_top_abs) {
+                        player.y = old_y;
+                        player.flags |= ObjectFlags::SUPPORTED;
+                        object_supported = true;
+                    } else {
+                        player.y.whole    = static_cast<uint8_t>((target_top_abs >> 8) & 0xff);
+                        player.y.fraction = static_cast<uint8_t>(target_top_abs & 0xff);
+                        player.flags |= ObjectFlags::SUPPORTED;
+                        object_supported = true;
+                    }
                 } else {
                     // Section that obstructed wasn't a fully-solid tile
                     // type at the simple lookup; fall back to plain
@@ -497,15 +584,38 @@ void Game::integrate_player_motion(Object& player,
                 }
                 if (y_obj_blocker >= 0) {
                     Object& other = object_mgr_.object(y_obj_blocker);
-                    bool hit_from_below = player.velocity_y < 0;
+                    bool smallest_in_y = player.velocity_y != 0;
                     auto t = Collision::apply_mass_ratio_velocity(
                         player.velocity_y, other.velocity_y,
                         player.weight(), other.weight(),
-                        hit_from_below);
+                        smallest_in_y);
                     player.velocity_y = t.this_v;
                     other.velocity_y  = t.other_v;
                 } else {
                     player.velocity_y = 0;
+                }
+            }
+        } else {
+            // Heavier-hits-lighter half of &2bb6 — Y axis. Mirrors the
+            // X-axis branch above so the player lands on a flask instead
+            // of falling through it, and a flask under the player gets
+            // a downward kick.
+            int pushee = find_lighter_overlap(player, object_mgr_,
+                                               held_object_slot_,
+                                               sprite_w_frac, sprite_h_frac);
+            if (pushee >= 0) {
+                player.y = old_y;
+                Object& other = object_mgr_.object(pushee);
+                bool smallest_in_y = player.velocity_y != 0;
+                auto t = Collision::apply_mass_ratio_velocity(
+                    player.velocity_y, other.velocity_y,
+                    player.weight(), other.weight(),
+                    smallest_in_y);
+                player.velocity_y = t.this_v;
+                other.velocity_y  = t.other_v;
+                if (player.velocity_y >= 0) {
+                    player.flags |= ObjectFlags::SUPPORTED;
+                    object_supported = true;
                 }
             }
         }
@@ -619,9 +729,24 @@ void Game::integrate_player_motion(Object& player,
         if (grounded && player.velocity_y >= 0) {
             int target_top = static_cast<int>(snap_ty) * 256 +
                              static_cast<int>(snap_y) - sprite_h_frac;
-            player.y.whole    = static_cast<uint8_t>((target_top >> 8) & 0xff);
-            player.y.fraction = static_cast<uint8_t>(target_top & 0xff);
-            player.velocity_y = 0;
+            int current_top = static_cast<int>(player.y.whole) * 256 +
+                              static_cast<int>(player.y.fraction);
+            int upward = current_top - target_top;
+            // Cap upward snap to ~1/4 of a tile (0x40 frac, ~8 px). Slope
+            // step-up only ever moves the player a few frac per frame; a
+            // larger jump means the "surface" is the top of a partial-
+            // solid tile (e.g. STONE_SLOPE_78 used as a closed-vertical-
+            // door substitute, threshold 0 in the left quarter). Snapping
+            // there teleports the player onto the door's "ceiling" and
+            // up into the tile above. The 6502 sidesteps this entirely
+            // with its angle-from-obstruction-vector response (&306c) —
+            // this cap is the smallest workable port-side guard until
+            // that's done. Downward snaps and small step-ups still apply.
+            if (upward <= 0x40) {
+                player.y.whole    = static_cast<uint8_t>((target_top >> 8) & 0xff);
+                player.y.fraction = static_cast<uint8_t>(target_top & 0xff);
+                player.velocity_y = 0;
+            }
         }
 
         // Refresh tile_collision_angle (port of &1c) from the slope of the
@@ -713,17 +838,12 @@ void Game::integrate_player_motion(Object& player,
             int sum = static_cast<int>(player_mushroom_timers_[which]) + 0x3f;
             if (sum > 0xff) sum = 0xff;
             player_mushroom_timers_[which] = static_cast<uint8_t>(sum);
-            // &4000-&4002 emit one STAR_OR_MUSHROOM particle. The 6502
-            // emits from `this_object` (the player), which combined with
-            // our use_vcentre flag (0x08 in the STAR_OR_MUSHROOM table row)
-            // puts the particle at the player's vertical centre — a tile
-            // above a floor mushroom, a tile below a ceiling mushroom.
-            // Emit from the mushroom tile instead so the spores visibly
-            // puff out where the mushrooms actually are. Use emit_at to
-            // skip the object-centred base offset entirely.
-            particles_.emit_at(ParticleType::STAR_OR_MUSHROOM,
-                               player.x.whole, static_cast<uint8_t>(ty),
-                               rng_);
+            // &4000-&4002 emit STAR_OR_MUSHROOM. 6502 emits from the
+            // player's fixed-point position (&3f7f), not the mushroom
+            // tile — uses (whole+frac) + jitter. We skip the -0x40
+            // sub-tile offset at &3f83.
+            particles_.emit(ParticleType::STAR_OR_MUSHROOM, 1,
+                            player, rng_);
             // &3ff9-&3ffc: mushroom contact sound — soft poof on top of
             // the spore puff.
             static constexpr uint8_t kSoundMushroomPoof[4] = { 0x33, 0xf3, 0x1d, 0x03 };
@@ -732,8 +852,23 @@ void Game::integrate_player_motion(Object& player,
         }
     }
 
+    // Water splash — port of &2f69-&2f82 add_water_particles_for_splash.
+    // If the player just crossed the waterline this frame moving downward,
+    // emit one PARTICLE_WATER at the crossing point with angle &c0 (head
+    // up). The per-object loop does the same for primaries; the player
+    // takes its own integration path so we mirror the check here.
+    {
+        uint8_t wy = Water::get_waterline_y(player.x.whole);
+        bool was_above = pre_motion_y.whole < wy;
+        bool now_at    = player.y.whole >= wy;
+        if (was_above && now_at && player.velocity_y > 0) {
+            particles_.emit_directed(ParticleType::WATER, 0xc0, player, rng_);
+        }
+    }
+
     // Apply water effects
-    Water::apply_water_effects(landscape_, player, player.weight());
+    Water::apply_water_effects(landscape_, player, player.weight(),
+                                every_four_frames_);
 
     // Tile-based wind / water-current — same dispatch as the per-object
     // loop. Without this the player feels surface wind but not the local

@@ -108,7 +108,15 @@ enum class ObjectType : uint8_t {
     RADIATION_IMMUNITY_PILL   = 0x63,
     INVISIBLE_INERT           = 0x64,
 
-    COUNT                     = 0x65
+    // Pre-release-only creatures recovered from EXILE1 (8-March-1988
+    // master disk). Slotted past the standard release's 0x65 COUNT —
+    // every per-object table that's sized to ObjectType::COUNT picks
+    // these up automatically. See `exile-EXILE1-disassembly.txt` for
+    // the disassembly of their update routines.
+    DOG                       = 0x65,
+    CRAB                      = 0x66,
+
+    COUNT                     = 0x67
 };
 
 // ============================================================================

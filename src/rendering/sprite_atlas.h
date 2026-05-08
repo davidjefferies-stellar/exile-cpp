@@ -16,9 +16,9 @@ struct SpriteAtlasEntry {
 };
 
 namespace detail {
-    constexpr std::array<SpriteAtlasEntry, 125> make_sprite_atlas() {
-        std::array<SpriteAtlasEntry, 125> out{};
-        for (int i = 0; i < 125; ++i) {
+    constexpr std::array<SpriteAtlasEntry, BBC_SPRITE_COUNT> make_sprite_atlas() {
+        std::array<SpriteAtlasEntry, BBC_SPRITE_COUNT> out{};
+        for (int i = 0; i < BBC_SPRITE_COUNT; ++i) {
             uint8_t wf = BBC_SPRITE_WIDTH_FLIP[i];
             uint8_t hf = BBC_SPRITE_HEIGHT_FLIP[i];
             uint8_t xb = BBC_SPRITE_SHEET_X[i];

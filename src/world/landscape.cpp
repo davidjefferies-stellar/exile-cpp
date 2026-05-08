@@ -1,5 +1,9 @@
 #include "world/landscape.h"
 #include "map_overlay.h"
+#include "objects/object_tables.h"
+#include "core/types.h"
+#include <cstring>
+#include <fstream>
 
 // ============================================================================
 // Lookup tables from the disassembly, transcribed exactly.
@@ -74,23 +78,384 @@ struct Alu {
 };
 
 // ============================================================================
-// get_tile - dispatches to the active implementation. The pseudo-6502
-// version below is the reference; the C++ rewrite lives in
-// landscape_cpp.cpp.
+// bake - run the procedural algorithm over the full 256×256 grid and
+// store the result in tiles_. Called once at game init; afterwards
+// get_tile() is a plain array read. Re-bakes if called again (e.g.
+// after toggling use_cpp_impl_).
 // ============================================================================
 
-uint8_t Landscape::get_tile(uint8_t tile_x, uint8_t tile_y) const {
-    return use_cpp_impl_
-        ? get_tile_cpp(tile_x, tile_y)
-        : get_tile_pseudo_6502(tile_x, tile_y);
+void Landscape::bake() {
+    for (int y = 0; y < WORLD_SIZE; ++y) {
+        for (int x = 0; x < WORLD_SIZE; ++x) {
+            // Reset the bake helper's "took map_data path" flag for this
+            // cell. The helper sets it true if it reached the &17d6
+            // branch, leaves it false otherwise.
+            last_bake_was_map_data_ = false;
+            last_bake_map_data_offset_ = 0;
+            uint8_t tile = use_cpp_impl_
+                ? bake_tile_cpp(static_cast<uint8_t>(x), static_cast<uint8_t>(y))
+                : bake_tile_pseudo_6502(static_cast<uint8_t>(x),
+                                         static_cast<uint8_t>(y));
+            tiles_[(y << 8) | x] = tile;
+            from_map_data_[(y << 8) | x] = last_bake_was_map_data_ ? 1 : 0;
+            map_data_offset_[(y << 8) | x] = last_bake_map_data_offset_;
+        }
+    }
+    rebuild_map_data_offset_counts();
+    bake_tertiary_lookup();
+}
+
+void Landscape::rebuild_map_data_offset_counts() {
+    for (int i = 0; i < 1024; ++i) map_data_offset_count_[i] = 0;
+    for (int i = 0; i < TILE_COUNT; ++i) {
+        if (!from_map_data_[i]) continue;
+        uint16_t off = map_data_offset_[i];
+        if (off < 1024) map_data_offset_count_[off]++;
+    }
 }
 
 // ============================================================================
-// get_tile_pseudo_6502 - faithful port of &178d-&19a6 with explicit
+// bake_tertiary_lookup - resolve every CHECK_TERTIARY cell into its OWN
+// TertiaryEntry, copying state from the static ROM tables. Two cells
+// that used to share an entry under the 6502's x-only-in-range scan
+// each get an independent copy here, so stacked / shared-key doors
+// can hold their own state once the editor wires up.
+// ============================================================================
+//
+// For each cell whose tile_type is 0..8 (CHECK_TERTIARY_OBJECT_RANGE_N),
+// run the 6502's x-only-in-range scan to find the source entry index in
+// the parallel static arrays at &05ef / &06ee / &0986 / &0a71. Read
+// the source's tile_and_flip + data byte + type byte (where applicable),
+// allocate a fresh TertiaryEntry, and point the cell at it.
+//
+// Cells that don't match any source entry get NO_TERTIARY; the engine
+// renders them as the feature-tile fallback.
+void Landscape::bake_tertiary_lookup() {
+    // Reserve entry 0 as a permanent unused sentinel so legacy callers
+    // that test "data_offset > 0" still treat 0 as "no tertiary" — we
+    // stash a zero-init entry at slot 0 and start handing out indices
+    // from 1. NO_TERTIARY (0xffff) at the per-cell level still flags
+    // "no tertiary at this cell" too; tertiary_data_byte additionally
+    // gates on idx > 0.
+    n_tertiary_entries_ = 1;
+    tertiary_entries_[0] = TertiaryEntry{};
+    for (int i = 0; i < 256; ++i) tertiary_source_count_[i] = 0;
+    for (int i = 0; i < 256; ++i) switch_x_count_[i] = 0;
+    for (int y = 0; y < WORLD_SIZE; ++y) {
+        for (int x = 0; x < WORLD_SIZE; ++x) {
+            uint8_t tile = tiles_[(y << 8) | x];
+            uint8_t type = tile & TileFlip::TYPE_MASK;
+            uint16_t resolved = NO_TERTIARY;
+            uint16_t source = NO_TERTIARY;
+            if (type <= static_cast<uint8_t>(TileType::SWITCH)) {
+                int rs = tertiary_ranges[type];
+                int re = tertiary_ranges[type + 1];
+                int found = -1;
+                for (int i = rs; i < re; ++i) {
+                    if (tertiary_objects_x_data[i] ==
+                        static_cast<uint8_t>(x)) {
+                        found = i;
+                        break;
+                    }
+                }
+                if (found >= 0) {
+                    // "This cell renders/spawns as a switch" =
+                    // resolved tile_and_flip type is SWITCH (0x08).
+                    // Catches both direct switches (raw 0x08 cells
+                    // with tertiaries in the SWITCH range) AND
+                    // redirect switches (e.g. raw METAL_DOOR cells
+                    // whose tertiary entry rewrites tile_and_flip to
+                    // SWITCH). Gate on from_map_data so procedural
+                    // marker cells don't inflate the count.
+                    uint8_t resolved_type =
+                        tertiary_objects_tile_and_flip_data[found]
+                        & TileFlip::TYPE_MASK;
+                    if (resolved_type == static_cast<uint8_t>(TileType::SWITCH) &&
+                        from_map_data_[(y << 8) | x]) {
+                        switch_x_count_[x]++;
+                    }
+                    TertiaryEntry e;
+                    e.tile_and_flip = tertiary_objects_tile_and_flip_data[found];
+                    // Translate source-table indices using the per-type
+                    // addends (&05dd / &05e6) — same arithmetic as the
+                    // pre-bake resolve_tile_with_tertiary did at runtime.
+                    int data_off = static_cast<uint8_t>(
+                        found + static_cast<int8_t>(tertiary_data_offset[type]));
+                    int type_off = static_cast<uint8_t>(
+                        data_off + static_cast<int8_t>(tertiary_type_offset[type]));
+                    if (data_off > 0 &&
+                        data_off < static_cast<int>(sizeof(tertiary_objects_data_bytes))) {
+                        e.data = tertiary_objects_data_bytes[data_off];
+                    }
+                    if (type_off > 0 &&
+                        type_off < static_cast<int>(sizeof(tertiary_objects_type_data))) {
+                        e.type = tertiary_objects_type_data[type_off];
+                    }
+                    int new_idx = add_tertiary_entry(e);
+                    if (new_idx >= 0) resolved = static_cast<uint16_t>(new_idx);
+                    source = static_cast<uint16_t>(found);
+                    if (found < 256) tertiary_source_count_[found]++;
+                }
+            }
+            tertiary_idx_[(y << 8) | x] = resolved;
+            tertiary_source_idx_[(y << 8) | x] = source;
+        }
+    }
+}
+
+// ============================================================================
+// set_tile - mutator. Refreshes the tertiary attached to the cell when
+// the type changes: switching to a CHECK_TERTIARY tile spawns a new
+// entry from the source tables; switching to anything else detaches.
+// Existing entries are NOT garbage-collected — that's an editor
+// responsibility (or a future compact pass).
+// ============================================================================
+void Landscape::set_tile(uint8_t tile_x, uint8_t tile_y, uint8_t tile) {
+    int idx = (static_cast<int>(tile_y) << 8) | tile_x;
+    // Drop the cell's old contribution to the source-index alias count
+    // before we recompute. Editor changes that detach or repoint the
+    // tertiary need to leave the count consistent for the alias overlay.
+    {
+        uint16_t old_src = tertiary_source_idx_[idx];
+        if (old_src < 256 && tertiary_source_count_[old_src] > 0) {
+            tertiary_source_count_[old_src]--;
+        }
+    }
+    // Drop the cell's old contribution to the per-X switch count.
+    // Mirrors the bake's gate: counted only while raw type was SWITCH
+    // and a tertiary was attached.
+    {
+        uint8_t old_type = tiles_[idx] & TileFlip::TYPE_MASK;
+        if (old_type == static_cast<uint8_t>(TileType::SWITCH) &&
+            tertiary_source_idx_[idx] != NO_TERTIARY &&
+            switch_x_count_[tile_x] > 0) {
+            switch_x_count_[tile_x]--;
+        }
+    }
+    tiles_[idx] = tile;
+    uint8_t type = tile & TileFlip::TYPE_MASK;
+    uint16_t resolved = NO_TERTIARY;
+    uint16_t source   = NO_TERTIARY;
+    if (type <= static_cast<uint8_t>(TileType::SWITCH)) {
+        int rs = tertiary_ranges[type];
+        int re = tertiary_ranges[type + 1];
+        int found = -1;
+        for (int i = rs; i < re; ++i) {
+            if (tertiary_objects_x_data[i] == tile_x) { found = i; break; }
+        }
+        if (found >= 0) {
+            TertiaryEntry e;
+            e.tile_and_flip = tertiary_objects_tile_and_flip_data[found];
+            // Same gate as bake_tertiary_lookup: cell counts as a
+            // switch when its resolved tile_and_flip type is SWITCH
+            // (covers direct switches AND redirect switches).
+            uint8_t resolved_type =
+                e.tile_and_flip & TileFlip::TYPE_MASK;
+            if (resolved_type == static_cast<uint8_t>(TileType::SWITCH) &&
+                from_map_data_[idx]) {
+                switch_x_count_[tile_x]++;
+            }
+            int data_off = static_cast<uint8_t>(
+                found + static_cast<int8_t>(tertiary_data_offset[type]));
+            int type_off = static_cast<uint8_t>(
+                data_off + static_cast<int8_t>(tertiary_type_offset[type]));
+            if (data_off > 0 &&
+                data_off < static_cast<int>(sizeof(tertiary_objects_data_bytes))) {
+                e.data = tertiary_objects_data_bytes[data_off];
+            }
+            if (type_off > 0 &&
+                type_off < static_cast<int>(sizeof(tertiary_objects_type_data))) {
+                e.type = tertiary_objects_type_data[type_off];
+            }
+            int new_idx = add_tertiary_entry(e);
+            if (new_idx >= 0) resolved = static_cast<uint16_t>(new_idx);
+            source = static_cast<uint16_t>(found);
+            if (found < 256) tertiary_source_count_[found]++;
+        }
+    }
+    tertiary_idx_[idx] = resolved;
+    tertiary_source_idx_[idx] = source;
+}
+
+// ============================================================================
+// Map file format (binary, little-endian):
+//
+//   offset    size      field
+//   --------  --------  -------------------------------------------------
+//   0         8         magic "EXILEMAP"
+//   8         2         version (currently 1)
+//   10        2         tertiary entry count N
+//   12        2         world width  (must be 256)
+//   14        2         world height (must be 256)
+//   16        65 536    tile bytes, row-major (y * 256 + x)
+//   65 552    131 072   per-cell tertiary index, uint16_t little-endian.
+//                       NO_TERTIARY (0xffff) = no tertiary at this cell.
+//                       Row-major layout same as the tiles.
+//   196 624   N * 3     tertiary entries: { tile_and_flip, data, type }.
+//   -----------------------------------
+//   total     196 624 + N*3 bytes
+//
+// Mismatched magic / version / dimensions / truncation all reject
+// cleanly, leaving the in-memory state untouched so the caller can
+// fall back to bake().
+// ============================================================================
+
+namespace {
+constexpr char     kMagic[8]   = { 'E','X','I','L','E','M','A','P' };
+constexpr uint16_t kVersion    = 1;
+constexpr int      kHeaderLen  = 16;
+constexpr int      kIdxBytes   = Landscape::TILE_COUNT * 2;  // uint16_t per cell
+constexpr int      kEntryBytes = 3;                          // bytes per TertiaryEntry
+}
+
+bool Landscape::save_to_file(const char* path) const {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return false;
+
+    uint16_t n = static_cast<uint16_t>(n_tertiary_entries_);
+    uint8_t header[kHeaderLen] = {};
+    std::memcpy(header, kMagic, 8);
+    header[8]  = static_cast<uint8_t>(kVersion & 0xff);
+    header[9]  = static_cast<uint8_t>((kVersion >> 8) & 0xff);
+    header[10] = static_cast<uint8_t>(n & 0xff);
+    header[11] = static_cast<uint8_t>((n >> 8) & 0xff);
+    header[12] = static_cast<uint8_t>(WORLD_SIZE & 0xff);
+    header[13] = static_cast<uint8_t>((WORLD_SIZE >> 8) & 0xff);
+    header[14] = static_cast<uint8_t>(WORLD_SIZE & 0xff);
+    header[15] = static_cast<uint8_t>((WORLD_SIZE >> 8) & 0xff);
+    out.write(reinterpret_cast<const char*>(header), kHeaderLen);
+    out.write(reinterpret_cast<const char*>(tiles_), TILE_COUNT);
+    out.write(reinterpret_cast<const char*>(tertiary_idx_), kIdxBytes);
+    // Each entry is 3 bytes packed; std::ofstream treats them as bytes.
+    for (int i = 0; i < n_tertiary_entries_; ++i) {
+        const TertiaryEntry& e = tertiary_entries_[i];
+        uint8_t buf[3] = { e.tile_and_flip, e.data, e.type };
+        out.write(reinterpret_cast<const char*>(buf), kEntryBytes);
+    }
+    return out.good();
+}
+
+bool Landscape::load_from_file(const char* path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) return false;
+
+    uint8_t header[kHeaderLen] = {};
+    in.read(reinterpret_cast<char*>(header), kHeaderLen);
+    if (in.gcount() != kHeaderLen) return false;
+    if (std::memcmp(header, kMagic, 8) != 0) return false;
+
+    uint16_t version = static_cast<uint16_t>(header[8] | (header[9] << 8));
+    if (version != kVersion) return false;
+    uint16_t n_entries = static_cast<uint16_t>(header[10] | (header[11] << 8));
+    if (n_entries > TERTIARY_CAPACITY) return false;
+    uint16_t w = static_cast<uint16_t>(header[12] | (header[13] << 8));
+    uint16_t h = static_cast<uint16_t>(header[14] | (header[15] << 8));
+    if (w != WORLD_SIZE || h != WORLD_SIZE) return false;
+
+    // Scratch buffers — load nothing into the live state until every
+    // section has been read successfully.
+    uint8_t  tile_scratch[TILE_COUNT];
+    uint16_t idx_scratch [TILE_COUNT];
+    in.read(reinterpret_cast<char*>(tile_scratch), TILE_COUNT);
+    if (in.gcount() != TILE_COUNT) return false;
+    in.read(reinterpret_cast<char*>(idx_scratch), kIdxBytes);
+    if (in.gcount() != kIdxBytes) return false;
+
+    TertiaryEntry entry_scratch[TERTIARY_CAPACITY];
+    for (int i = 0; i < n_entries; ++i) {
+        uint8_t buf[3];
+        in.read(reinterpret_cast<char*>(buf), kEntryBytes);
+        if (in.gcount() != kEntryBytes) return false;
+        entry_scratch[i].tile_and_flip = buf[0];
+        entry_scratch[i].data          = buf[1];
+        entry_scratch[i].type          = buf[2];
+    }
+
+    std::memcpy(tiles_,         tile_scratch, TILE_COUNT);
+    std::memcpy(tertiary_idx_,  idx_scratch,  kIdxBytes);
+    for (int i = 0; i < n_entries; ++i) tertiary_entries_[i] = entry_scratch[i];
+    n_tertiary_entries_ = n_entries;
+
+    // Recompute from_map_data_ by re-running the bake helpers in
+    // "side-effect only" mode — the helper's tile output is discarded
+    // (we trust the loaded tiles_), but its `last_bake_was_map_data_`
+    // flag is captured per cell. The decision is deterministic given
+    // (x, y), so the loaded tiles agree with the recomputed flag for
+    // any map produced by this engine. Hand-edited cells that diverge
+    // from the procedural decision get the procedural answer here —
+    // good enough for the star-spawn suppression and avoids bumping the
+    // file-format version with a fourth array.
+    for (int y = 0; y < WORLD_SIZE; ++y) {
+        for (int x = 0; x < WORLD_SIZE; ++x) {
+            last_bake_was_map_data_ = false;
+            last_bake_map_data_offset_ = 0;
+            if (use_cpp_impl_) {
+                (void)bake_tile_cpp(static_cast<uint8_t>(x),
+                                     static_cast<uint8_t>(y));
+            } else {
+                (void)bake_tile_pseudo_6502(static_cast<uint8_t>(x),
+                                             static_cast<uint8_t>(y));
+            }
+            from_map_data_[(y << 8) | x] = last_bake_was_map_data_ ? 1 : 0;
+            map_data_offset_[(y << 8) | x] = last_bake_map_data_offset_;
+        }
+    }
+    rebuild_map_data_offset_counts();
+
+    // Re-derive tertiary_source_idx_ + count table from the loaded tiles.
+    // The save format omits the source index (it's deterministic from
+    // tile_type + x), so we replay the same x-only-in-range scan the bake
+    // does — without recreating the live entries that we just loaded.
+    for (int i = 0; i < 256; ++i) tertiary_source_count_[i] = 0;
+    for (int y = 0; y < WORLD_SIZE; ++y) {
+        for (int x = 0; x < WORLD_SIZE; ++x) {
+            uint8_t tile = tiles_[(y << 8) | x];
+            uint8_t type = tile & TileFlip::TYPE_MASK;
+            uint16_t source = NO_TERTIARY;
+            if (type <= static_cast<uint8_t>(TileType::SWITCH)) {
+                int rs = tertiary_ranges[type];
+                int re = tertiary_ranges[type + 1];
+                for (int i = rs; i < re; ++i) {
+                    if (tertiary_objects_x_data[i] == static_cast<uint8_t>(x)) {
+                        source = static_cast<uint16_t>(i);
+                        if (i < 256) tertiary_source_count_[i]++;
+                        break;
+                    }
+                }
+            }
+            tertiary_source_idx_[(y << 8) | x] = source;
+        }
+    }
+    return true;
+}
+
+// ============================================================================
+// compute_algo_tile - "what would the procedural generator output for this
+// cell, ignoring the map-data region gate?" Recomputes f1 the same way
+// bake_tile_pseudo_6502 does, then jumps straight into the algorithm
+// branch. Used by the "Algo only" debug overlay.
+// ============================================================================
+
+uint8_t Landscape::compute_algo_tile(uint8_t tile_x, uint8_t tile_y) const {
+    Alu s;
+    s.lda(tile_y);
+    s.lsr();
+    s.eor(tile_x);
+    s.and_(0xf8);
+    s.lsr();
+    s.adc(tile_x);
+    s.lsr();
+    s.adc(tile_y);
+    uint8_t f1 = s.a;
+    return get_tile_from_algorithm(tile_x, tile_y, f1);
+}
+
+// ============================================================================
+// bake_tile_pseudo_6502 - faithful port of &178d-&19a6 with explicit
 // Alu carry tracking. Each block 1:1-maps to the disassembly.
 // ============================================================================
 
-uint8_t Landscape::get_tile_pseudo_6502(uint8_t tile_x, uint8_t tile_y) const {
+uint8_t Landscape::bake_tile_pseudo_6502(uint8_t tile_x, uint8_t tile_y) const {
     Alu s;
 
     // &178d: Calculate f1 - triangular function of x and y
@@ -156,7 +521,11 @@ uint8_t Landscape::get_tile_pseudo_6502(uint8_t tile_x, uint8_t tile_y) const {
         return get_tile_from_algorithm(tile_x, tile_y, f1);
     }
 
-    // &17d6: get_tile_from_map_data
+    // &17d6: get_tile_from_map_data — every return on this branch is
+    // a map-data tile (the 6502 sets &00 here too, regardless of
+    // whether the offset ends up valid).
+    last_bake_was_map_data_ = true;
+
     // Carry state from last ADC (f4 computation) is tracked in s.c
     Alu m;
     m.lda(f4);
@@ -178,6 +547,7 @@ uint8_t Landscape::get_tile_pseudo_6502(uint8_t tile_x, uint8_t tile_y) const {
     // But wait: addr_low could wrap. Let's compute it properly:
     uint16_t effective = static_cast<uint16_t>(addr_high) * 256 + addr_low + 0xEC;
     uint16_t offset = effective - 0x4FEC;
+    last_bake_map_data_offset_ = offset;
     if (offset < 1024) {
         return map_overlay_data[offset];
     }
@@ -477,15 +847,24 @@ Landscape::SlopeResult Landscape::calculate_slope_function(uint8_t tile_x, uint8
         bool use_adc = (s.a & 0x80) == 0; // BPL = positive = ADC
         if (use_adc) y_out = 4;
 
-        // &195e: calculate slope bounds
+        // &195e: calculate slope bounds. Both branches enter ADC #&16
+        // with carry CLEAR — the 6502's `ASL A; ASL A` at &1953/&1954
+        // always clears it (the byte being shifted is `f1 & 0x20`, so
+        // bit 7 of the pre-shift A is always 0). The SMC opcode at
+        // &1961 (ADC vs SBC) inherits the carry produced by ADC #&16
+        // — NOT a forced sec() before it. Earlier code mistakenly did
+        // `s.sec(); s.adc(0x16); s.sbc(tile_x)` which added 1 too many,
+        // pushing edge-of-cavern cells onto sloping-passage feature
+        // tiles. Concrete fallout: (170, 193) ended up GREENERY 0x07,
+        // and tertiary x-only-in-range scan at X=170 attached source
+        // row 237 (range 7) whose tile_and_flip=0x08 redirected the
+        // cell to a (spurious) switch.
         s.lda(tile_y);
+        s.clc();
+        s.adc(0x16);
         if (use_adc) {
-            s.clc();
-            s.adc(0x16);
             s.adc(tile_x);
         } else {
-            s.sec();
-            s.adc(0x16); // carry=1
             s.sbc(tile_x);
         }
         s.and_(0x5f);

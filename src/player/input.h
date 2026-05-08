@@ -34,8 +34,13 @@ struct InputState {
     bool whistle_one  = false;   // Y key: play whistle one (activates Chatter)
     bool whistle_two  = false;   // U key: play whistle two (Chatter produces power pod)
     bool quit         = false;   // Q key: quit
-    bool save_game    = false;   // F5 / ';' key: write save file
-    bool load_game    = false;   // F9 / "'" key: read save file
+    bool save_game    = false;   // ';' key: write game-state save file
+    bool load_game    = false;   // "'" key: read game-state save file
+    bool save_map     = false;   // '\\' key: write current landscape grid to
+                                  // exile.map (used by the in-game editor).
+    bool tert_data_dec = false;   // '[' key: editor — decrement the data byte
+                                  // of the tertiary at the highlighted cell.
+    bool tert_data_inc = false;   // ']' key: editor — increment that data byte.
     uint8_t weapon_select = 0xff; // 0xff = no change, 0-5 = select weapon
 };
 

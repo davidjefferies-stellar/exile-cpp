@@ -69,7 +69,8 @@ ObjectCollisionResult check_object_collision(
 // whereas the door sprite spans ~half the tile, so tile obstruction
 // alone would let the player fall through parts of the door sprite.
 bool overlaps_solid_object(const Object& obj, int self_slot,
-                           const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects);
+                           const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects,
+                           int skip_slot = -1);
 
 // Port of calculate_transfer_velocities (&2bee-&2c14) +
 // apply_collision_to_object_velocity (&2bc6-&2bed). Given two objects'
@@ -94,7 +95,7 @@ struct VelocityTransfer {
 VelocityTransfer apply_mass_ratio_velocity(
     int8_t this_v_in, int8_t other_v_in,
     uint8_t this_weight, uint8_t other_weight,
-    bool hit_from_this_side);
+    bool smallest_overlap_in_this_axis);
 
 // Port of &3ebd-&3ec2 door_tiles_table substitution. Given a tile+flip
 // byte and the data_offset of the tertiary entry it came from, returns

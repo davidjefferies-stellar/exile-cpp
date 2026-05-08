@@ -1,30 +1,145 @@
 #include "behaviours/mood.h"
 #include "core/types.h"
+#include <algorithm>
+#include <cstdlib>
 
-// NPC stimuli response tables from &316b-&31ab.
-// Each NPC type maps to a stimulus category (0-9) via object_type_ranges.
-// Each stimulus category has response flags determining mood changes.
+// Port of &27c9-&2866 check_for_npc_stimuli + &316b-&31ab tables.
+//
+// The 6502 maps 10 NPC categories (imps×5, rolling robots, fluffy,
+// chatter, green slime, red frogman) to four "what excites me" tables
+// (phobia / target / food / home) and one response-bit table that says
+// whether each kind of stimulus pushes the NPC toward PLUS_ONE or
+// MINUS_ONE mood.
+//
+// Each frame we build a 7-bit stimulus byte. Bit positions are the
+// MIRROR of the 6502's: the 6502 builds its byte by ROL of stim bits 0..6
+// and pairs them with response bits 7..1 (LSR A vs ASL response, see
+// &2843-&2854). We use the same mask for both stim and response (faster
+// in C++), which is equivalent because mirroring both sides cancels out.
+// The pairing — and the bit values matched against response bits — are
+// identical to the 6502's:
+//   bit 0x80 time      ↔ resp 0x80    every 256 frames (per-object fc==0xff)
+//   bit 0x40 flood     ↔ resp 0x40    flooding_state bit 7 set
+//   bit 0x20 explode   ↔ resp 0x20    explosion_timer == -49 (frame 1)
+//   bit 0x10 damage    ↔ resp 0x10    WAS_DAMAGED ≥8 hp this tick
+//   bit 0x08 eating    ↔ resp 0x08    touching the variant's food type
+//   bit 0x04 player    ↔ resp 0x04    find_a_target landed on the player
+//   bit 0x02 phobia    ↔ resp 0x02    phobia primary type within range
+// Each set bit then has a 1-in-2 random gate (&283f AND rnd_state+1).
+//
+// Damage (0x10) and explode (0x20) ARE in this order — the disassembly
+// comment at &3193 swaps the labels, but the actual code rolls damage
+// in before explode, putting explode at the higher (0x20) response bit.
 
-// Stimulus categories: which object types are phobias, targets, food, home
-// From &316b (10 entries each)
-static constexpr uint8_t npc_phobia_table[] = {
-    0x37, 0x12, 0x00, 0x13, 0x11, 0x00, 0x0e, 0x37, 0x13, 0x00
+namespace {
+
+// 6502 NPC stimuli categories (&316b comment).
+constexpr int kCatRedMagentaImp = 0;
+constexpr int kCatRedYellowImp  = 1;
+constexpr int kCatBlueCyanImp   = 2;
+constexpr int kCatCyanYellowImp = 3;
+constexpr int kCatRedCyanImp    = 4;
+constexpr int kCatRollingRobot  = 5;
+constexpr int kCatFluffy        = 6;
+constexpr int kCatChatter       = 7;
+constexpr int kCatGreenSlime    = 8;
+constexpr int kCatRedFrogman    = 9;
+
+// &316b npc_stimuli_types_phobia_table. Bit 7 set ⇒ also fear the player.
+constexpr uint8_t kPhobia[10] = {
+    0x81, 0x81, 0xba, 0xcd, 0x81, 0xa9, 0x37, 0x37, 0x8a, 0x0f
 };
-static constexpr uint8_t npc_target_table[] = {
-    0x00, 0x11, 0x00, 0x0a, 0x10, 0x00, 0x10, 0x00, 0x0f, 0x00
+// &3175 npc_stimuli_types_target_table. Object types this NPC chases.
+// Values ≥ 0x80 are OBJECT_RANGE_* categories (e.g. 0x86 = flying
+// enemies); the 6502's find_object resolves these via &2db0
+// get_range_for_object_type_A. We don't yet model ranges, so any
+// target byte ≥ 0x80 effectively contributes nothing on this side —
+// the NPC won't flag a range-target match. Direct primary types
+// (0x29 imp, 0x55 boulder, 0x37 fireball, 0x0f worm) work normally.
+constexpr uint8_t kTarget[10] = {
+    0x29, 0x29, 0x55, 0x37, 0x86, 0x86, 0x86, 0x86, 0x86, 0x0f
 };
-static constexpr uint8_t npc_food_table[] = {
-    0x4b, 0x00, 0x00, 0x58, 0x00, 0x00, 0x00, 0x4b, 0x00, 0x00
+// &317f npc_stimuli_types_food_table — touched-and-absorbed type.
+constexpr uint8_t kFood[10] = {
+    0x11, 0x2f, 0x10, 0x34, 0x30, 0x35, 0x34, 0x58, 0x58, 0x0f
 };
-static constexpr uint8_t npc_home_table[] = {
-    0x0a, 0x0a, 0x00, 0x0a, 0x04, 0x00, 0x04, 0x0a, 0x0a, 0x00
+// &3189 npc_stimuli_types_home_table. Same encoding as phobia: bit 7
+// set ⇒ also count the player as home; type 0 = player itself.
+constexpr uint8_t kHome[10] = {
+    0x40, 0x40, 0x40, 0x40, 0x40, 0x88, 0x00, 0x00, 0x37, 0x3a
+};
+// &3193 npc_stimuli_types_responses_table — bit set ⇒ stimulus is
+// "good" (mood +); bit clear ⇒ "bad" (mood −).
+constexpr uint8_t kResponse[10] = {
+    0xcc, 0xf6, 0x8c, 0x72, 0xf2, 0x76, 0x88, 0xa4, 0x1a, 0x0e
 };
 
-// Response bits: determines whether each stimulus improves or worsens mood
-// Bit mapping: 7=time, 6=flood, 5=damage, 4=explode, 3=eating, 2=player, 1=phobia, 0=target
-static constexpr uint8_t npc_response_table[] = {
-    0x36, 0x55, 0x00, 0x0e, 0x34, 0x00, 0x24, 0x26, 0x1a, 0x00
-};
+// 6502 ranges (object_type → category). Returns -1 for object types
+// outside any stimuli range.
+int category_for_type(uint8_t t) {
+    switch (t) {
+        case 0x29: return kCatRedMagentaImp;
+        case 0x2a: return kCatRedYellowImp;
+        case 0x2b: return kCatBlueCyanImp;
+        case 0x2c: return kCatCyanYellowImp;
+        case 0x2d: return kCatRedCyanImp;
+        case 0x1c: case 0x1d: case 0x1e: return kCatRollingRobot;
+        case 0x03: return kCatFluffy;
+        case 0x01: case 0x38: return kCatChatter;
+        case 0x0a: return kCatGreenSlime;
+        case 0x06: return kCatRedFrogman;
+        default:   return -1;
+    }
+}
+
+// Reduced port of find_a_target (&3bfe → &3c2a find_object). Walks
+// primaries within `range_tiles` Chebyshev distance and returns the
+// nearest match. `phobia_byte` low 7 = primary type; bit 7 = include
+// player. `target_byte` is a secondary primary type — values ≥ 0x80
+// would be range categories the 6502 resolves via get_range_for_object_
+// type_A; we skip those (returns -1 for type checks). Outputs whether
+// the chosen match was via the phobia table (or player), so the caller
+// can decide which stim bits to set. Returns slot or -1.
+int find_target(const Object& npc, ObjectManager& mgr, int self_slot,
+                uint8_t phobia_byte, uint8_t target_byte, int range_tiles,
+                bool& matched_player_out, bool& matched_primary_out) {
+    uint8_t phobia_type = phobia_byte & 0x7f;
+    bool include_player_phobia = (phobia_byte & 0x80) != 0;
+    bool target_is_range = (target_byte & 0x80) != 0;
+    matched_player_out = false;
+    matched_primary_out = false;
+    int best_slot = -1;
+    int best_dist = 0x7fff;
+    bool best_primary = false, best_player = false;
+    for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+        if (i == self_slot) continue;
+        const Object& other = mgr.object(i);
+        if (!other.is_active()) continue;
+        uint8_t t = static_cast<uint8_t>(other.type);
+        bool is_player = (t == 0);
+        bool primary_match = (is_player && (include_player_phobia || phobia_type == 0)) ||
+                             (!is_player && t == phobia_type);
+        bool target_match = !target_is_range && t == target_byte && !is_player;
+        if (!primary_match && !target_match) continue;
+        int8_t dx = static_cast<int8_t>(npc.x.whole - other.x.whole);
+        int8_t dy = static_cast<int8_t>(npc.y.whole - other.y.whole);
+        int adx = dx < 0 ? -dx : dx;
+        int ady = dy < 0 ? -dy : dy;
+        if (adx > range_tiles || ady > range_tiles) continue;
+        int d = adx > ady ? adx : ady;
+        if (d < best_dist) {
+            best_dist = d;
+            best_slot = i;
+            best_primary = primary_match;
+            best_player  = is_player && primary_match;
+        }
+    }
+    matched_player_out  = best_player;
+    matched_primary_out = best_primary;
+    return best_slot;
+}
+
+} // namespace
 
 namespace Mood {
 
@@ -36,70 +151,155 @@ void set_mood(Object& npc, uint8_t mood) {
     npc.state = (npc.state & ~NPCMood::MASK) | (mood & NPCMood::MASK);
 }
 
-void update_mood(Object& npc, UpdateContext& ctx) {
-    // Only update every 64 frames
-    if (!ctx.every_sixty_four_frames) return;
+bool has_category(ObjectType type) {
+    return category_for_type(static_cast<uint8_t>(type)) >= 0;
+}
 
-    // Determine NPC's stimulus category from type range
-    uint8_t type_idx = static_cast<uint8_t>(npc.type);
-    int category = 0;
-    // Use same range lookup as energy system
-    static constexpr uint8_t ranges[] = {0x00, 0x04, 0x06, 0x0f, 0x12, 0x1c, 0x22, 0x32, 0x38, 0x4a};
-    for (int i = 9; i >= 0; i--) {
-        if (type_idx >= ranges[i]) {
-            category = i;
-            break;
+void update_mood(Object& npc, UpdateContext& ctx) {
+    int cat = category_for_type(static_cast<uint8_t>(npc.type));
+    if (cat < 0) return;
+
+    // 6502 &1a8d-&1a97 builds a per-object frame counter:
+    //   ((slot << 4) | slot) + global_fc, mod 256.
+    // The every-64-frames branch and the time stim both gate on this,
+    // so different slots fire on different global frames. Using
+    // ctx.frame_counter directly synced every NPC, masking the
+    // 6502's natural staggering.
+    uint8_t s = static_cast<uint8_t>(ctx.this_slot);
+    uint8_t per_obj_fc = static_cast<uint8_t>(
+        ((s << 4) | (s & 0x0f)) + ctx.frame_counter);
+
+    uint8_t stimuli = 0;
+
+    // &27cf-&2810 every-64-frames target search. Two phases, mirroring
+    // the 6502 control flow:
+    //
+    //   (1) phobia/target probe (&27d5-&27e5). find_a_target scans for
+    //       phobia OR target objects; on hit, stamp target_and_flags +
+    //       DIRECTNESS_ONE and record stimuli bits (phobia / player).
+    //
+    //   (2) home re-find (&27e9-&2802). MINUS_TWO mood imps ALWAYS run
+    //       the home_table find_a_target — even with no phobia hit —
+    //       which is how a fed angry imp normally retargets the bush.
+    //       When a phobia or player WAS detected, AVOID is applied
+    //       first and a 50% rng roll skips the home re-find so the
+    //       imp keeps fleeing instead of swinging back to home.
+    //
+    // Earlier port had the home block nested inside `if (hit >= 0)`,
+    // which left fed imps with stale target_and_flags whenever no
+    // phobia/target was visible — hence the "doesn't reliably head
+    // home" behaviour.
+    if ((per_obj_fc & 0x3f) == 0) {
+        bool was_player = false, was_primary = false;
+        int hit = find_target(npc, ctx.mgr, ctx.this_slot,
+                              kPhobia[cat], kTarget[cat], 16,
+                              was_player, was_primary);
+        if (hit >= 0) {
+            // &3c03-&3c15 find_a_target's success path: store slot in
+            // target_object and write DIRECTNESS_ONE to flags. Wipes
+            // any old AVOID bit.
+            npc.target_and_flags = static_cast<uint8_t>(
+                (hit & TargetFlags::OBJECT_MASK) | TargetFlags::DIRECTNESS_ONE);
+
+            if (was_primary) stimuli |= 0x02; // phobia bit (port mask)
+            if (was_player)  stimuli |= 0x04; // player bit (port mask)
+        }
+
+        // &27e9-&2802: MINUS_TWO branch.
+        if (get_mood(npc) == NPCMood::MINUS_TWO) {
+            bool stim_present = (stimuli & 0x06) != 0;  // phobia or player
+            bool skip_home = false;
+            if (stim_present) {
+                // &27f3 avoid_target — flag the existing target so the
+                // walker flees instead of approaches.
+                npc.target_and_flags |= TargetFlags::AVOID;
+                // &27f6-&27f9: 50% rng skip on the home re-find when
+                // we're already fleeing something.
+                skip_home = (ctx.rng.next() & 0x80) != 0;
+            }
+            if (!skip_home) {
+                bool _player = false, _primary = false;
+                int home_slot = find_target(npc, ctx.mgr, ctx.this_slot,
+                                            kHome[cat], 0xff, 16,
+                                            _player, _primary);
+                if (home_slot >= 0) {
+                    // find_a_target's success path overwrites flags —
+                    // AVOID gets cleared because home is something we
+                    // approach, not flee.
+                    npc.target_and_flags = static_cast<uint8_t>(
+                        (home_slot & TargetFlags::OBJECT_MASK) |
+                        TargetFlags::DIRECTNESS_ONE);
+                }
+            }
         }
     }
 
-    uint8_t response = npc_response_table[category];
-    if (response == 0) return; // No mood system for this category
-
-    uint8_t current_mood = get_mood(npc);
-
-    // Check stimuli and adjust mood
-    uint8_t stimuli_present = 0;
-
-    // Check if player is nearby (within ~8 tiles)
-    const Object& player = ctx.mgr.player();
-    int8_t dx = static_cast<int8_t>(npc.x.whole - player.x.whole);
-    int8_t dy = static_cast<int8_t>(npc.y.whole - player.y.whole);
-    if (std::abs(dx) < 8 && std::abs(dy) < 8) {
-        stimuli_present |= 0x04; // Player nearby
+    // &2812-&281c eating: touched object's type matches the variant's
+    // food. Mark the food for removal so it's not re-detected next
+    // frame, matching consider_absorbing_object_touched at &3bef.
+    if (npc.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
+        Object& touched = ctx.mgr.object(npc.touching);
+        if (touched.is_active() &&
+            static_cast<uint8_t>(touched.type) == kFood[cat]) {
+            touched.flags |= ObjectFlags::PENDING_REMOVAL;
+            stimuli |= 0x08;
+        }
     }
 
-    // Check if recently damaged (top bit of state used as damage flag)
-    if (npc.state & 0x08) {
-        stimuli_present |= 0x20; // Damage stimulus
-        npc.state &= ~0x08; // Clear damage flag
+    // &2827-&282a damage: WAS_DAMAGED set by damage_object when ≥8
+    // damage landed this frame. Clear after reading so the bit is a
+    // one-shot stimulus, matching the 6502's "rolled out" treatment.
+    // Damage maps to mask 0x10 (pairs with response bit 4).
+    if (npc.flags & ObjectFlags::WAS_DAMAGED) {
+        stimuli |= 0x10;
+        npc.flags &= ~ObjectFlags::WAS_DAMAGED;
     }
 
-    // Random stimulus (1 in 2 chance)
-    if (ctx.rng.next() & 0x01) {
-        stimuli_present |= 0x01; // Random target
+    // &282b-&2833 explode: explosion_timer is INC'd toward 0 from -50.
+    // The frame it equals -49 (0xcf) is "one tick after start". Maps to
+    // mask 0x20 (pairs with response bit 5).
+    if (ctx.explosion_timer && *ctx.explosion_timer == static_cast<int8_t>(0xcf)) {
+        stimuli |= 0x20;
     }
 
-    // Time stimulus (every 256 frames)
-    if ((ctx.frame_counter & 0xFF) == 0) {
-        stimuli_present |= 0x80; // Time
+    // &2834-&2839 flood: bit 7 of flooding_state set during endgame.
+    if (ctx.flooding_state && (*ctx.flooding_state & 0x80)) {
+        stimuli |= 0x40;
     }
 
-    // For each active stimulus, check if it matches the response pattern
-    uint8_t positive_stimuli = stimuli_present & response;
-    uint8_t negative_stimuli = stimuli_present & ~response;
-
-    // Mood adjustment: positive stimuli increase mood, negative decrease
-    if (positive_stimuli && !negative_stimuli) {
-        // Improve mood (toward PLUS_ONE)
-        if (current_mood == NPCMood::MINUS_TWO) set_mood(npc, NPCMood::MINUS_ONE);
-        else if (current_mood == NPCMood::MINUS_ONE) set_mood(npc, NPCMood::ZERO);
-        else if (current_mood == NPCMood::ZERO) set_mood(npc, NPCMood::PLUS_ONE);
-    } else if (negative_stimuli && !positive_stimuli) {
-        // Worsen mood (toward MINUS_TWO)
-        if (current_mood == NPCMood::PLUS_ONE) set_mood(npc, NPCMood::ZERO);
-        else if (current_mood == NPCMood::ZERO) set_mood(npc, NPCMood::MINUS_ONE);
-        else if (current_mood == NPCMood::MINUS_ONE) set_mood(npc, NPCMood::MINUS_TWO);
+    // &283a-&283e time: every 256 frames (when per-object fc == 0xff).
+    // Per-object — see per_obj_fc construction above; all NPCs used to
+    // tick over together.
+    if (per_obj_fc == 0xff) {
+        stimuli |= 0x80;
     }
+
+    // &283f AND rnd_state+1 — 1-in-2 chance per stimulus bit.
+    stimuli &= ctx.rng.next();
+    if (stimuli == 0) return;
+
+    // &2843-&2854 response loop. For each set stimulus bit, look at
+    // the matching response bit: set ⇒ net+1, clear ⇒ net-1.
+    uint8_t response = kResponse[cat];
+    int net = 0;
+    for (int b = 1; b <= 7; b++) {
+        uint8_t mask = static_cast<uint8_t>(1u << b);
+        if (stimuli & mask) {
+            net += (response & mask) ? 1 : -1;
+        }
+    }
+    if (net == 0) return;
+
+    // &2856-&2864 apply mood delta. Sign matters, magnitude doesn't —
+    // PLUS_ONE delta (+0x40) for net positive, MINUS_ONE delta (0xc0
+    // = -0x40) for net negative. ADC into state with V-flag clamp:
+    // refuse the update if it would wrap past MINUS_TWO (0x80).
+    int delta = (net > 0) ? 0x40 : -0x40;
+    int s_signed = static_cast<int8_t>(npc.state);
+    int new_signed = s_signed + delta;
+    if (new_signed < -128 || new_signed > 127) return;
+    int new_s = static_cast<int>(npc.state) + delta;
+    npc.state = static_cast<uint8_t>(new_s & 0xff);
 }
 
 } // namespace Mood

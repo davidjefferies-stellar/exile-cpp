@@ -85,10 +85,14 @@ faithfully ported vs. partial vs. missing, with 6502 address ranges for
 each entry. The disk-load supervisor, copy protection, and demo mode are
 intentionally left out; everything else aims to match the disassembly.
 
-`docs/TERTIARY.md`, `docs/OBJECT_SPAWNING.md`, and
+`docs/TERTIARY.md` and `docs/TERTIARY_OBJECTS.md` (a complete
+column-table view of all 254 tertiary entries),
+`docs/OBJECT_SPAWNING.md`, and
 `docs/ANGLES_FROM_VELOCITIES.md` document specific subsystems where the
 6502's data layout / arithmetic semantics needed careful porting.
 `docs/INTRO_TRIAX.md` traces the non-scripted Triax / destinator opening
 beat through the per-frame update loop. `docs/COLLISION.md` covers the
 tile and object collision system, including the 22.5°/45° slope
-patterns.
+patterns. `docs/RENDERING.md` walks the tile-byte → atlas sprite →
+palette → pixels pipeline, including the procedural palette codes for
+stone strata, bushes, leaves and mushrooms.

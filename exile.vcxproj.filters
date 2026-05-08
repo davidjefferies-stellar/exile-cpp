@@ -81,6 +81,8 @@
     <ClCompile Include="src\rendering\sprite_data.cpp">          <Filter>src\rendering</Filter> </ClCompile>
     <ClCompile Include="src\rendering\palette.cpp">              <Filter>src\rendering</Filter> </ClCompile>
     <ClCompile Include="src\rendering\pixel_renderer.cpp">       <Filter>src\rendering</Filter> </ClCompile>
+    <ClCompile Include="src\rendering\pixel_renderer_debug.cpp"> <Filter>src\rendering</Filter> </ClCompile>
+    <ClCompile Include="src\rendering\fenster_impl.cpp">         <Filter>src\rendering</Filter> </ClCompile>
 
     <!-- src\particles\ -->
     <ClCompile Include="src\particles\particle_system.cpp">      <Filter>src\particles</Filter> </ClCompile>

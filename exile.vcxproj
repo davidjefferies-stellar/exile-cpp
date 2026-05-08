@@ -110,9 +110,12 @@
     <ClCompile Include="src\audio\audio.cpp" />
     <ClCompile Include="src\audio\fenster_audio_impl.c" />
     <ClCompile Include="src\behaviours\collectable.cpp" />
+    <ClCompile Include="src\behaviours\exile1_creatures.cpp" />
     <ClCompile Include="src\player\input.cpp" />
     <ClCompile Include="src\rendering\camera.cpp" />
     <ClCompile Include="src\rendering\pixel_renderer.cpp" />
+    <ClCompile Include="src\rendering\pixel_renderer_debug.cpp" />
+    <ClCompile Include="src\rendering\fenster_impl.cpp" />
     <ClCompile Include="src\rendering\sprite_atlas.cpp" />
     <ClCompile Include="src\rendering\sprite_data.cpp" />
     <ClCompile Include="src\rendering\palette.cpp" />
@@ -165,6 +168,7 @@
     <ClInclude Include="src\behaviours\robot.h" />
     <ClInclude Include="src\behaviours\environment.h" />
     <ClInclude Include="src\behaviours\collectable.h" />
+    <ClInclude Include="src\behaviours\exile1_creatures.h" />
     <ClInclude Include="src\audio\audio.h" />
     <ClInclude Include="src\player\input.h" />
     <ClInclude Include="src\game\game.h" />

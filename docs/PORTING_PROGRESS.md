@@ -134,7 +134,7 @@ Addresses throughout are taken from the disassembly's `;` labels.
 | `consider_setting_npc_jumping`, `set_npc_jumping_with_speed` | **Missing** | &3a65-&3a7a | Frogman jumping open-coded. |
 | `update_walking_state` (climbing, state bookkeeping) | **Missing** | &3a4e-&3a63 | |
 | `find_object`, `find_nearest_object`, `count_objects_of_type_A` | Partial | &3c21-&3c74 | `count_objects_of_type_A` inlined where needed; nearest-object probability table at `&3c33` not used. |
-| `consider_absorbing_object_touched` | Partial | &3bf4 | Each behaviour inlines a rudimentary version; hive / big-fish / nest variants vary in fidelity. |
+| `consider_absorbing_object_touched` | Partial | &3bf4 | `NPC::consider_absorbing_object_touched` shared by bird and big fish (PENDING_REMOVAL + low beep, no &3bd5 angle gate). Hive / nest variants still inline their own version. |
 | `move_towards_target` + `apply_weighted_acceleration_to_this_object_velocity` | Partial | &3192-&31fc | `NPC::move_towards_target_with_probability` reduces the vector math to axis-nudges. |
 | `calculate_angle_from_vector` | Done | &22d4-&22fb | In `player_sprite.cpp` and `projectile.cpp`. |
 | `calculate_firing_vector_from_angle` / diamond trig | Done | &2357-&239c | `diamond_vector` in `weapon.cpp`, `NPC::vector_from_magnitude_and_angle` in `npc_helpers.cpp`. |
@@ -155,7 +155,7 @@ object types via `behavior_dispatch.cpp`. Quality varies per routine:
 | Frogmen (red / green / invisible) | Partial | &4463-&4475 | Jump cadence / damage present; NPC walking, water-facing tile collision (`set_npc_facing_tile_collision` &2562) **missing**. Invisible-frogman visibility flag **missing**. |
 | Slimes (red / green / yellow + conversions) | Partial | &422a-&47d8 | Touch damage works; mushroom-immunity, coronium-crystal absorption → yellow slime conversion **missing**. |
 | Nests (dense, sucking) | Partial | &4789, &4ded | Sucking pulls via linear scan; `sucking_nests_trigger/power/palette_direction` tables at `&4e89` **unused** (power ladders simplified). |
-| Big fish | Partial | &4761 | Targets piranha + swim drift; no `find_target_for_piranha_or_wasp` chain. |
+| Big fish | Done | &4761 | Eats touched piranha (PENDING_REMOVAL + low beep), every-16f nearest-piranha target acquisition, NPC path / move-towards-target with 2× speed when DIRECTNESS_TWO bit set. Underwater gate uses `Water::is_underwater` instead of the 6502's per-object waterline (intentional port divergence). |
 | Worms / maggots (update, animate, emerge logic) | Partial | &420a, &4e52-&4ebe | Simple seek, no burrowing. Emerge-from-earth event gating **missing**. |
 | Piranha / Wasp | Done | &4f21-&4f9b | Faithful port including sign convention and aggressiveness state. Home-hive fallback targeting TODO. |
 | Birds (green / white / red-magenta / invisible) | Done | &4621-&4672 | Per-type damage/energy tables, whistle-two gate, invisibility-on-damage all ported. |

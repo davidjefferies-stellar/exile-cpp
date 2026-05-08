@@ -110,10 +110,10 @@ void Game::update_objects() {
             HeldObject::update_position(obj, player);
             Fixed8_8 new_held_x = obj.x;
             Fixed8_8 new_held_y = obj.y;
-            int hw = (obj.sprite <= 0x7c)
+            int hw = (obj.sprite <= 0x80)
                 ? (sprite_atlas[obj.sprite].w > 0
                     ? (sprite_atlas[obj.sprite].w - 1) * 16 : 0) : 0;
-            int hh = (obj.sprite <= 0x7c)
+            int hh = (obj.sprite <= 0x80)
                 ? (sprite_atlas[obj.sprite].h > 0
                     ? (sprite_atlas[obj.sprite].h - 1) * 8 : 0) : 0;
             // Axis-separated revert. The 6502's check_for_collisions reverts
@@ -203,7 +203,14 @@ void Game::update_objects() {
                               player_mushroom_timers_,
                               player_keys_collected_,
                               &particles_,
-                              held_object_slot_, player_object_fired_, slot};
+                              held_object_slot_, player_object_fired_, slot,
+                              imp_gifts_remaining_,
+                              &background_flash_cooldown_,
+                              renderer_ && renderer_->damage_overlay_enabled()
+                                  ? &damage_events_ : nullptr,
+                              &explosion_timer_,
+                              &flooding_state_,
+                              &floating_labels_};
             update_fn(obj, uctx);
         }
 
@@ -216,7 +223,7 @@ void Game::update_objects() {
 
         // Step 12: Handle explosions
         if (obj.energy == 0) {
-            object_mgr_.create_object_at(ObjectType::EXPLOSION, 0, obj);
+            object_mgr_.create_object_centered(ObjectType::EXPLOSION, 0, obj);
             // &40db-&40de play_sound_on_channel_zero (priority): the
             // generic "object exploded" boom. Wired here, the central
             // energy-hits-zero hook, so every type of explosion picks
@@ -302,8 +309,16 @@ void Game::update_objects() {
             // touch in update_collectable, after which physics resumes.
             bool pin_undisturbed = (obj.energy & 0x80) != 0 &&
                                     static_cast<uint8_t>(obj.type) >= 0x4a;
+            // BUSH pins unconditionally. &4ba9 update_bush is just JSR
+            // set_this_object_velocities_to_zero + JMP set_this_object_
+            // position_from_previous_position — the bush freezes in
+            // place every frame regardless of touch. Bushes are weight 6
+            // (flags 0xd6 & 0x07), so they fall outside fully_static; pin
+            // them explicitly here or a wasp/projectile leaves residual
+            // velocity that gravity then integrates.
+            bool pin_bush = obj.type == ObjectType::BUSH;
 
-            if (fully_static || pin_undisturbed) {
+            if (fully_static || pin_undisturbed || pin_bush) {
                 obj.velocity_x = 0;
                 obj.velocity_y = 0;
                 // Static objects still need to notice when something is
@@ -339,11 +354,11 @@ void Game::update_objects() {
                 // in its height table (see &5e89 / the port at
                 // tertiary_spawn.cpp:186); derive the same here so the
                 // probe matches what the renderer actually draws.
-                int obj_h_units = (obj.sprite <= 0x7c)
+                int obj_h_units = (obj.sprite <= 0x80)
                     ? (sprite_atlas[obj.sprite].h > 0
                         ? (sprite_atlas[obj.sprite].h - 1) * 8 : 0)
                     : 0;
-                int obj_w_units = (obj.sprite <= 0x7c)
+                int obj_w_units = (obj.sprite <= 0x80)
                     ? (sprite_atlas[obj.sprite].w > 0
                         ? (sprite_atlas[obj.sprite].w - 1) * 16 : 0)
                     : 0;
@@ -423,36 +438,85 @@ void Game::update_objects() {
                 obj.tile_collision = false;
                 obj.pre_collision_magnitude = 0;
 
-                // "Already inside solid" gate. The 6502 has an explicit
-                // push-out routine at &306c apply_tile_collision_to_position_
-                // and_velocity — when collision detection finds a partial
-                // overlap with tile geometry, it nudges the object -2 frac in
-                // the unobstructed direction (`Always try to move out of
-                // obstruction` at &308a) so a sprite that started or grew
-                // into solid space can walk back out.
+                // Per-axis "escape" relaxation — partial port of &306c
+                // apply_tile_collision_to_position_and_velocity. Allow
+                // the move only if the start position has its OPPOSITE
+                // side blocked (motion in the escape direction).
+                auto side_corners = [&](uint8_t tx, uint8_t tx_frac,
+                                        uint8_t ty, uint8_t ty_frac,
+                                        bool& top, bool& bot,
+                                        bool& left, bool& right) {
+                    int right_abs = static_cast<int>(tx) * 256 +
+                                    static_cast<int>(tx_frac) + obj_w_units;
+                    uint8_t r_tx   = static_cast<uint8_t>((right_abs >> 8) & 0xff);
+                    uint8_t r_frac = static_cast<uint8_t>(right_abs & 0xff);
+                    int bot_abs   = static_cast<int>(ty) * 256 +
+                                    static_cast<int>(ty_frac) + obj_h_units;
+                    uint8_t b_ty   = static_cast<uint8_t>((bot_abs >> 8) & 0xff);
+                    uint8_t b_frac = static_cast<uint8_t>(bot_abs & 0xff);
+                    bool tl = probe_tile(tx,   ty,   tx_frac, ty_frac);
+                    bool tr = probe_tile(r_tx, ty,   r_frac,  ty_frac);
+                    bool bl = probe_tile(tx,   b_ty, tx_frac, b_frac);
+                    bool br = probe_tile(r_tx, b_ty, r_frac,  b_frac);
+                    top   = tl || tr;
+                    bot   = bl || br;
+                    left  = tl || bl;
+                    right = tr || br;
+                };
+                bool start_top = false, start_bot = false;
+                bool start_left = false, start_right = false;
+                side_corners(obj.x.whole, obj.x.fraction,
+                             obj.y.whole, obj.y.fraction,
+                             start_top, start_bot, start_left, start_right);
+
+                // Object-object overlap at start relaxes for newly-spawned
+                // bullets and for intangible objects (explosions, lightning,
+                // transporter beams, fireballs). The relax is needed because
+                // a bullet's spawn position can overlap its firer's AABB on
+                // frame 1 — without an escape, the next frame's revert
+                // would pin it inside the firer.
                 //
-                // We don't port the full push-out yet, but we still need to
-                // avoid the failure mode it prevents: an object that spawns
-                // overlapping a tile (Triax in the ship-roof block at game
-                // start) would otherwise get reverted to the same overlap
-                // every frame, pinning it forever. Detect "already inside"
-                // up front, and if the move doesn't make things worse, allow
-                // it — gravity (or any constant force) then walks the
-                // sprite out of the obstruction. We only relax the X / Y
-                // revert in that case; objects in clear space still
-                // collide normally.
-                bool start_blocked =
-                    any_tile_solid(obj.x.whole, obj.x.fraction,
-                                   obj.y.whole, obj.y.fraction) ||
-                    Collision::overlaps_solid_object(obj, slot, all_primaries);
+                // Tightened: previously this fired for ANY established
+                // primary, which let imps that ended up inside a closed
+                // door's AABB (e.g. door closed on them, or tunnelling on
+                // a prior frame) walk straight out the other side. Restrict
+                // to NEWLY_CREATED + INTANGIBLE so an imp that somehow gets
+                // inside a door is stuck there (acceptable; a stuck imp is
+                // far less visible than one phasing through a locked door).
+                bool start_obj_overlap = false;
+                if ((obj.flags & ObjectFlags::NEWLY_CREATED) ||
+                    (tflags & ObjectTypeFlags::INTANGIBLE)) {
+                    start_obj_overlap =
+                        Collision::overlaps_solid_object(obj, slot, all_primaries);
+                }
                 {
                     Fixed8_8 old_x = obj.x;
                     obj.x.add_velocity(obj.velocity_x);
-                    bool blocked =
+                    bool tile_blocked =
                         any_tile_solid(obj.x.whole, obj.x.fraction,
-                                       obj.y.whole, obj.y.fraction) ||
+                                       obj.y.whole, obj.y.fraction);
+                    bool obj_blocked =
                         Collision::overlaps_solid_object(obj, slot, all_primaries);
-                    if (blocked && !start_blocked) {
+                    // Object-overlap relax only escapes another object's AABB,
+                    // never punches through tiles — otherwise a player pushing
+                    // a resting collectable would walk it through walls/floor.
+                    //
+                    // Side-relax (clauses 2/3) is tile-pattern-only and was
+                    // letting fed imps phase through closed locked doors:
+                    // substitute_door_for_obstruction returns STONE_SLOPE_78
+                    // (solid only in the left tile-quarter) so an imp whose
+                    // left edge sat in the solid quarter and right edge in
+                    // the empty band registered start_left && !start_right,
+                    // and rightward motion got relaxed despite the door
+                    // primary's full-tile AABB. Gate the side-relax on
+                    // !obj_blocked so heavier-primary collisions (door,
+                    // cannon, hive) outrank the tile-pattern escape; the
+                    // bullet-escape clause 1 stays unconditional because
+                    // bullets must leave their firer's AABB on frame 1.
+                    bool relax_x = (start_obj_overlap && !tile_blocked) ||
+                        (obj.velocity_x > 0 && start_left  && !start_right && !obj_blocked) ||
+                        (obj.velocity_x < 0 && start_right && !start_left  && !obj_blocked);
+                    if ((tile_blocked || obj_blocked) && !relax_x) {
                         // Port of &30b7: capture the max-axis velocity
                         // BEFORE the reflect/damp so update_full_flask and
                         // friends can tell a hard collision from a scrape.
@@ -468,11 +532,21 @@ void Game::update_objects() {
                 {
                     Fixed8_8 old_y = obj.y;
                     obj.y.add_velocity(obj.velocity_y);
-                    bool blocked =
+                    bool tile_blocked =
                         any_tile_solid(obj.x.whole, obj.x.fraction,
-                                       obj.y.whole, obj.y.fraction) ||
+                                       obj.y.whole, obj.y.fraction);
+                    bool obj_blocked =
                         Collision::overlaps_solid_object(obj, slot, all_primaries);
-                    if (blocked && !start_blocked) {
+                    // Same side-relax gating as the X-axis above: a heavier
+                    // primary (closed horizontal door, etc.) must outrank
+                    // the tile-pattern escape. Without !obj_blocked here, a
+                    // jumping imp whose top edge clipped the door tile's
+                    // sub-tile-thin SPACESHIP_WALL_HORIZONTAL_QUARTER pattern
+                    // could escape upward through the door's primary AABB.
+                    bool relax_y = (start_obj_overlap && !tile_blocked) ||
+                        (obj.velocity_y > 0 && start_top && !start_bot && !obj_blocked) ||
+                        (obj.velocity_y < 0 && start_bot && !start_top && !obj_blocked);
+                    if ((tile_blocked || obj_blocked) && !relax_y) {
                         uint8_t pre = static_cast<uint8_t>(std::max(
                             std::abs(static_cast<int>(obj.velocity_x)),
                             std::abs(static_cast<int>(obj.velocity_y))));
@@ -504,7 +578,8 @@ void Game::update_objects() {
                 }
 
                 // Apply water effects (buoyancy + damping)
-                Water::apply_water_effects(landscape_, obj, obj.weight());
+                Water::apply_water_effects(landscape_, obj, obj.weight(),
+                                            every_four_frames_);
 
                 // Tile-based wind / water-current (port of &3f18 / &3f41 /
                 // &3fa3). Pushes the object toward the tile's wind/flow

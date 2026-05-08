@@ -123,6 +123,22 @@ void Game::update_player_sprite(int8_t accel_x, int8_t accel_y) {
     Object& player = object_mgr_.player();
     bool supported = (player.flags & ObjectFlags::SUPPORTED) != 0;
 
+    // 6502 &38ec-&38fa palette: 0x33 protected, 0x3e unprotected.
+    uint8_t base_palette = (weapon_energy_[5] > 0) ? 0x33 : 0x3e;
+
+    // Edge-trigger a damage strobe when energy ticks down (per-frame
+    // diff stands in for the 6502's WAS_DAMAGED flag).
+    if (player.energy < player_prev_energy_) player_damage_flash_ = 12;
+    player_prev_energy_ = player.energy;
+
+    // Strobe palette ^ 0x0b every other frame — 0x33 ↔ 0x38 (suit) /
+    // 0x3e ↔ 0x35 (no-suit / damage gyY tint).
+    if (player_damage_flash_ > 0) {
+        if (frame_counter_ & 1) base_palette ^= 0x0b;
+        player_damage_flash_--;
+    }
+    player.palette = base_palette;
+
     // Lying-down short-circuit. The 6502 forces the spacesuit
     // horizontal at &2c7f-&2c91 by snapping the angle accumulator to
     // the horizontal half-quadrant; we go straight to the HORIZONTAL

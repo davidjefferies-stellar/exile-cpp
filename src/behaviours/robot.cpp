@@ -139,18 +139,7 @@ void update_rolling_robot(Object& obj, UpdateContext& ctx) {
     // way was I going last". Continuing in that direction keeps a
     // stationary-post-bounce robot moving AWAY from whatever it just
     // hit, rather than immediately rolling back into it.
-    //
-    // Previous version had this ternary inverted — facing left mapped
-    // to velocity_x = +4 — which made the robot reverse direction every
-    // time its velocity decayed, producing the 1-to-5-frame tight
-    // oscillation visible in the lifecycle log (every flip alternates
-    // between vx=+4 and vx=-4). Matches the 6502's effect from
-    // update_walking_npc_and_check_for_obstacles (&3adf), which turns
-    // walking NPCs at obstacles only when they actually hit one.
-    //
-    // A fresh NEWLY_CREATED robot spawns with is_flipped_h == false, so
-    // its first step is +4 (roll right) — deterministic initial
-    // direction.
+
     if (obj.is_supported() && obj.velocity_x == 0) {
         obj.velocity_x = obj.is_flipped_h() ? -4 : 4;
     }
@@ -353,7 +342,7 @@ void update_clawed_robot(Object& obj, UpdateContext& ctx) {
     }
 
     // Melee damage on contact
-    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 15);
+    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 15, ctx.damage_events);
 }
 
 // &43E7 update_hovering_ball / &43EB update_invisible_hovering_ball.
@@ -393,7 +382,7 @@ void update_hovering_ball(Object& obj, UpdateContext& ctx) {
             other.type == ObjectType::HOVERING_BALL ||
             other.type == ObjectType::INVISIBLE_HOVERING_BALL;
         if (!other_is_ball) {
-            NPC::damage_player_if_touching(obj, ctx.mgr.player(), 3);
+            NPC::damage_player_if_touching(obj, ctx.mgr.player(), 3, ctx.damage_events);
             // Hovering-ball impact zap. Bytes follow JSR play_sound at &13fa.
             static constexpr uint8_t kSoundBallZap[4] = { 0x33, 0x03, 0x85, 0x02 };
             Audio::play_at(Audio::CH_ANY, kSoundBallZap, obj.x.whole, obj.y.whole);

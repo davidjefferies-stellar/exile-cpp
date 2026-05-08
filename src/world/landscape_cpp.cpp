@@ -205,7 +205,7 @@ static uint8_t handle_sloping_passage(uint8_t tile_x, uint8_t tile_y, uint8_t f1
 }
 
 // ============================================================================
-// The procedural-cavern algorithm proper. Called when get_tile_cpp's
+// The procedural-cavern algorithm proper. Called when bake_tile_cpp's
 // region check decides "not in the map overlay". Port of &17f6-&19a6.
 // ============================================================================
 static uint8_t get_tile_from_algorithm_cpp(uint8_t tile_x, uint8_t tile_y, uint8_t f1) {
@@ -332,10 +332,10 @@ static uint8_t get_tile_from_algorithm_cpp(uint8_t tile_x, uint8_t tile_y, uint8
 } // namespace
 
 // ============================================================================
-// get_tile_cpp — public entry point for the C++ rewrite. Same algorithm
-// as get_tile_pseudo_6502; switch via Landscape::set_use_cpp_impl.
+// bake_tile_cpp — entry point for the C++ rewrite at bake time. Same
+// algorithm as bake_tile_pseudo_6502; selected via set_use_cpp_impl.
 // ============================================================================
-uint8_t Landscape::get_tile_cpp(uint8_t tile_x, uint8_t tile_y) const {
+uint8_t Landscape::bake_tile_cpp(uint8_t tile_x, uint8_t tile_y) const {
     const uint8_t f1 = calc_f1(tile_x, tile_y);
 
     // ---- &179d: region selection ----
@@ -389,12 +389,19 @@ uint8_t Landscape::get_tile_cpp(uint8_t tile_x, uint8_t tile_y) const {
     // forms the low byte; (f4 & 0x03) + 0x4f + (carry) forms the high
     // byte. The 6502 indexes via LDA (&a4),Y with Y = 0xec, which lands
     // on 0x4fec — exactly the start of map_overlay_data[].
+    //
+    // Mark the cell as map-data-sourced. The 6502 sets &00 unconditionally
+    // on this branch — same here, regardless of whether the offset ends
+    // up valid (the fallback to kTileSpace below is a port-only safety;
+    // the 6502 trusts the address arithmetic).
+    last_bake_was_map_data_ = true;
     const uint8_t addr_low  = uint8_t((f4 << 3) ^ new_f2);
     const uint8_t carry5    = (f4 >> 5) & 1;
     const uint8_t addr_high = uint8_t((f4 & 0x03) + 0x4f + carry5);
 
     const unsigned effective = unsigned(addr_high) * 256u + addr_low + 0xec;
     const unsigned offset    = effective - 0x4fec;
+    last_bake_map_data_offset_ = static_cast<uint16_t>(offset);
     if (offset < 1024) return map_overlay_data[offset];
     return kTileSpace;
 }

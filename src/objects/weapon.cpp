@@ -50,15 +50,25 @@ void get_firing_velocity(uint8_t aim_angle, bool facing_left,
 
 int fire(ObjectManager& mgr, const Object& player,
          uint8_t weapon_type, uint8_t aim_angle,
-         uint16_t& weapon_energy) {
+         uint16_t& weapon_energy, int8_t& blaster_timer) {
     if (weapon_type > 5) return -1;
 
     int8_t bullet_type = weapon_bullet_type[weapon_type];
     if (bullet_type == 0) return -1;  // No bullet (jetpack, protection suit)
-    if (bullet_type < 0) return -1;   // Blaster discharge mode
 
     uint8_t cost = weapon_energy_cost[weapon_type];
     if (weapon_energy < static_cast<uint16_t>(cost)) return -1;
+
+    // &2d4a-&2d51 blaster path. weapons_bullet_type_table[3] is &fb (-5);
+    // STA player_blaster_timer arms the per-frame discharge in tick_blaster
+    // for 5 frames, then BMI skips the create-bullet path. The energy cost
+    // (255) is paid once here; the discharge sound is retriggered per
+    // tick by tick_blaster, matching &4a7d play_sound_on_channel_zero.
+    if (bullet_type < 0) {
+        weapon_energy -= cost;
+        blaster_timer = bullet_type;          // -5
+        return -1;
+    }
 
     ObjectType obj_type = static_cast<ObjectType>(bullet_type);
     int slot = mgr.create_object_at(obj_type, 4, player);
