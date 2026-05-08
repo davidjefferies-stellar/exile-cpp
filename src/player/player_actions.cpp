@@ -134,6 +134,23 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     // motionless; then the player crosses ~32 and abruptly slides at
     // ~max speed — the user's "sticks until enough force to fly".
     bool walking = (player.flags & ObjectFlags::SUPPORTED) && !flying;
+    if (debug_log_.is_open()) {
+        char line[160];
+        std::snprintf(line, sizeof(line),
+            "inp %u L=%d R=%d U=%d D=%d J=%d B=%d sup=%d fly=%d walk=%d "
+            "tcA=%02x v=(%+d,%+d)\n",
+            static_cast<unsigned>(frame_counter_),
+            inp.move_left ? 1 : 0, inp.move_right ? 1 : 0,
+            inp.move_up ? 1 : 0, inp.move_down ? 1 : 0,
+            inp.jetpack ? 1 : 0, inp.boost ? 1 : 0,
+            (player.flags & ObjectFlags::SUPPORTED) ? 1 : 0,
+            flying ? 1 : 0, walking ? 1 : 0,
+            player_tile_collision_angle_,
+            static_cast<int>(player.velocity_x),
+            static_cast<int>(player.velocity_y));
+        debug_log_ << line;
+        debug_log_.flush();
+    }
     if (walking) {
         // Port of &3b25 walk_along_flat_or_shallow_slope. The 6502 builds
         // an angle from (tcA + 0x10) for moving-right-vs-surface, or
@@ -272,7 +289,8 @@ void Game::apply_player_input(Object& player, const InputState& inp,
             player_object_fired_ = held_object_slot_;
         } else {
             Weapon::fire(object_mgr_, player, player_weapon_, player_aim_angle_,
-                         weapon_energy_[player_weapon_], blaster_timer_);
+                         weapon_energy_[player_weapon_], blaster_timer_,
+                         rng_);
         }
     }
 

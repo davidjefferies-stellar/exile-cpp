@@ -306,10 +306,38 @@ void Game::integrate_player_motion(Object& player,
     player.x.add_velocity(player.velocity_x);
     player.y.add_velocity(player.velocity_y);
 
+    int8_t pre_resolve_vx = player.velocity_x;
+    int8_t pre_resolve_vy = player.velocity_y;
+    Fixed8_8 pre_resolve_x = player.x;
+    Fixed8_8 pre_resolve_y = player.y;
+
     TileCollision::Result tcr = TileCollision::resolve(
         player, old_x.whole, old_x.fraction, old_y.whole, old_y.fraction,
         landscape_, object_mgr_, static_cast<int>(held_object_slot_));
     player.tile_collision = tcr.top_or_bottom_collision;
+
+    // Per-frame player-physics trace. Lines look like:
+    //   plr 1234 pos=(99,3b,80,a4) v=(+18,+01) sup=1 land=1 col=1
+    //   resolve: pre=(99,3b,80,a3) v=(+18,+01) post=(99,3b,80,a4) v=(+18,+00)
+    // Toggle off by commenting the block out — the file rolls each launch.
+    if (debug_log_.is_open()) {
+        bool was_supp = (player.flags & ObjectFlags::SUPPORTED) != 0;
+        char line[200];
+        std::snprintf(line, sizeof(line),
+            "plr %u pos=(%02x,%02x,%02x,%02x) v=(%+d,%+d) sup=%d land=%d "
+            "col=%d sur=%d  pre=(%02x,%02x,%02x,%02x) prev=(%+d,%+d) old=(%02x,%02x,%02x,%02x)\n",
+            static_cast<unsigned>(frame_counter_),
+            player.x.whole, player.x.fraction, player.y.whole, player.y.fraction,
+            static_cast<int>(player.velocity_x), static_cast<int>(player.velocity_y),
+            was_supp ? 1 : 0, tcr.landed_on_bottom ? 1 : 0,
+            tcr.collided ? 1 : 0, tcr.surrounded ? 1 : 0,
+            pre_resolve_x.whole, pre_resolve_x.fraction,
+            pre_resolve_y.whole, pre_resolve_y.fraction,
+            static_cast<int>(pre_resolve_vx), static_cast<int>(pre_resolve_vy),
+            old_x.whole, old_x.fraction, old_y.whole, old_y.fraction);
+        debug_log_ << line;
+        debug_log_.flush();
+    }
 
     bool object_supported = false;
 

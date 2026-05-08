@@ -9,23 +9,26 @@
 namespace Weapon {
 
 // Port of &2357 calculate_vector_from_magnitude_and_angle — the BBC's very
-// approximate "diamond" trig. Each quadrant is a piecewise-linear clamp to
-// magnitude 0x20, giving these anchor points (see the table in the
-// disassembly comment at ~&2172):
+// approximate "diamond" trig. The result satisfies |vx| + |vy| = magnitude:
+// points trace a rotated square instead of a circle, which is good enough
+// for pixel-space gameplay and avoids trig tables.
 //
-//   angle 0x00 (right) → ( 0x20,  0x00)
-//   angle 0x40 (down)  → ( 0x00,  0x20)
-//   angle 0x80 (left)  → (-0x20,  0x00)
-//   angle 0xc0 (up)    → ( 0x00, -0x20)
+// Anchor points for magnitude=M (the 6502's table at ~&2172 with M=0x20):
 //
-// The "diamond" name comes from the fact that |vx| + |vy| ≤ 0x40 — points
-// trace a rotated square rather than a circle. Good enough for pixel-space
-// gameplay and avoids trig tables entirely.
-static void diamond_vector(uint8_t angle, int8_t& vx, int8_t& vy) {
-    uint8_t quad = angle >> 6;       // 0..3
-    uint8_t rel  = angle & 0x3f;     // 0..0x3f within the quadrant
-    int a = std::min<int>(0x20, rel);
-    int b = std::min<int>(0x20, 0x40 - rel);
+//   angle 0x00 (right) → ( M,  0)
+//   angle 0x40 (down)  → ( 0,  M)
+//   angle 0x80 (left)  → (-M,  0)
+//   angle 0xc0 (up)    → ( 0, -M)
+//   angle 0x20 (45°)   → ( M,  M)   — diagonals are the |vx|+|vy| = M corner
+//
+// magnitude is taken in the int8_t-positive range (≤ 0x7f). Bullet fire
+// uses 0x40 + rng3, AIM particles use the legacy 0x20.
+static void diamond_vector(uint8_t angle, int magnitude,
+                           int8_t& vx, int8_t& vy) {
+    uint8_t quad = angle >> 6;        // 0..3
+    uint8_t rel  = angle & 0x3f;      // 0..0x3f within the quadrant
+    int a = std::min<int>(magnitude, rel);
+    int b = std::min<int>(magnitude, 0x40 - rel);
     switch (quad) {
         case 0: vx =  static_cast<int8_t>(b); vy =  static_cast<int8_t>(a); break; // right → down
         case 1: vx = -static_cast<int8_t>(a); vy =  static_cast<int8_t>(b); break; // down  → left
@@ -35,7 +38,7 @@ static void diamond_vector(uint8_t angle, int8_t& vx, int8_t& vy) {
 }
 
 void get_firing_velocity(uint8_t aim_angle, bool facing_left,
-                         int8_t& vel_x, int8_t& vel_y) {
+                         int8_t& vel_x, int8_t& vel_y, int magnitude) {
     // aim_angle is a signed -0x3f..+0x3f offset from the facing direction
     // (negative = up, positive = down). Fold facing into the 8-bit angle
     // used by diamond_vector: 0x00 = right, 0x80 = left. For left-facing we
@@ -45,12 +48,22 @@ void get_firing_velocity(uint8_t aim_angle, bool facing_left,
     uint8_t angle = facing_left
         ? static_cast<uint8_t>(0x80 - s)
         : static_cast<uint8_t>(s);
-    diamond_vector(angle, vel_x, vel_y);
+    diamond_vector(angle, magnitude, vel_x, vel_y);
+}
+
+// Saturating int8_t add — port of &327f prevent_overflow which clamps a
+// signed-overflowing ADC result to ±0x7f / 0x80.
+static int8_t sat_add_i8(int a, int b) {
+    int s = a + b;
+    if (s >  127) s =  127;
+    if (s < -128) s = -128;
+    return static_cast<int8_t>(s);
 }
 
 int fire(ObjectManager& mgr, const Object& player,
          uint8_t weapon_type, uint8_t aim_angle,
-         uint16_t& weapon_energy, int8_t& blaster_timer) {
+         uint16_t& weapon_energy, int8_t& blaster_timer,
+         Random& rng) {
     if (weapon_type > 5) return -1;
 
     int8_t bullet_type = weapon_bullet_type[weapon_type];
@@ -77,9 +90,34 @@ int fire(ObjectManager& mgr, const Object& player,
     weapon_energy -= cost;
 
     Object& bullet = mgr.object(slot);
+    // &3313-&3318: magnitude = 0x40 + (rng & 3). The +0..3 jitter keeps
+    // simultaneous shots from stacking pixel-perfectly, and 0x40 is ~2x
+    // the AIM-particle direction magnitude — bullets at 0x20 (the prior
+    // hard-coded value in diamond_vector) crawled at half the 6502's
+    // speed and exploded long before reaching distant targets.
+    int magnitude = 0x40 + static_cast<int>(rng.next() & 3);
     int8_t vel_x, vel_y;
-    get_firing_velocity(aim_angle, player.is_flipped_h(), vel_x, vel_y);
-    bullet.velocity_x = vel_x;
+    get_firing_velocity(aim_angle, player.is_flipped_h(),
+                        vel_x, vel_y, magnitude);
+
+    // &331d-&3340: fold the player's vx into the bullet's vx so a bullet
+    // fired while running inherits forward momentum; then cap |vx| at
+    // max(|player_vx| + 0x20, 0x50) when the result would otherwise be
+    // ≥ 0x50. vy has no equivalent fold-in in the 6502.
+    int8_t vx = sat_add_i8(vel_x, player.velocity_x);
+    int abs_vx = vx < 0 ? -vx : vx;
+    if (abs_vx >= 0x50) {
+        int abs_pvx = player.velocity_x < 0
+                        ? -static_cast<int>(player.velocity_x)
+                        :  static_cast<int>(player.velocity_x);
+        int cap = abs_pvx + 0x20;
+        if (cap < 0x50) cap = 0x50;
+        if (cap > 0x7f) cap = 0x7f;
+        abs_vx = cap;
+        vx = (vx < 0) ? static_cast<int8_t>(-abs_vx)
+                      : static_cast<int8_t>( abs_vx);
+    }
+    bullet.velocity_x = vx;
     bullet.velocity_y = vel_y;
 
     // Port of create_child_object (&33b8-&342f). Shared implementation
