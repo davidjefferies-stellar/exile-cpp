@@ -1,6 +1,7 @@
 #include "game/game.h"
 #include "objects/physics.h"
 #include "objects/collision.h"
+#include "objects/tile_collision.h"
 #include "objects/object_data.h"
 #include "objects/held_object.h"
 #include "behaviours/behavior_dispatch.h"
@@ -344,11 +345,67 @@ void Game::update_objects() {
                     obj.velocity_y--;
                 }
 
-                // Axis-separated integrate + undo-on-overlap. The 6502 sets
-                // &1b (tile_top_or_bottom_collision) when such an undo happens;
-                // we record it on obj.tile_collision for the next frame's
-                // updater (bullets use it to explode on impact).
+                // ====================================================
+                // Tile collision — TileCollision::resolve port of the
+                // 6502 &2f8c-&30df chain. Walks AABB edges, builds an
+                // obstruction vector, pushes the object out perpendicular
+                // to the surface, and reflects velocity at reduced angle.
+                // Same module the player uses; covers slopes, walls,
+                // floors, ceilings under one pipeline.
                 //
+                // Object-object overlap is checked AFTER as a hard revert
+                // so primaries don't pass through each other. The 6502
+                // handles object-object via mass-ratio velocity transfer
+                // at &2bb6 — already partially modelled by step 9b's
+                // touching probe and the player_motion equivalent; for
+                // primaries we keep the simpler hard-block until we have
+                // a faithful port of &2bb6.
+                // ====================================================
+                Fixed8_8 ou_old_x = obj.x;
+                Fixed8_8 ou_old_y = obj.y;
+                obj.x.add_velocity(obj.velocity_x);
+                obj.y.add_velocity(obj.velocity_y);
+
+                TileCollision::Result tcr = TileCollision::resolve(
+                    obj, ou_old_x.whole, ou_old_x.fraction,
+                    ou_old_y.whole, ou_old_y.fraction,
+                    landscape_, object_mgr_,
+                    /*skip_slot=*/-1);
+                obj.tile_collision = tcr.top_or_bottom_collision;
+                if (tcr.landed_on_bottom && obj.velocity_y >= 0) {
+                    obj.flags |= ObjectFlags::SUPPORTED;
+                }
+
+                // Object-object overlap revert. Newly-spawned bullets are
+                // exempt because their initial position deliberately
+                // overlaps the firer's AABB (port of &2afd-&2b0e).
+                {
+                    auto& all_primaries =
+                        reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
+                            object_mgr_.object(0));
+                    if (Collision::overlaps_solid_object(obj, slot, all_primaries) &&
+                        !(obj.flags & ObjectFlags::NEWLY_CREATED) &&
+                        !(tflags & ObjectTypeFlags::INTANGIBLE)) {
+                        obj.x = ou_old_x;
+                        obj.y = ou_old_y;
+                        obj.velocity_x = 0;
+                        obj.velocity_y = 0;
+                    }
+                }
+
+                // Water splash — port of &2f69-&2f82. Emit one upward
+                // PARTICLE_WATER if the object just dropped across the
+                // waterline this frame.
+                {
+                    uint8_t wy = Water::get_waterline_y(obj.x.whole);
+                    bool was_above = ou_old_y.whole < wy;
+                    bool now_at    = obj.y.whole >= wy;
+                    if (was_above && now_at && obj.velocity_y > 0) {
+                        particles_.emit_directed(ParticleType::WATER,
+                                                 0xc0, obj, rng_);
+                    }
+                }
+#if 0
                 // Sprite AABB in 16-bit fraction-unit space. The 6502
                 // stores (pixels-1)*16 in its width table and (rows-1)*8
                 // in its height table (see &5e89 / the port at
@@ -576,6 +633,7 @@ void Game::update_objects() {
                                                  0xc0, obj, rng_);
                     }
                 }
+#endif // legacy axis-separated revert disabled
 
                 // Apply water effects (buoyancy + damping)
                 Water::apply_water_effects(landscape_, obj, obj.weight(),
