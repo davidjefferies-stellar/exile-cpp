@@ -366,13 +366,21 @@ void Game::update_objects() {
                 obj.x.add_velocity(obj.velocity_x);
                 obj.y.add_velocity(obj.velocity_y);
 
+                // Clear SUPPORTED before the resolve; it'll be re-set
+                // below if landed_on_bottom comes back true. The 6502
+                // doesn't have a SUPPORTED flag per se — it derives the
+                // "grounded" state from tile_collision_y_flags bit 7
+                // (set when the collision was "more to the bottom" of
+                // the AABB, i.e. the object landed on something).
+                obj.flags &= ~ObjectFlags::SUPPORTED;
+
                 TileCollision::Result tcr = TileCollision::resolve(
                     obj, ou_old_x.whole, ou_old_x.fraction,
                     ou_old_y.whole, ou_old_y.fraction,
                     landscape_, object_mgr_,
                     /*skip_slot=*/-1);
                 obj.tile_collision = tcr.top_or_bottom_collision;
-                if (tcr.landed_on_bottom && obj.velocity_y >= 0) {
+                if (tcr.landed_on_bottom) {
                     obj.flags |= ObjectFlags::SUPPORTED;
                 }
 
@@ -646,17 +654,11 @@ void Game::update_objects() {
                 Wind::apply_tile_environment(obj, landscape_, object_mgr_,
                                              frame_counter_, rng_, particles_);
 
-                // SUPPORTED re-evaluation: probe the tile(s) one frac unit
-                // below the sprite's actual bottom edge, across both the
-                // left and right columns the sprite occupies. Previously
-                // this was `is_tile_solid(x, y+1)` which (a) used the
-                // coarse whole-tile-type check instead of the obstruction
-                // pattern, (b) sampled at `y+1` which lands INSIDE a
-                // multi-tile sprite rather than below it, and (c) only
-                // tested the x-origin column. All three meant robots
-                // with straddle-wide sprites or 2-tile heights had
-                // SUPPORTED cleared each frame — the rolling-robot
-                // "only roll when supported" branch then stalled.
+                // SUPPORTED is now driven by TileCollision::resolve's
+                // landed_on_bottom flag (see above). The legacy probe
+                // is kept under #if 0 for diff-readability and will be
+                // deleted with the rest of the legacy block.
+#if 0
                 {
                     int foot_abs = static_cast<int>(obj.y.whole) * 256 +
                                    static_cast<int>(obj.y.fraction) +
@@ -668,13 +670,6 @@ void Game::update_objects() {
                                      obj_w_units;
                     uint8_t r_tx   = static_cast<uint8_t>((right_abs >> 8) & 0xff);
                     uint8_t r_frac = static_cast<uint8_t>(right_abs & 0xff);
-
-                    // Always probe both columns — even when the sprite
-                    // fits in one tile column (r_tx == obj.x.whole), the
-                    // two probes are at different x_fracs within that
-                    // tile, and slopes/partial-tile patterns give
-                    // different obstruction answers. Same reasoning as
-                    // the 4-corner AABB probe above.
                     bool supported =
                         probe_tile(obj.x.whole, foot_ty,
                                    obj.x.fraction, foot_frac) ||
@@ -682,6 +677,7 @@ void Game::update_objects() {
                     if (supported) obj.flags |=  ObjectFlags::SUPPORTED;
                     else           obj.flags &= ~ObjectFlags::SUPPORTED;
                 }
+#endif
 
                 // Object-object collision: set touching field
                 auto obj_coll = Collision::check_object_collision(
