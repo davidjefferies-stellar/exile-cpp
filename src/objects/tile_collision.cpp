@@ -331,10 +331,20 @@ static void count_top_and_bottom(Ctx& ctx) {
         ctx.tile_x = static_cast<uint8_t>(ctx.tile_x + 1);
         section = 0;
 
-        // Refresh bottom tile data for new tile_x; if AABB crosses Y, refresh
-        // top tile too. Otherwise top reuses bottom (port of &2fef-&3007).
-        set_obstruction_data(ctx.landscape, ctx.mgr, ctx.tile_x,
-                             static_cast<uint8_t>(ctx.tile_y + 1),
+        // Refresh tile data for the new column. The 6502 keeps tile_y
+        // pointing at the BOTTOM tile when AABB crosses Y (it INC'd tile_y
+        // during the &2f1e setup), and at the TOP tile when not. We
+        // mirror that by computing the bottom-tile y here based on
+        // crosses_y rather than always assuming tile_y + 1 — without
+        // this, a sprite whose AABB sits inside one tile row (player
+        // standing on a floor with sprite_h < tile_h, etc.) probes
+        // the tile BELOW its actual row and reads obstruction that
+        // doesn't apply to its AABB. That manifests as the player
+        // being unable to walk left/right on flat ground.
+        uint8_t bot_ty = ctx.crosses_y
+            ? static_cast<uint8_t>(ctx.tile_y + 1)
+            : ctx.tile_y;
+        set_obstruction_data(ctx.landscape, ctx.mgr, ctx.tile_x, bot_ty,
                              ctx.bot_data);
         if (ctx.crosses_y) {
             set_obstruction_data(ctx.landscape, ctx.mgr, ctx.tile_x, ctx.tile_y,
