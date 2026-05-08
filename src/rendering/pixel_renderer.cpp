@@ -766,10 +766,17 @@ int PixelRenderer::get_key() {
     // (bit 0 = ctrl). The mod bitmask doesn't distinguish left vs
     // right ctrl, so when ctrl is flagged we probe the OS directly.
     //
-    // Indices 256..258 are synthetic sentinels for those three keys
-    // so the caller's polling loop can receive each independently in
-    // a single frame without colliding with a real keys[] entry.
-    while (key_scan_idx < 259) {
+    // Indices 256..262 are synthetic sentinels — modifiers (ctrl) and
+    // the four arrow keys, polled directly via GetAsyncKeyState on
+    // Windows. Fenster's WM_KEYDOWN handler maps lParam scancodes
+    // through a 128-entry table indexed by `HIWORD(lParam) & 0x1ff`,
+    // which Windows-style extended-scancode arrow keys (0x14B, 0x14D,
+    // 0x148, 0x150) overrun, so the f.keys[] entries for arrows never
+    // get set on Windows. Polling VK_LEFT etc. directly each frame
+    // sidesteps the table entirely. macOS and Linux populate the
+    // table correctly so the f.keys[19/20/17/18] path above still
+    // catches arrows on those platforms.
+    while (key_scan_idx < 263) {
         int i = key_scan_idx++;
 
         if (i < 256) {
@@ -791,16 +798,36 @@ int PixelRenderer::get_key() {
             continue;
         }
 
-        // Synthetic slots — poll OS for left/right ctrl separately.
+        // Synthetic slots — poll OS for keys fenster's table misses on Windows.
 #if defined(_WIN32)
-        if (i == 256) {
-            if (GetAsyncKeyState(VK_LCONTROL) & 0x8000)
-                return InputKey::CTRL_LEFT;
-        } else if (i == 257) {
-            if (GetAsyncKeyState(VK_RCONTROL) & 0x8000)
-                return InputKey::CTRL_RIGHT;
+        switch (i) {
+            case 256:
+                if (GetAsyncKeyState(VK_LCONTROL) & 0x8000)
+                    return InputKey::CTRL_LEFT;
+                break;
+            case 257:
+                if (GetAsyncKeyState(VK_RCONTROL) & 0x8000)
+                    return InputKey::CTRL_RIGHT;
+                break;
+            case 258:
+                if (GetAsyncKeyState(VK_LEFT)  & 0x8000)
+                    return InputKey::LEFT;
+                break;
+            case 259:
+                if (GetAsyncKeyState(VK_RIGHT) & 0x8000)
+                    return InputKey::RIGHT;
+                break;
+            case 260:
+                if (GetAsyncKeyState(VK_UP)    & 0x8000)
+                    return InputKey::UP;
+                break;
+            case 261:
+                if (GetAsyncKeyState(VK_DOWN)  & 0x8000)
+                    return InputKey::DOWN;
+                break;
+            // Slot 262 reserved.
+            default: break;
         }
-        // Slot 258 reserved for future modifier.
 #else
         if (i == 256 && (f.mod & 1)) return InputKey::CTRL_LEFT;
 #endif
