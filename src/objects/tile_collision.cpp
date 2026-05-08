@@ -473,23 +473,26 @@ static void apply_tile_collision(Ctx& ctx) {
         }
     }
 
-    // &30a0-&30a5: CPY #&02; BCC not_top_or_left; INY. Converts:
-    //   Y=0xff (top)    → 0     (down direction in original signedness)
-    //   Y=0    (right)  → 0
-    //   Y=1    (bottom) → 1
-    //   Y=2    (left)   → 3
-    // Then PHP captures the carry from CPY (set when Y >= 2 i.e. left/down).
-    bool sign_negative = (Y - 1) >= 2; // CPY result: carry=1 when Y >= 2.
-    // &30a6 invert_if_positive — make negative signed amount.
+    // &30a0-&30a5: CPY #&02; BCC not_top_or_left; INY. The CPY's carry
+    // captures the original direction:
+    //   Y=0 (top)    → carry set
+    //   Y=1 (right)  → carry clear
+    //   Y=2 (bottom) → carry clear
+    //   Y=3 (left)   → carry set
+    // The 6502 PHPs this carry, runs invert_if_positive, then PLPs it
+    // before add_A_to_position. invert_if_positive always produces a
+    // negative byte (positive→negate, negative→unchanged), so the raw
+    // add_A_to_position would always move in the negative direction —
+    // correct for bottom/right but wrong for top/left, which need a
+    // positive push to escape the obstruction. The PLP'd carry is meant
+    // to restore the sign for top/left, but the 6502's add_A_to_position
+    // overrides the carry with an internal CLC, so the original
+    // sequence appears to leave a sign bug. Flip the sign explicitly
+    // for top/left to land where the geometry needs us to.
+    bool top_or_left = (Y == 0 || Y == 3);
     uint8_t signed_move = invert_if_positive(move_amt);
-    // &30a9 PLP — restore CPY-derived carry. Then add_A_to_position uses
-    // it: the 6502's add_A_to_position decrements `whole` if the addend
-    // is negative (sign-extended add), independent of that PLP carry. The
-    // PLP carry actually fed into the next ADC at &2a3d which adds
-    // fraction to the addend; in practice the sign of `signed_move`
-    // already encodes the direction and the whole-byte sub-decrement
-    // covers the borrow.
     int delta = static_cast<int8_t>(signed_move);
+    if (top_or_left) delta = -delta;
 
     if (axis_is_y) {
         int combined = static_cast<int>(ctx.obj.y.whole) * 256 +
