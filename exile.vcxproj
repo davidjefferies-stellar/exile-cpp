@@ -97,6 +97,7 @@
     <ClCompile Include="src\objects\object_manager.cpp" />
     <ClCompile Include="src\objects\physics.cpp" />
     <ClCompile Include="src\objects\collision.cpp" />
+    <ClCompile Include="src\objects\tile_collision.cpp" />
     <ClCompile Include="src\objects\held_object.cpp" />
     <ClCompile Include="src\objects\weapon.cpp" />
     <ClCompile Include="src\behaviours\npc_helpers.cpp" />
@@ -149,6 +150,7 @@
     <ClInclude Include="src\objects\weapon.h" />
     <ClInclude Include="src\objects\physics.h" />
     <ClInclude Include="src\objects\collision.h" />
+    <ClInclude Include="src\objects\tile_collision.h" />
     <ClInclude Include="src\rendering\renderer.h" />
     <ClInclude Include="src\rendering\camera.h" />
     <ClInclude Include="src\rendering\pixel_renderer.h" />

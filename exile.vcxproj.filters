@@ -54,6 +54,7 @@
     <ClCompile Include="src\objects\object_manager.cpp">         <Filter>src\objects</Filter> </ClCompile>
     <ClCompile Include="src\objects\physics.cpp">                <Filter>src\objects</Filter> </ClCompile>
     <ClCompile Include="src\objects\collision.cpp">              <Filter>src\objects</Filter> </ClCompile>
+    <ClCompile Include="src\objects\tile_collision.cpp">         <Filter>src\objects</Filter> </ClCompile>
     <ClCompile Include="src\objects\held_object.cpp">            <Filter>src\objects</Filter> </ClCompile>
     <ClCompile Include="src\objects\weapon.cpp">                 <Filter>src\objects</Filter> </ClCompile>
 
@@ -120,6 +121,7 @@
     <ClInclude Include="src\objects\weapon.h">                   <Filter>src\objects</Filter> </ClInclude>
     <ClInclude Include="src\objects\physics.h">                  <Filter>src\objects</Filter> </ClInclude>
     <ClInclude Include="src\objects\collision.h">                <Filter>src\objects</Filter> </ClInclude>
+    <ClInclude Include="src\objects\tile_collision.h">           <Filter>src\objects</Filter> </ClInclude>
 
     <!-- src\rendering\ -->
     <ClInclude Include="src\rendering\renderer.h">               <Filter>src\rendering</Filter> </ClInclude>
