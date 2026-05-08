@@ -204,23 +204,20 @@ static uint8_t check_top_bot_section(const Ctx& ctx, uint8_t y_section) {
 
     // Top-tile flipped/unflipped tweak — mirrors &2ec9-&2ed5.
     //
-    // The 6502 reaches this label two ways:
-    //   skip_adjusting_bottom_tile (&2ec9) — bottom tile NOT flipped path,
-    //     after re-deriving bot_obstr from bot_y_rounded.
-    //   skip_checking_bottom_tile (&2ece) — process_bottom == false; falls
-    //     straight in with whatever A had (we don't depend on it because
-    //     we've already finished the bot branch).
-    //
-    // The shared tail (&2ec9): A = 0; SEC; SBC top_y_rounded → A = -top_y - 1 (with borrow).
-    //   then BIT top.sprite_y_flip; if NOT flipped, SEC; SBC top_obstr; STA top_obstr.
+    // CRITICAL: A entering this block depends on which path got us here.
+    //   Crossing-Y path (bot probe ran, &2ec9-&2ecd):  A = 0 - top_y_rounded
+    //   Not-crossing path (&2eab BPL → &2ece direct):  A = height
+    // The non-crossing path leaves A holding `this_object_height` from
+    // the &2ea6 LDA #height instruction; only the crossing path
+    // recomputes A through the &2ec9 sequence. Using the wrong value
+    // gives the player a multi-pixel upward push every frame on flat
+    // ground (top_obstr_unflipped = -top_y - height instead of 0), which
+    // manifests as severe bounce.
     {
-        uint8_t A = static_cast<uint8_t>(0u - ctx.top_y_rounded); // SEC SBC: 0 - top_y - 0
-        // (the 6502 SEC sets carry, so 0 - top_y - (1-1) = 0 - top_y; result has
-        // borrow set when top_y > 0, but we don't use the carry afterwards
-        // for the unflipped path, only A's value.)
+        uint8_t A = ctx.crosses_y
+            ? static_cast<uint8_t>(0u - ctx.top_y_rounded)
+            : ctx.height;
         if (!ctx.top_data.sprite_y_flip) {
-            // 6502 SEC; SBC top_obstr — carry from BMI path is irrelevant
-            // since the BMI branch doesn't run here.
             A = static_cast<uint8_t>(A - top_obstr);
             top_obstr = A;
         }
