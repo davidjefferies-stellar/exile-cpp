@@ -669,7 +669,18 @@ void Game::integrate_player_motion(Object& player,
             bool feet_in_obstr = fcoll_fv
                 ? (feet_frac <= fthresh_min)
                 : (feet_frac >= fthresh_min);
-            if (feet_in_obstr) {
+            // Reject "ceiling-like" floor patterns: tiles where the
+            // ground-like surface lives at the very top of the cell
+            // (threshold < 0x40 ≈ 1/4 tile from top). These come up in
+            // closed-vertical-door substitution (STONE_SLOPE_78 has
+            // threshold 0 in its left quarter), and snapping feet to a
+            // y_frac of 0 puts the player's body in the tile above. The
+            // 6502's vector-based response (TileCollision::resolve)
+            // handles the geometry correctly; until we fully migrate to
+            // it, treat these patterns as non-grounding and let the
+            // per-frame Y-collision keep the player out by walls.
+            bool ceiling_pattern_floor = !fcoll_fv && fthresh_at < 0x40;
+            if (feet_in_obstr && !ceiling_pattern_floor) {
                 grounded = true;
                 snap_ty = feet_tile_y;
                 snap_y  = fcoll_fv ? 0 : fthresh_at;
@@ -718,7 +729,12 @@ void Game::integrate_player_motion(Object& player,
                 int min_surface_abs   = static_cast<int>(below_ty) * 256 +
                                         static_cast<int>(min_surface_y);
                 int gap = min_surface_abs - feet_abs_full;
-                if (gap >= 0 && gap <= 0x40) {
+                // Same ceiling-pattern guard as the primary probe: a
+                // sub-tile-fraction floor surface near the top of the
+                // tile (door substitute STONE_SLOPE_78 etc.) is a wall,
+                // not a stand-on surface.
+                bool ceiling_pattern = !bcoll_fv && bthresh_at < 0x40;
+                if (gap >= 0 && gap <= 0x40 && !ceiling_pattern) {
                     grounded = true;
                     snap_ty = below_ty;
                     snap_y  = at_surface_y;

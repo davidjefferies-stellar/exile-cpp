@@ -653,6 +653,7 @@ Result resolve(Object& obj,
     }
     result.top_or_bottom_collision = ctx.top_or_bottom_collision;
     result.pre_collision_magnitude = obj.pre_collision_magnitude;
+    result.landed_on_bottom = (ctx.tile_collision_y_flags & 0x80) != 0;
     return result;
 }
 

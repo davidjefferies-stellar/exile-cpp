@@ -37,6 +37,12 @@ struct Result {
     // Pre-collision velocity magnitude (for the bullet pre_collision_
     // magnitude). Mirrors &1d this_object_pre_collision_velocity_magnitude.
     uint8_t pre_collision_magnitude = 0;
+
+    // Bit 7 of the 6502's &18 tile_collision_y_flags — set when the
+    // collision was "more to the bottom" of the AABB (i.e. the object
+    // landed on something). Player code uses this to drive SUPPORTED;
+    // bullets / NPCs read it via top_or_bottom_collision instead.
+    bool landed_on_bottom = false;
 };
 
 // Run the 6502 collision-response chain on `obj`. Position, velocity,
