@@ -521,9 +521,23 @@ static void apply_tile_collision(Ctx& ctx) {
         uint8_t bounce_angle = static_cast<uint8_t>(reduced + angle_rel);
         bounce_angle = static_cast<uint8_t>(bounce_angle ^ 0xff);
         bounce_angle = static_cast<uint8_t>(bounce_angle + 1 + tile_collision_angle);
-        // Reduce magnitude: clamp to 0x20, subtract 2, then seven_eighths.
-        if (magnitude > 0x20) magnitude = 0x20;
-        magnitude = (magnitude >= 2) ? static_cast<uint8_t>(magnitude - 2) : 0;
+        // Reduce magnitude — port of &30e3-&30ef. Carry behaviour matters:
+        //   CMP #&20 (BCC skip; LDA #&20)
+        //   SBC #&02
+        //   BCS skip; LDA #&00
+        // For mag >= 0x20: CMP sets C=1, cap to 0x20, SBC with C=1 → 0x1e.
+        // For mag <  0x20: CMP sets C=0 (borrow), SBC with C=0 → mag - 3.
+        // For mag <  3:    SBC borrows again, BCC's LDA #&00 zeros it.
+        // The previous port subtracted a flat 2, which left a 1-frac
+        // residual on a 4-frac fall and drove the perpetual ±0.5-pixel
+        // oscillation observed on flat ground.
+        if (magnitude >= 0x20) {
+            magnitude = 0x1e;
+        } else if (magnitude >= 3) {
+            magnitude = static_cast<uint8_t>(magnitude - 3);
+        } else {
+            magnitude = 0;
+        }
         magnitude = static_cast<uint8_t>(seven_eighths(static_cast<int8_t>(magnitude)));
         int8_t out_vx = 0, out_vy = 0;
         NPC::vector_from_magnitude_and_angle(magnitude, bounce_angle, out_vx, out_vy);
