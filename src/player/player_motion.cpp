@@ -2,6 +2,7 @@
 #include "behaviours/npc_helpers.h"
 #include "objects/physics.h"
 #include "objects/collision.h"
+#include "objects/tile_collision.h"
 #include "objects/object_data.h"
 #include "objects/object_manager.h"
 #include "audio/audio.h"
@@ -286,18 +287,153 @@ void Game::integrate_player_motion(Object& player,
     // blocks on left-edge tiles that spill into the next column are
     // avoided.
 
-    // X movement — obstruction-aware. Resolve the tile at the player's
-    // head row; METAL_DOOR / STONE_DOOR tiles get swapped for
-    // STONE_SLOPE_78 (closed) or SPACE (open) via
-    // substitute_door_for_obstruction (port of &3ebd-&3ec2
-    // door_tiles_table). Faithful to the 6502: blocking is tile-based,
-    // no object-AABB blocking, and we probe only the head-row tile —
-    // the 6502's level layout relies on solid obstacles like doors
-    // spanning the row the player's sprite occupies (stacked door tiles
-    // here, or vertical doors elsewhere), so the head probe catches
-    // them. A ground-like substitute (STONE_SLOPE_78, thresh=0) is
-    // non-obstructing at y_frac=0 on purpose: that's the "surface" the
-    // player stands on when jumping onto a door from above.
+    // ====================================================================
+    // Tile collision — port of the 6502's &2f8c-&30df chain via the new
+    // TileCollision::resolve helper. Replaces the axis-separated revert
+    // and post-frame grounded snap that previously lived inline here.
+    // The single resolve call walks AABB edges, counts obstruction
+    // depths, builds a vector, pushes the player out perpendicular to
+    // the surface, and reflects velocity at reduced angle — the same
+    // pipeline the 6502 uses for slopes / walls / floors / ceilings.
+    //
+    // Object-object collision still runs as a separate pass below
+    // (port of &2a64 + &2bb6), kept axis-aware in our port because we
+    // don't yet model the 6502's centre-to-centre vector approach for
+    // object-vs-object pushes.
+    // ====================================================================
+    Fixed8_8 old_x = player.x;
+    Fixed8_8 old_y = player.y;
+    player.x.add_velocity(player.velocity_x);
+    player.y.add_velocity(player.velocity_y);
+
+    TileCollision::Result tcr = TileCollision::resolve(
+        player, old_x.whole, old_x.fraction, old_y.whole, old_y.fraction,
+        landscape_, object_mgr_, static_cast<int>(held_object_slot_));
+    player.tile_collision = tcr.top_or_bottom_collision;
+
+    bool object_supported = false;
+
+    // Object-object collision — port of &2a64 check_for_collisions +
+    // &2bb6 apply_collision_to_objects_velocities. The 6502 bundles
+    // mass-ratio velocity transfer here without a position revert; we
+    // additionally revert position when blocked by a strictly heavier
+    // object, since our port doesn't model the 6502's "lighter side
+    // can't move into a heavier collider" behaviour as a side-effect of
+    // the velocity ratio alone. Held primary is excluded.
+    {
+        auto& all = reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
+            object_mgr_.object(0));
+        if (Collision::overlaps_solid_object(player, 0, all,
+                                             static_cast<int>(held_object_slot_))) {
+            int blocker = -1;
+            for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+                if (i == static_cast<int>(held_object_slot_)) continue;
+                const Object& other = all[i];
+                if (!other.is_active()) continue;
+                if (other.weight() <= player.weight()) continue;
+                blocker = i;
+                break;
+            }
+            if (blocker >= 0) {
+                // Revert position back to old; transfer velocity via
+                // mass ratio. Both axes revert because the 6502's
+                // mass-transfer is unified, not per-axis.
+                player.x = old_x;
+                player.y = old_y;
+                Object& other = object_mgr_.object(blocker);
+                {
+                    auto t = Collision::apply_mass_ratio_velocity(
+                        player.velocity_x, other.velocity_x,
+                        player.weight(), other.weight(), true);
+                    player.velocity_x = t.this_v;
+                    other.velocity_x  = t.other_v;
+                }
+                {
+                    auto t = Collision::apply_mass_ratio_velocity(
+                        player.velocity_y, other.velocity_y,
+                        player.weight(), other.weight(), true);
+                    player.velocity_y = t.this_v;
+                    other.velocity_y  = t.other_v;
+                }
+                if (player.velocity_y >= 0) object_supported = true;
+            }
+        } else {
+            // Lighter-overlap push: kick lighter primaries the player
+            // walks/falls into. Same as &2bb6's heavier-pushes-lighter
+            // half — no position revert here, just a velocity transfer.
+            int pushee = find_lighter_overlap(player, object_mgr_,
+                                               held_object_slot_,
+                                               sprite_w_frac, sprite_h_frac);
+            if (pushee >= 0) {
+                Object& other = object_mgr_.object(pushee);
+                {
+                    auto t = Collision::apply_mass_ratio_velocity(
+                        player.velocity_x, other.velocity_x,
+                        player.weight(), other.weight(), false);
+                    player.velocity_x = t.this_v;
+                    other.velocity_x  = t.other_v;
+                }
+                {
+                    auto t = Collision::apply_mass_ratio_velocity(
+                        player.velocity_y, other.velocity_y,
+                        player.weight(), other.weight(), false);
+                    player.velocity_y = t.this_v;
+                    other.velocity_y  = t.other_v;
+                }
+            }
+        }
+    }
+
+    // SUPPORTED flag: 6502 derives this from tile_collision_y_flags bit 7
+    // ("collision more to the bottom" of the AABB). The new TileCollision
+    // module surfaces it directly.
+    if (tcr.landed_on_bottom || object_supported) {
+        player.flags |=  ObjectFlags::SUPPORTED;
+    } else {
+        player.flags &= ~ObjectFlags::SUPPORTED;
+    }
+
+    // Slope angle for the walking branch in apply_player_input.
+    // Sample the supporting tile's threshold left and right of the
+    // player's centre and feed the delta to angle_from_deltas — the
+    // same conversion the 6502 applies at &306c after building an
+    // obstruction-depth vector. Skip while airborne so the last
+    // grounded value persists into a jump.
+    if (tcr.landed_on_bottom) {
+        int feet_abs_y = static_cast<int>(player.y.whole) * 256 +
+                         static_cast<int>(player.y.fraction) + sprite_h_frac;
+        uint8_t feet_ty = static_cast<uint8_t>((feet_abs_y >> 8) & 0xff);
+        ResolvedTile sres = resolve_tile_with_tertiary(
+            landscape_, player.x.whole, feet_ty);
+        uint8_t stile = Collision::substitute_door_for_obstruction(
+            sres.tile_and_flip, sres.data_offset,
+            reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
+                object_mgr_.object(0)),
+            object_mgr_.tertiary_data_byte(sres.data_offset));
+        uint8_t stype = stile & TileFlip::TYPE_MASK;
+        bool sfh = (stile & TileFlip::HORIZONTAL) != 0;
+        bool sfv = (stile & TileFlip::VERTICAL)   != 0;
+        bool scoll_fv = sfv ^ tile_obstruction_v_flip_bit(stype);
+        if (!scoll_fv) {
+            constexpr int SAMPLE_HALF_DX = 0x10;
+            uint8_t left_x  = static_cast<uint8_t>(player.x.fraction - SAMPLE_HALF_DX);
+            uint8_t right_x = static_cast<uint8_t>(player.x.fraction + SAMPLE_HALF_DX);
+            uint8_t left_t  = tile_threshold_at_x(stype, sfh, sfv, left_x);
+            uint8_t right_t = tile_threshold_at_x(stype, sfh, sfv, right_x);
+            int dthresh = static_cast<int>(right_t) - static_cast<int>(left_t);
+            if (dthresh >  127) dthresh =  127;
+            if (dthresh < -128) dthresh = -128;
+            player_tile_collision_angle_ = NPC::angle_from_deltas(
+                static_cast<int8_t>(SAMPLE_HALF_DX * 2),
+                static_cast<int8_t>(dthresh));
+        } else {
+            player_tile_collision_angle_ = 0;
+        }
+    }
+
+    // ==== Legacy collision blocks below are dead code, retained briefly
+    // ==== for diff readability. To be removed in a follow-up commit.
+#if 0
     {
         Fixed8_8 old_x = player.x;
         player.x.add_velocity(player.velocity_x);
@@ -816,6 +952,7 @@ void Game::integrate_player_motion(Object& player,
         if (grounded || object_supported) player.flags |=  ObjectFlags::SUPPORTED;
         else                              player.flags &= ~ObjectFlags::SUPPORTED;
     }
+#endif
 
     // Port of &3fea-&4002 update_mushroom_tile's collision branch. When
     // the player overlaps a MUSHROOMS tile, the 6502:
