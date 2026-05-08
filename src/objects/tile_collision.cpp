@@ -505,8 +505,6 @@ static void apply_tile_collision(Ctx& ctx) {
         ctx.obj.x.whole    = static_cast<uint8_t>((combined >> 8) & 0xff);
         ctx.obj.x.fraction = static_cast<uint8_t>(combined & 0xff);
     }
-    (void)sign_negative; // captured via invert_if_positive above.
-
     // &30b0-&30b9: velocity bounce. velocity_angle - tile_collision_angle.
     uint8_t velocity_angle = angle_from_vector(ctx.obj.velocity_x,
                                                 ctx.obj.velocity_y);
