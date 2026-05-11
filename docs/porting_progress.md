@@ -70,12 +70,18 @@ Addresses throughout are taken from the disassembly's `;` labels.
 
 | System | Status | 6502 range | Notes |
 |---|---|---|---|
-| Sound channel bookkeeping, envelopes | **Missing** | &1320-&149c | Envelope table at `&6c4d`; four-channel mixer driven from vsync. |
-| `play_sound` / `play_sound_on_channel` | **Missing** | &1415-&1480 | Behaviour code has many `TODO: play sound` markers. |
-| `play_middle_beep` / `play_high_beep` / `play_squeal` / scream | **Missing** | &14b1-&14c4 | Damage scream at `&24a1`. |
-| Waterfall / earthquake sound loop | **Missing** | &2619 | |
-| Imp / bird / piranha / wasp / engine fire sounds | **Missing** | &45f0, &4631, &4f4e, &4c61 | |
-| `sound_enabled` toggle | **Missing** | &17fb | `src/sound/` directory exists but empty. |
+| Sound channel bookkeeping, envelopes | Done | &1320-&149c | `src/audio/audio.cpp` — 4-channel software synth, envelope table at `kEnvelopesTable` ported byte-for-byte from `&2db9`, channel-0 routed through an SN76489-style LFSR noise generator (white / periodic / rate-pair mapping from the 6502's `&119c`/`&11a0` tables). |
+| `play_sound` / `play_sound_on_channel_zero` | Done | &13f8-&149c | `Audio::play` / `Audio::play_at`. Channel arbitration (slot 0 priority, first-inactive of 1..3 else quietest) matches `&1421-&144f`. |
+| Distance attenuation (`get_object_distance_from_screen_centre`, volume reduction) | Done | &1415-&1465 | `Audio::play_at` — Chebyshev distance to listener, >=16-tile cut-off, `distance * 0x10` per-channel volume reduction applied each render frame. |
+| `play_middle_beep` / `play_high_beep` / `play_low_beep` / `play_squeal` | Done | &149d-&14b8 | Inline `kSound*` blocks at each call site (R-key remember, RCD fire, red-drop pop, plasma fire). |
+| Damage scream (when WAS_DAMAGED set ≥ 8) | **Missing** | &2492-&24a1 | Not centrally hooked; would need a hub through `damage_object` which the port currently inlines at each call site. |
+| Imp / bird / piranha / wasp / fluffy / chatter / worm / hover / clawed / nest / engine-fire / hive sounds | Done | &45f0, &4609, &463b, &4811, &485b, &42c1, &42d7, &492b, &4eac, &4c61, &4be3, &4e30 | Per-NPC ambient sounds, all `play_at` so they attenuate with distance. |
+| Door open / close / lock, switch, teleport, collect, retrieve, blaster, explosion, mushroom poof, bullet pop, grenade tick | Done | &4d2d, &4d36, &31d3, &49b9, &4410, &4b96, &351d, &4a80, &40de, &3ffc, &4428, &4321 | All wired at the corresponding ported routine. |
+| Waterfall / earthquake sound loop | Partial | &2619 | Engine-fire sound is wired but the waterfall/earthquake gate (`every_eight_frames` + `flooding_state`) isn't — engine-fire only plays from `update_engine_fire`. |
+| Whistle one / two | Done | &2cb7, &2ca1 | Player keys Y / U, plus the white-yellow-bird whistle-two trigger at `&4625`. |
+| Self-modifying envelope pitch (imp variant pitch, chatter pitch) | Partial | &4609, &4925 | The 6502 stores a computed byte into `envelopes_table+offset` before calling play_sound; the port uses the default-table block, so all imps sound identical. |
+| Energy-level bell tick | **Missing** | &4a61-&4a64 | Player-energy-step chime not yet hooked into the player update path. |
+| `sound_enabled` toggle / runtime config | Done | &17fb (analogue) | `Audio::set_enabled` plus `exile.ini` `[audio] enabled = true/false`. Master enable silences ringing envelopes immediately; device stays open. |
 
 ## World generation & tiles
 
@@ -101,7 +107,7 @@ Addresses throughout are taken from the disassembly's `;` labels.
 | `check_demotion_or_removal` (KEEP_AS_TERTIARY / PRIMARY_FOR_LONGER distance gate) | Done | &1bb7-&1d26 | `check_demotion`. Gate distance tweaked (port-only) to match the wider viewport. |
 | `create_new_object_if_Y_slots_free`, `find_most_distant_object` | Done | &1e62-&1ecf | `ObjectManager::create_object`. |
 | `return_spawn_to_tertiary_object` / `demote_to_tertiary_object` | Done | &1d21, &4081 | `return_to_tertiary`. |
-| `handle_teleporting` | Partial | &1bfd-&1c44 | Mid-point position swap, timer counter done; "brief removal at timer==0x11" (player_is_completely_dematerialised) not exposed so stars still spawn while teleporting. |
+| `handle_teleporting` | Done | &1bfd-&1c44 | Mid-point position swap, timer counter, `player_is_completely_dematerialised_` flag (suppresses star-field spawn while teleporting), and the &1c35 position-change chime are all ported. |
 | `consider_demoting_or_returning_object` full chain | Done | &1d24-&1d5b | In `check_demotion` + `return_to_tertiary`. |
 
 ## Physics / collision
@@ -151,7 +157,7 @@ object types via `behavior_dispatch.cpp`. Quality varies per routine:
 |---|---|---|---|
 | Player (`update_player` &4A11) | Mostly Done (split across files) | &4a11-&4a83 | Input, motion, sprite split into 3 TUs. "Energy-level bells" (&4a74), discharge-blaster, fire suppression when pinned not ported. |
 | Crew member / Fluffy / Chatter | Partial | &46f0, &4288, &48c1-&48d7, &48ef | Mood wiring rough; Chatter whistle / power-pod-gift path approximates but works. |
-| Imps (5 variants, feeding, gifts) | Partial | &44ef-&460f | Per-variant min-energy / projectile tables ported; walking / climbing / at-pipe-gift (&452e) **missing**. |
+| Imps (5 variants, feeding, gifts) | Partial | &44ef-&460f | Per-variant min-energy / projectile / gift-type tables ported; at-pipe gift-drop with per-imp `imp_gifts_remaining` counter ported (`Game::imp_gifts_remaining_[5]`). Walking / climbing state and per-imp pitch self-modification (&4609) still simplified. |
 | Frogmen (red / green / invisible) | Partial | &4463-&4475 | Jump cadence / damage present; NPC walking, water-facing tile collision (`set_npc_facing_tile_collision` &2562) **missing**. Invisible-frogman visibility flag **missing**. |
 | Slimes (red / green / yellow + conversions) | Partial | &422a-&47d8 | Touch damage works; mushroom-immunity, coronium-crystal absorption → yellow slime conversion **missing**. |
 | Nests (dense, sucking) | Partial | &4789, &4ded | Sucking pulls via linear scan; `sucking_nests_trigger/power/palette_direction` tables at `&4e89` **unused** (power ladders simplified). |
@@ -243,10 +249,11 @@ object types via `behavior_dispatch.cpp`. Quality varies per routine:
 
 | Feature | Purpose |
 |---|---|
-| `src/game/config.cpp` + `exile.ini` | Designer override of spawn state (player x/y/energy, weapon, pockets, weapon energies). |
-| Activation-anchor toggle (`\\` key) | Camera-centred activation instead of player-centred for debugging. |
+| `src/game/config.cpp` + `exile.ini` | Designer override of spawn state (player x/y/energy, weapon, pockets, weapon energies), audio enable, landscape generator A/B. |
+| `\` key — save current landscape to `exile.map` | Auto-loaded next launch (`Game::init` tries `load_from_file` before falling back to `bake()`). Lets a hand-edited map persist across runs. |
+| `;` / `'` keys — save / load game state to `exile.sav` | Text-format snapshot (frame, RNG, player, events, 16 primaries, 32 secondaries, 235 tertiary bytes). Landscape isn't in the file — comes from the seed or `exile.map`. |
 | Pause toggle (`P` key) | Freeze updates without halting input/render. |
-| Map-mode HUD banner (tiers, switch presses, spawn counters) | Debug / inspection overlay. |
+| Map-mode HUD banner (tiers, switch presses, spawn counters) | Debug / inspection overlay, toggled via the bottom-HUD "Map mode" checkbox. |
 | Tile-click overlay (left-click) | Prints tile type, flips, obstruction, tertiary data, anchor distance. |
 | Tile grid / object-tier swatches / AABB overlay (`G`, `T`, `B`) | Visual debugging. |
 | Zoom + right-drag pan | Scrollable / zoomable viewport beyond the 6502's fixed 8-tile window. |
@@ -254,6 +261,7 @@ object types via `behavior_dispatch.cpp`. Quality varies per routine:
 | Duplicate-secondary guard in `demote_to_secondary` | Prevents pool pollution from wider-viewport re-spawning loops. |
 | Waterline raster clamp using signed int | Map-mode pan can put camera above world; 6502's unsigned SBC assumed camera is playable. |
 | Box-filter zoom-out | `fenster_renderer` resamples framebuffer for fractional zoom. |
+| Headless test suite (`tests/`, `exile_tests.vcxproj`) | Boot smoke, walking-gate, fixed-point, RNG, and weapons-firing tests, run against `NullRenderer`. GitHub Actions builds and runs the suite on every push to master via `.github/workflows/tests.yml`. |
 
 ---
 
@@ -261,25 +269,28 @@ object types via `behavior_dispatch.cpp`. Quality varies per routine:
 
 Ranked roughly by player-visible impact / porting cost:
 
-1. **Audio** — no sound at all. Entire `&1320-&149c` channel & envelope
-   system plus every `play_sound` callsite.
-2. **Save / load / copy-protection** — no persistence; no startup prompt;
-   no demo-mode hang.
-3. **Waterline dynamics + Triax-lab hookup** — static water level breaks
+1. **Waterline dynamics + Triax-lab hookup** — static water level breaks
    the end-game flooding sequence, the bottom-door-gates-water puzzle, and
    the maggot-machine cadence.
-4. **Full NPC walking / pathfinding / line-of-sight** — simplified
+2. **Full NPC walking / pathfinding / line-of-sight** — simplified
    `seek_player` means creatures pour through walls, don't climb slopes,
    can't use `directness` levels, and can't see/avoid targets.
-5. **Screen scrolling + sprite unplot/crop + tile caching** — port brute-
+3. **Copy-protection / demo-mode** — no startup prompt, no demo-mode
+   hang. Save / load are present (text format) but don't reproduce the
+   6502's encrypted on-disc layout.
+4. **Screen scrolling + sprite unplot/crop + tile caching** — port brute-
    redraws every frame; fine for modern hosts, but means the 6502's
    `calculate_amount_of_scrolling_needed_in_direction` chain and its
    half-tile alignment logic aren't exercised.
-6. **Mood / NPC stimuli tables** — only 4 of the 8 stimulus bits
+5. **Mood / NPC stimuli tables** — only 4 of the 8 stimulus bits
    implemented; mood transitions are coarse; no "explode" / "eating" /
    "flood" stimuli.
-7. **Explosion → tertiary damage** (`check_for_tertiary_objects_around_
+6. **Explosion → tertiary damage** (`check_for_tertiary_objects_around_
    explosion`) — doors / pipes can't be demolished by grenades yet.
-8. **Player-state polish** — no deaths counter, no game-time, no
+7. **Player-state polish** — no deaths counter, no game-time, no
    flash-on-damage, no protection-suit damage multiplier, no automatic
-   teleport when near-dead.
+   teleport when near-dead. Damage-scream chord and energy-level bells
+   also still missing on the audio side.
+8. **NPC sound polish** — per-imp pitch self-modification at `&4609`
+   and the chatter `&4925` pitch byte are not yet ported; all imps
+   sound identical.
