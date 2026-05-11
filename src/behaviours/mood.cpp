@@ -4,33 +4,10 @@
 #include <algorithm>
 #include <cstdlib>
 
-// Port of &27c9-&2866 check_for_npc_stimuli + &316b-&31ab tables.
-//
-// The 6502 maps 10 NPC categories (imps×5, rolling robots, fluffy,
-// chatter, green slime, red frogman) to four "what excites me" tables
-// (phobia / target / food / home) and one response-bit table that says
-// whether each kind of stimulus pushes the NPC toward PLUS_ONE or
-// MINUS_ONE mood.
-//
-// Each frame we build a 7-bit stimulus byte. Bit positions are the
-// MIRROR of the 6502's: the 6502 builds its byte by ROL of stim bits 0..6
-// and pairs them with response bits 7..1 (LSR A vs ASL response, see
-// &2843-&2854). We use the same mask for both stim and response (faster
-// in C++), which is equivalent because mirroring both sides cancels out.
-// The pairing — and the bit values matched against response bits — are
-// identical to the 6502's:
-//   bit 0x80 time      ↔ resp 0x80    every 256 frames (per-object fc==0xff)
-//   bit 0x40 flood     ↔ resp 0x40    flooding_state bit 7 set
-//   bit 0x20 explode   ↔ resp 0x20    explosion_timer == -49 (frame 1)
-//   bit 0x10 damage    ↔ resp 0x10    WAS_DAMAGED ≥8 hp this tick
-//   bit 0x08 eating    ↔ resp 0x08    touching the variant's food type
-//   bit 0x04 player    ↔ resp 0x04    find_a_target landed on the player
-//   bit 0x02 phobia    ↔ resp 0x02    phobia primary type within range
-// Each set bit then has a 1-in-2 random gate (&283f AND rnd_state+1).
-//
-// Damage (0x10) and explode (0x20) ARE in this order — the disassembly
-// comment at &3193 swaps the labels, but the actual code rolls damage
-// in before explode, putting explode at the higher (0x20) response bit.
+// &27c9-&2866 check_for_npc_stimuli + &316b-&31ab tables. We mirror the
+// 6502's stim/response bit pairing (mask both sides identically — the
+// mirror cancels). Damage (0x10) sits BELOW explode (0x20) per the
+// actual &3193 code, not the swapped disassembly comment.
 
 namespace {
 
@@ -50,13 +27,9 @@ constexpr int kCatRedFrogman    = 9;
 constexpr uint8_t kPhobia[10] = {
     0x81, 0x81, 0xba, 0xcd, 0x81, 0xa9, 0x37, 0x37, 0x8a, 0x0f
 };
-// &3175 npc_stimuli_types_target_table. Object types this NPC chases.
-// Values ≥ 0x80 are OBJECT_RANGE_* categories (e.g. 0x86 = flying
-// enemies); the 6502's find_object resolves these via &2db0
-// get_range_for_object_type_A. We don't yet model ranges, so any
-// target byte ≥ 0x80 effectively contributes nothing on this side —
-// the NPC won't flag a range-target match. Direct primary types
-// (0x29 imp, 0x55 boulder, 0x37 fireball, 0x0f worm) work normally.
+// &3175 npc_stimuli_types_target_table. Values >=0x80 are
+// OBJECT_RANGE_* categories the 6502 resolves via &2db0; not yet ported
+// → those targets contribute nothing on this side.
 constexpr uint8_t kTarget[10] = {
     0x29, 0x29, 0x55, 0x37, 0x86, 0x86, 0x86, 0x86, 0x86, 0x0f
 };
@@ -93,14 +66,9 @@ int category_for_type(uint8_t t) {
     }
 }
 
-// Reduced port of find_a_target (&3bfe → &3c2a find_object). Walks
-// primaries within `range_tiles` Chebyshev distance and returns the
-// nearest match. `phobia_byte` low 7 = primary type; bit 7 = include
-// player. `target_byte` is a secondary primary type — values ≥ 0x80
-// would be range categories the 6502 resolves via get_range_for_object_
-// type_A; we skip those (returns -1 for type checks). Outputs whether
-// the chosen match was via the phobia table (or player), so the caller
-// can decide which stim bits to set. Returns slot or -1.
+// &3bfe find_a_target → &3c2a find_object. Reduced: Chebyshev scan,
+// no range-category resolution (target_byte >=0x80 skipped).
+// phobia_byte bit 7 includes player. Outputs phobia/player match flags.
 int find_target(const Object& npc, UpdateContext& ctx, int self_slot,
                 uint8_t phobia_byte, uint8_t target_byte, int range_tiles,
                 bool& matched_player_out, bool& matched_primary_out) {
@@ -128,16 +96,8 @@ int find_target(const Object& npc, UpdateContext& ctx, int self_slot,
         int ady = dy < 0 ? -dy : dy;
         if (adx > range_tiles || ady > range_tiles) continue;
         int d = adx > ady ? adx : ady;
-        // Port of &3cb2-&3cbd in find_object: each candidate must pass
-        // an LOS probe (check_for_obstruction_between_objects with a
-        // randomised cap). With the door-aware point_in_tile_solid_with_
-        // doors swapped into has_line_of_sight_fracs, a closed door
-        // between the NPC and the candidate makes that candidate
-        // invisible to the stimuli scan — which is what gates rolling
-        // robots / fluffy / chatter from "activating" until the door
-        // unlocking them actually opens. Skipped earlier; that let a
-        // blue rolling robot at (a0, 6b) target the player while still
-        // sealed behind the door at (9e, 6b).
+        // &3cb2-&3cbd find_object LOS probe. Closed doors block stimuli
+        // via point_in_tile_solid_with_doors, gating sealed-room NPCs.
         if (!NPC::has_line_of_sight_randomized(npc, static_cast<uint8_t>(i), ctx)) {
             continue;
         }
@@ -173,34 +133,19 @@ void update_mood(Object& npc, UpdateContext& ctx) {
     int cat = category_for_type(static_cast<uint8_t>(npc.type));
     if (cat < 0) return;
 
-    // 6502 &1a8d-&1a97 builds a per-object frame counter:
-    //   ((slot << 4) | slot) + global_fc, mod 256.
-    // The every-64-frames branch and the time stim both gate on this,
-    // so different slots fire on different global frames. Using
-    // ctx.frame_counter directly synced every NPC, masking the
-    // 6502's natural staggering.
+    // &1a8d-&1a97 per-object fc = ((slot<<4)|slot) + global_fc. Slots
+    // fire on staggered global frames; using global_fc directly synced
+    // all NPCs and masked this stagger.
     uint8_t s = static_cast<uint8_t>(ctx.this_slot);
     uint8_t per_obj_fc = static_cast<uint8_t>(
         ((s << 4) | (s & 0x0f)) + ctx.frame_counter);
 
     uint8_t stimuli = 0;
 
-    // &27cf-&2810 every-64-frames target search. Two phases, mirroring
-    // the 6502 control flow:
-    //
-    //   (1) phobia/target probe (&27d5-&27e5). find_a_target scans for
-    //       phobia OR target objects; on hit, stamp target_and_flags +
-    //       DIRECTNESS_ONE and record stimuli bits (phobia / player).
-    //
-    //   (2) home re-find (&27e9-&2802). MINUS_TWO mood imps ALWAYS run
-    //       the home_table find_a_target — even with no phobia hit —
-    //       which is how a fed angry imp normally retargets the bush.
-    //       When a phobia or player WAS detected, AVOID is applied
-    //       first and a 50% rng roll skips the home re-find so the
-    //       imp keeps fleeing instead of swinging back to home.
-    //       The home block runs unconditionally (not nested inside the
-    //       phobia hit) so fed imps re-acquire the bush even when no
-    //       phobia/player target is visible this scan.
+    // &27cf-&2810 every-64-frames target search: (1) phobia/target probe
+    // sets DIRECTNESS_ONE; (2) home re-find always runs for MINUS_TWO
+    // imps so fed angry imps retarget the bush. Phobia hit applies AVOID
+    // first and rolls 50% to skip the home re-find (keep fleeing).
     if ((per_obj_fc & 0x3f) == 0) {
         bool was_player = false, was_primary = false;
         int hit = find_target(npc, ctx, ctx.this_slot,

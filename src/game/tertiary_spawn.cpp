@@ -4,26 +4,17 @@
 #include "rendering/sprite_atlas.h"
 #include "world/tile_data.h"
 
-// Port of the body of create_primary_object_from_tertiary (&4042) combined
-// with the type-selection logic from the individual tile update routines
-// (update_metal_door_tile &3e98, update_stone_door_tile &3e95,
-// update_switch_tile &3fcd, update_tile_with_object_from_type &3fb7,
-// update_tile_with_object_from_data &3fbf, update_transporter_tile &3ee3).
-//
-// For tiles that spawn objects from tertiary data, picks the correct object
-// type, creates a primary object at (tile_x, tile_y) with a sub-tile offset
-// matching the 6502's flip-aware formula, copies the tile's flip bits onto
-// the object's flags, and clears bit 7 of the tertiary data byte so the
-// object doesn't respawn.
+// Port of &4042 create_primary_object_from_tertiary + the type-select
+// from the per-tile update routines (&3e98 / &3e95 / &3fcd / &3fb7 /
+// &3fbf / &3ee3). Picks type, creates primary, applies flip-aware
+// sub-tile offset, copies flip flags, clears bit 7 to prevent respawn.
 void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
                                  uint8_t tile_x, uint8_t tile_y,
                                  int data_offset, int type_offset,
                                  uint8_t raw_tile_type) {
-    // TILE_INVISIBLE_SWITCH's update routine (&3ef2) is only called from
-    // collision handling — not during tile plotting — so no primary object
-    // is ever spawned for it. Reaching this routine for that tile type
-    // means the render loop is calling us for every visible invisible-
-    // switch tile every frame; bail early so the diagnostics don't count it.
+    // TILE_INVISIBLE_SWITCH (&3ef2) runs from collision only; no
+    // primary ever spawns. Bail early so render-loop diagnostics
+    // don't count visible invisible-switch tiles.
     if (tile_is(tile_type, TileType::INVISIBLE_SWITCH)) return;
 
     // "Redirect" case: the LANDSCAPE tile (raw_tile_type) is a
@@ -32,25 +23,13 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
     // transporter beam, etc.). We detect this by raw != resolved.
     bool redirect = (raw_tile_type != tile_type);
 
-    // Only the INVISIBLE_SWITCH landscape tile packs live switch-effect
-    // bits into the tertiary data byte (bit 7 = MSB of the effect-id,
-    // not a spawn flag). Every other kind of tertiary — including
-    // every other redirect (doors spawned via a CHECK_TERTIARY marker,
-    // FROM_DATA produced via a redirect tile, etc.) — uses bit 7 as a
-    // plain "needs spawning" flag, same as non-redirects. Earlier
-    // versions of this code treated ALL redirects as bit-7-preserving,
-    // which let FROM_DATA-via-redirect tiles re-spawn every frame after
-    // a primary had demoted to secondary (the dedup scan only checks
-    // active primaries and misses secondary-pool entries), producing
-    // duplicate rolling robots visible in the lifecycle log.
+    // Only INVISIBLE_SWITCH packs switch-effect bits in the data byte
+    // (bit 7 = MSB of effect-id, not a spawn flag). All other redirects
+    // — including FROM_DATA-via-redirect — use bit 7 as a spawn flag.
     bool switch_redirect = tile_is(raw_tile_type, TileType::INVISIBLE_SWITCH);
 
-    // Bit-7 "needs spawning" gate. Switch-redirects use bit 7 as part of
-    // the effect-id, and doors (&3e95/&3e98) recreate every frame with
-    // no bit-7 check, so both bypass. Doors are visible even when the
-    // ROM data has bit 7 clear — the BBC's tile renderer always plots
-    // the tertiary tile_and_flip graphic (closed-door tile) and the
-    // door primary tracks state but isn't gated on the data byte.
+    // Bit-7 spawn gate. Switch-redirects (bit 7 = effect-id) and doors
+    // (&3e95/&3e98 recreate every frame regardless of bit 7) bypass.
     bool is_door = (tile_type == static_cast<uint8_t>(TileType::METAL_DOOR) ||
                     tile_type == static_cast<uint8_t>(TileType::STONE_DOOR));
     if (!switch_redirect && !is_door && data_offset != 0 &&
@@ -71,44 +50,10 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
         }
     }
 
-    // On the BBC the visible viewport was ~8 tiles, and object spawning
-    // piggybacked on tile plotting — so you could never spawn a tile that
-    // was further from the player than ~4 tiles. Our viewport is much
-    // wider (up to ~40 tiles at full zoom-out), and a 12-tile gate causes
-    // a visible per-frame churn for tile_type 0x02:
-    //   - placeholder (type 0x49) flags 0x74 → check_demotion picks
-    //     X=3 → distance 4.
-    //   - render spawns a placeholder anywhere within 12 tiles.
-    //   - 1-in-4 frames check_demotion fires; placeholders at 5..12
-    //     tiles get sent back to tertiary (bit 7 re-armed).
-    //   - next render frame the same tile spawns the placeholder again.
-    //
-    // The 6502 doesn't see this because its viewport never put placeholders
-    // beyond their demotion radius. We pick the gate distance based on the
-    // tile type so it matches what `check_demotion` will actually keep:
-    //   - tile 0x02 (placeholder) and 0x08 (switch): distance 4.
-    //   - tile 0x01 (transporter), doors, FROM_TYPE: distance 12.
-    //
-    // Anything beyond the chosen radius would be demoted immediately, so
-    // skipping the spawn keeps the primary list stable without changing
-    // observable behaviour.
-    // Almost every tile-spawned object is stationary on a tile and ends
-    // up "slow + supported" once spawned, which in `check_demotion`
-    // bumps X from 2 → 3 (distance 12 → distance 4):
-    //   placeholder  flags 0x74 → X=3       → 4
-    //   switch       flags 0x15 → X=1       → 1
-    //   door         flags 0x6b → X=2 + slow → 4
-    //   transporter  flags 0x6f → X=2 + slow → 4
-    //   from-type    type-dependent, but stationary collectables
-    //                (PROTECTION_SUIT etc.) are X=2 + slow → 4
-    //
-    // So a single "spawn within 4 tiles" gate matches the actual demotion
-    // radius for every tile type. Without it, a primary spawned outside
-    // the keep range would be reaped by check_demotion (1-in-4 frames)
-    // and respawned the next render frame — visible per-frame churn.
-    //
-    // The 6502 doesn't need this gate because its viewport was small
-    // enough that tile plotting only ever fired within the keep range.
+    // Port-only gate: BBC viewport was ~8 tiles so spawning piggybacked
+    // safely on tile plotting. Our wider viewport (up to ~40 tiles) lets
+    // render spawn primaries beyond check_demotion's keep radius (4 for
+    // stationary "slow+supported" types), causing per-frame churn.
     {
         int8_t dx = static_cast<int8_t>(tile_x - object_mgr_.activation_anchor_x());
         int8_t dy = static_cast<int8_t>(tile_y - object_mgr_.activation_anchor_y());
@@ -119,11 +64,8 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
             ady > spawn_tertiary_distance_) return;
     }
 
-    // Diagnostic: only count attempts that passed both gates — i.e. visible
-    // tertiary tiles whose data byte is still armed AND which are close
-    // enough to the anchor to actually produce a primary object. Counting
-    // earlier would tick up constantly from tiles we always reject, even
-    // while paused (render runs in paused mode), which tells us nothing.
+    // Count only attempts past both gates — earlier counting ticks up
+    // constantly from rejected tiles and is useless when paused.
     spawn_attempts_++;
 
     bool vertical_door = (tile_flip == TileFlip::HORIZONTAL) ||
@@ -167,14 +109,8 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
             break;
         case TileType::NEST:
         case TileType::PIPE:
-            // Port of &3e1b update_nest_or_pipe_tile / &3e34. When a NEST
-            // (0x09) or PIPE (0x0a) cell has a tertiary attached and its
-            // data byte's bit 7 is set ("needs spawning" — the bit-7
-            // gate above handles that for us), spawn a BUSH primary on
-            // top. Concrete fallout if missing: pipes that decoratively
-            // had bushes growing from them in the original (e.g. the
-            // SPACE_W_TYPE redirect at idx 190 that lands a PIPE tile-
-            // and-flip on column 138) drew bare pipes here.
+            // Port of &3e1b/&3e34 update_nest_or_pipe_tile — spawn
+            // BUSH primary on a NEST/PIPE cell with bit-7-armed tertiary.
             obj_type = static_cast<uint8_t>(ObjectType::BUSH);
             break;
         default:
@@ -201,26 +137,15 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
         ? 0
         : static_cast<uint8_t>(0u - height_byte);
 
-    // TILE_SWITCH places both the box (rendered as the tile sprite) and the
-    // button (OBJECT_SWITCH, drawn on top). The generic "object sits at the
-    // bottom of the tile by sprite height" formula lands the button one
-    // atlas row below the box; override with the tile's own y-offset so
-    // the two sprites share their top edge. High nibble of
-    // tiles_y_offset_and_pattern is in units of 0x10 fraction.
-    //
-    // Use the RESOLVED tile type (after tertiary redirect), not the
-    // landscape tile. For a switch placed via TILE_INVISIBLE_SWITCH
-    // redirect, raw_tile_type is 0 (y-offset 0, i.e. top of tile) but the
-    // box still renders with the switch's own offset — reading the wrong
-    // table row parks the button at the top while the box sits at the
-    // bottom. V-flip inverts which end gets the y-offset.
+    // TILE_SWITCH: button (OBJECT_SWITCH) needs the tile's own y-offset
+    // (high nibble of tiles_y_offset_and_pattern, 0x10 fraction units)
+    // to share top-edge with the box sprite. Use RESOLVED tile_type so
+    // INVISIBLE_SWITCH redirects don't read the wrong table row.
     if (ttype == TileType::SWITCH) {
         uint8_t yhi = tiles_y_offset_and_pattern[tile_type & 0x3f] >> 4;
-        // V-flipped switch (ceiling-mounted): box renders at the top of
-        // the tile (y_off_atlas = 32 - base - h = 0), so the button
-        // belongs at the top too — y_frac = 0, which is already the
-        // default for the v-flipped branch above. Only override the
-        // non-flipped case, where the generic formula was off by one row.
+        // V-flipped switch: box renders at tile top (y_off = 0); the
+        // v-flipped branch default already matches, so only override
+        // the non-flipped case.
         if (!(tile_flip & TileFlip::VERTICAL)) {
             y_frac = static_cast<uint8_t>(yhi << 4);
         }
@@ -232,13 +157,8 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
         x_frac = static_cast<uint8_t>(x_frac + (facing_right ? -16 : -16));
     }
 
-    // &3e39-&3e3e: nest/pipe BUSH overrides both fractions to 0x40 after
+    // &3e39-&3e3e nest/pipe BUSH override both fractions to 0x40 after
     // create_primary_object_from_tertiary returns, regardless of flip.
-    // Without this the bush sits at the generic flip-aware corner of
-    // the tile (e.g. y_frac = -height for unflipped) instead of growing
-    // out of the pipe / nest mouth. Concrete fallout: the bush at
-    // (&8a, &78) — entry &be, SPACE_W_TYPE redirect to PIPE — drew at
-    // the wrong sub-tile position and read as missing.
     if (ttype == TileType::NEST || ttype == TileType::PIPE) {
         x_frac = 0x40;
         y_frac = 0x40;
@@ -256,19 +176,13 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
         obj.flags = static_cast<uint8_t>(
             (obj.flags & ~(ObjectFlags::FLIP_HORIZONTAL | ObjectFlags::FLIP_VERTICAL)) |
             (tile_flip & (ObjectFlags::FLIP_HORIZONTAL | ObjectFlags::FLIP_VERTICAL)));
-        // Remember the tertiary slot so return_to_tertiary can set bit 7
-        // again when this object is demoted offscreen (port of &4081-&4083).
-        // Stored as uint16_t: per-cell entry indices exceed 255 once the
-        // bake creates more than 256 entries, and truncating to uint8_t
-        // breaks dedup against the wiring overlay AND the demote → tertiary
-        // re-arm path (return_to_tertiary would re-arm the wrong slot).
+        // Remember tertiary slot for return_to_tertiary re-arm
+        // (&4081-&4083). uint16_t — indices exceed 255 post-bake; a
+        // uint8_t truncation breaks dedup and demote re-arm.
         obj.tertiary_slot = static_cast<uint16_t>(data_offset);
-        // Copy the tertiary data byte into the primary's data field (&0966
-        // objects_data). For doors this is locked/opening/colour flags; for
-        // switches it's effect-id + toggle-mask + state; for transporter
-        // beams it's stationary + destination. Spawn gate (bit 7) stripped
-        // for all paths except switch-redirect, where bit 7 is part of the
-        // switch-effects id rather than a spawn flag.
+        // Copy tertiary data byte into objects_data (&0966) — door
+        // flags / switch effect-id / transporter destination. Strip
+        // bit 7 except on switch-redirect (effect-id MSB).
         if (data_offset > 0) {
             uint8_t db = object_mgr_.tertiary_data_byte(data_offset);
             obj.tertiary_data_offset = switch_redirect ? db
@@ -277,23 +191,10 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
             obj.tertiary_data_offset = 0;
         }
 
-        // Port of &3ed1-&3edf update_metal_door_tile / update_stone_door_tile:
-        // after the generic primary-from-tertiary spawn, doors need their
-        // orientation, fixed-axis tile coord, and initial open fraction
-        // written directly. Horizontal doors (ty=0) slide along X with
-        // obj.x pinned to (state + carry); vertical doors (ty=2) along Y.
-        //
-        // The 6502 computes state as `tile_x - 1` (`SBC #&00` with the
-        // carry left CLEAR by create_primary_object_from_tertiary's
-        // success path). update_door then reconstructs obj.x as
-        // `state + carry_from_(tx + 0x10)`:
-        //   closed (tx=0xff): carry=1 → x = tile_x     (landscape door cell)
-        //   open   (tx=0x00): carry=0 → x = tile_x - 1 (the recess to the left)
-        // Without the -1 the closed door parks one tile too far along the
-        // slide axis.
-        //
-        // Initial tx = 0x00 if DOOR_FLAG_OPENING was set in the data
-        // byte, else 0xff (closed).
+        // Port of &3ed1-&3edf update_metal/stone_door_tile. state =
+        // tile - 1 (SBC #&00 with carry CLEAR); update_door rebuilds
+        // obj.x as state + carry_from_(tx + 0x10) — closed tx=0xff
+        // gives carry=1 → x = tile, open tx=0x00 → x = tile - 1.
         if (ttype == TileType::METAL_DOOR || ttype == TileType::STONE_DOOR) {
             obj.ty    = vertical_door ? 0x02 : 0x00;
             obj.state = static_cast<uint8_t>(
@@ -302,16 +203,10 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
             obj.tx = opening_initial ? 0x00 : 0xff;
         }
 
-        // Port of &3fbf..&3fcc update_tile_with_object_from_data: the tile
-        // creates the object as its real type (to set up position / default
-        // flags) and THEN overwrites the type with PLACEHOLDER (0x49).
-        // update_placeholder keeps the object pinned and invisible-ish until
-        // the anchor (player or camera centre in map mode) is close enough,
-        // then restores the real type stored in tertiary_data. Without this
-        // the real object falls off its TILE_SPACE under gravity before the
-        // player can see it, and clear_tertiary_spawn (below) has already
-        // prevented a respawn — so rolling robots and inactive chatters
-        // would never appear.
+        // Port of &3fbf..&3fcc update_tile_with_object_from_data — spawn
+        // as real type for position/flags, then overwrite type with
+        // PLACEHOLDER (0x49) so update_placeholder pins until the anchor
+        // is close enough to restore the real type.
         if (ttype == TileType::SPACE_WITH_OBJECT_FROM_DATA) {
             obj.type = ObjectType::PLACEHOLDER;
             obj.sprite = object_types_sprite[
@@ -321,12 +216,8 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
         }
     }
 
-    // Mark tertiary as spawned so it isn't created again every frame.
-    // Clear bit 7 for every kind of tertiary EXCEPT INVISIBLE_SWITCH
-    // redirects, where bit 7 is part of the packed switch-effects id
-    // and must be preserved. This matches the bit-7 gate at the top —
-    // both entry and exit of the spawn path agree on which tertiaries
-    // treat bit 7 as a spawn flag vs. part of the data.
+    // Mark spawned by clearing bit 7. Skip switch-redirects — bit 7
+    // there is part of the effect-id, matching the entry-side gate.
     if (!switch_redirect) {
         object_mgr_.clear_tertiary_spawn_bit(data_offset);
     }

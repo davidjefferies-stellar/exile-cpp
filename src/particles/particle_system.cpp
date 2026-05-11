@@ -5,22 +5,8 @@
 #include "rendering/sprite_atlas.h"
 #include "core/types.h"
 
-// ===== Per-type configuration (from &0206-&0276 in the disassembly) =========
-//
-// Source rows in the original (ttl_r, ttl, spd_r, spd, cf, cf_r, flags,
-// x_r, y_r, vx_r, vy_r):
-//
-//   PLASMA            : 0f 1e 0f 0a 91 02 a0 1f 1f 03 03
-//   JETPACK           : 0f 03 0f 18 86 01 ed 00 00 03 03
-//   EXPLOSION         : ff 00 00 00 91 46 2a 00 00 2f 2f
-//   FIREBALL          : 07 05 07 0a 81 02 20 7f 3f 00 00
-//   PROJECTILE_TRAIL  : 07 02 0f 03 82 01 2a 00 00 03 03
-//   ENGINE            : 0f 14 0f 1e 81 42 00 00 00 0f 03
-//   AIM               : 03 10 01 3f a8 07 2d 00 00 00 01
-//   STAR_OR_MUSHROOM  : 1c 08 00 00 88 47 00 ff ff 00 00
-//   FLASK             : 0f 14 07 0a 97 41 22 00 00 03 03
-//   WATER             : 07 0a 03 06 97 41 01 00 00 0f 03
-//   WIND              : 07 0a 0f 28 97 41 00 ff ff 03 03
+// Per-type config from &0206-&0276 (ttl_r, ttl, spd_r, spd, cf, cf_r,
+// flags, x_r, y_r, vx_r, vy_r). See TYPES[] below for exact bytes.
 
 struct TypeData {
     uint8_t ttl_rand, ttl_base;
@@ -123,20 +109,9 @@ void ParticleSystem::emit(ParticleType type, int count, const Object& src,
     if (type >= ParticleType::COUNT || count <= 0) return;
     const TypeData& t = TYPES[static_cast<int>(type)];
 
-    // Build base position from source object (&2197-&2209).
-    //
-    // After the three ASLs at &21e4-&21e8, the flags byte is walked MSB-first
-    // and each axis goes through two flag bits:
-    //   - "consider sprite flip": if set AND the object is flipped on this
-    //     axis, start the offset at the sprite's (width-1)*16 / (height-1)*8
-    //     edge; otherwise start at 0.
-    //   - "use centre": if set, add half the sprite's width/height in the
-    //     6502's sub-tile units (1 sprite-pixel horizontally = 16, 1 row
-    //     vertically = 8).
-    // Both offsets are applied to the object's position fraction, carrying
-    // into the whole-tile byte on overflow. Jetpack particles use the "use
-    // vertical centre" bit (0x08) so they come out of the middle of the
-    // spacesuit instead of its head.
+    // &2197-&2209 build base position. Flags drive two per-axis bits:
+    // consider-flip (start at sprite edge when flipped) and use-centre
+    // (add half sprite). Sub-tile units: 1 px = 16 horiz, 1 row = 8 vert.
     uint8_t base_x         = src.x.whole;
     uint8_t base_x_frac    = src.x.fraction;
     uint8_t base_y         = src.y.whole;
@@ -190,25 +165,10 @@ void ParticleSystem::emit(ParticleType type, int count, const Object& src,
     apply_base_offset(base_x, base_x_frac, sw_units, x_flipped,
                       consider_hflip, use_hcentre);
 
-    // Base velocity — full port of &21bc-&21e1.
-    //
-    //   1. If flags bit 7 set: angle = angle_from(src.velocity_x/y)
-    //      (or src.acceleration_x/y when bit 6 also set), then EOR #&80
-    //      so particles fly OPPOSITE to the object's motion.
-    //   2. Else: keep the caller-passed angle (the 6502's `&b5 angle`,
-    //      set by the call site before JSR add_particles).
-    //   3. magnitude = (rnd & spd_rand) + spd_base.
-    //   4. (vector_x, vector_y) = vector_from_magnitude_and_angle(
-    //        magnitude, angle) — this is the per-batch base velocity
-    //      that every particle in this call shares (per-particle
-    //      ±vx_rand / ±vy_rand jitter added below).
-    //
-    // Acceleration source (bit 6 with bit 7) isn't wired in our port —
-    // we don't store accel persistently on the object. Fall back to
-    // velocity in that case; the only built-in user is JETPACK
-    // (flags 0xed = use_src_accel + cycle + foreground + use_vcentre)
-    // and update_player feeds accel_x/accel_y into apply_acceleration
-    // each frame, so velocity is a close-enough proxy.
+    // &21bc-&21e1 base velocity. Flag bit7 EORs angle by &80 so
+    // particles fly OPPOSITE the source's motion. Accel source (bits
+    // 7+6) falls back to velocity since we don't store accel on Object;
+    // only JETPACK uses it and player feeds accel each frame anyway.
     bool use_src_vel   = (t.flags & 0x80) != 0 && (t.flags & 0x40) == 0;
     bool use_src_accel = (t.flags & 0xc0) == 0xc0;
     bool add_obj_vel   = (t.flags & 0x01) != 0;
@@ -339,14 +299,9 @@ void ParticleSystem::emit_directed(ParticleType type, uint8_t angle,
     int8_t base_vx = 0, base_vy = 0;
     NPC::vector_from_magnitude_and_angle(magnitude, angle, base_vx, base_vy);
 
-    // &21e4-&2209 spawn-position flag walk. The four spawn-position bits
-    // (consider_vflip, use_vcentre, consider_hflip, use_hcentre) shift
-    // the base position by sprite width/height before per-axis emission.
-    // emit() honours these; emit_directed didn't, so PARTICLE_AIM (flags
-    // 0x2d = use_vcentre + consider_hflip) was spawning from the held
-    // object's top-left instead of the player's mid-body. With a
-    // right-facing aim that puts the horizontal stream above the head
-    // and reads as "always upward".
+    // &21e4-&2209 spawn-position flag walk (consider_vflip / use_vcentre
+    // / consider_hflip / use_hcentre). emit_directed needs this so
+    // PARTICLE_AIM (flags 0x2d) spawns mid-body, not at top-left.
     uint8_t base_x      = src.x.whole;
     uint8_t base_x_frac = src.x.fraction;
     uint8_t base_y      = src.y.whole;

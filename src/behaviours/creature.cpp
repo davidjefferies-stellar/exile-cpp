@@ -12,12 +12,7 @@ namespace Behaviors {
 
 // &4A11: Player update - handled mostly in game.cpp, this covers supplementary logic
 void update_player(Object& obj, UpdateContext& ctx) {
-    // Player-specific updates beyond movement (already in game.cpp):
-    // - Aiming angle updates
-    // - Blaster cooldown
-    // - Energy bell sounds
-    // Most player logic is in Game::update_player(), this is a no-op stub
-    // for the dispatch table since the player is processed separately.
+    // No-op stub for the dispatch table — player runs in Game::update_player().
 }
 
 // Common chatter logic shared by active and inactive (port of &48a7-&48c0)
@@ -110,16 +105,9 @@ void update_active_chatter(Object& obj, UpdateContext& ctx) {
         }
     }
 
-    // &4933-&494a: produce power pod if whistle two was played AND
-    // Chatter has clear LOS to the source.
-    //   LDX whistle_two_activating_object         ; positive if played
-    //   BMI skip_producing_power_pod
-    //   JSR check_for_obstruction_between_objects_80   ; 16-tile LOS
-    //   BCS skip_producing_power_pod               ; obstructed → bail
-    //   ...fire POWER_POD at source, set energy = 0 to deactivate
-    // has_line_of_sight is the port of
-    // check_for_obstruction_between_objects_80 (16 tiles, door-aware) —
-    // without it Chatter would fire through walls / closed doors.
+    // &4933-&494a produce power pod toward whistle-two source if 16-tile
+    // LOS clear (check_for_obstruction_between_objects_80). LOS is door-
+    // aware; without it Chatter fires through walls.
     if (ctx.whistle_two_activator < GameConstants::PRIMARY_OBJECT_SLOTS &&
         NPC::has_line_of_sight(obj, ctx.whistle_two_activator,
                                 /*max_tiles=*/16, ctx)) {
@@ -263,13 +251,8 @@ void update_fluffy(Object& obj, UpdateContext& ctx) {
         if (ctx.rng.next() < 0x20) obj.timer &= 0x7f;
     }
 
-    // Don't move if held by player
-    // (Check: is this object the held object? We can approximate by checking velocity sync)
-    // The original checks player_object_held == this_object
-    // We don't have direct access to held_slot here, but if velocity matches player exactly
-    // and position is adjacent, it's likely held. Skip movement in that case.
-    // A cleaner approach: check if our slot matches some held flag. For now, check if
-    // we're at the same position as the player (held objects are always adjacent).
+    // Approximate "held by player" without slot access: adjacent + matching
+    // velocity. 6502 reads player_object_held == this_object directly.
     const Object& player = ctx.mgr.player();
     int8_t pdx = static_cast<int8_t>(obj.x.whole - player.x.whole);
     int8_t pdy = static_cast<int8_t>(obj.y.whole - player.y.whole);
@@ -294,11 +277,8 @@ void update_fluffy(Object& obj, UpdateContext& ctx) {
     NPC::face_movement_direction(obj);
 }
 
-// Per-type tables from &319d-&31a6, indexed by (type − RED_MAGENTA_IMP).
-//  - projectile: what imp fires at the player when angered.
-//  - minimum_energy: applied every frame via enforce_minimum_energy.
-//  - food: object type the imp absorbs (sets NPC_WAS_FED). &317f.
-//  - gift: object type a fed imp deposits when it returns to its pipe. &31a7.
+// Per-type imp tables, indexed by (type − RED_MAGENTA_IMP): projectile
+// &319d, minimum_energy &31a2, food &317f, gift &31a7.
 static constexpr uint8_t imp_projectile_type[5] = {
     0x34, // red/magenta   → BLUE_MUSHROOM_BALL
     0x17, // red/yellow    → RED_BULLET
@@ -328,37 +308,16 @@ static constexpr uint8_t imp_gift_type[5] = {
 // below, read by the at-home gift-drop branch, cleared after dropping.
 constexpr uint8_t kNPC_WAS_FED = 0x10;
 
-// &44EF: Imp update (all 5 types). Port of update_imp.
-//
-// objects_state packs:
-//   bits 7-6: NPC mood (MINUS_TWO, MINUS_ONE, ZERO, PLUS_ONE)
-//   bit  5  : NPC_CLIMBING
-//   bit  4  : NPC_WAS_FED
-//   bits 3-0: frames since last standing on a walkable surface
-//
-// We don't port the full walking / climbing / jumping physics yet; this
-// version covers the 6502's observable behaviour:
-//   - newly-spawned imps start in MINUS_TWO (angry) mood.
-//   - walking speed depends on mood (0x28 when excited, 0x10 when neutral).
-//   - minimum energy and projectile type look up per-variant from tables.
-//   - damage the player on contact, 5 points (&4573 LDA #&05).
-//   - ~3-in-128 chance per frame of firing the variant's projectile.
-//   - sprite from velocity magnitude (SPRITE_IMP_WALKING_ONE + 0..2).
+// &44EF update_imp (all 5 variants). objects_state packs mood (bits 7-6),
+// NPC_CLIMBING (bit 5), NPC_WAS_FED (bit 4), grounded-frame counter (bits 3-0).
+// Walking/climbing/jumping physics not yet ported.
 void update_imp(Object& obj, UpdateContext& ctx) {
-    // &44ef-&44f7: newly-created imps get MINUS_TWO mood so they start
-    // aggressive. Clear NEWLY_CREATED after handling so we only run this
-    // once; the main loop also clears it in step 18, but doing it here
-    // too is harmless and mirrors the 6502's one-shot semantic.
+    // &44ef-&44f7: newly-created imps start in MINUS_TWO (aggressive).
     if (obj.flags & ObjectFlags::NEWLY_CREATED) {
         obj.state = NPCMood::MINUS_TWO;
     }
 
-    // &44f9-&4504: speed from mood. "ASL A; EOR state; BMI not_zero_mood":
-    // mood field is bits 7-6, ASL shifts bit 6 into 7; EOR with the
-    // original state flips bit 7 back based on bit 7 alone. Result is
-    // "is non-zero mood?" → bit 7 set. In our enum ZERO=0x00 and any
-    // other value has at least one of bits 7-6 set, so a simple test
-    // against NPCMood::MASK suffices.
+    // &44f9-&4504: speed from mood (excited 0x28, neutral 0x10).
     uint8_t mood = Mood::get_mood(obj);
     int8_t speed = (mood != NPCMood::ZERO) ? 0x28 : 0x10;
 
@@ -368,14 +327,9 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                    static_cast<uint8_t>(ObjectType::RED_MAGENTA_IMP);
     if (tidx >= 5) tidx = 0;
 
-    // Food absorption — port of the &27c9 stimuli path's "absorb food"
-    // step (&2814-&281c) merged with the &4552-&4558 "set NPC_WAS_FED"
-    // post-stimuli action. Each imp variant eats a specific object type;
-    // touching it removes the food and latches WAS_FED until a gift
-    // drop consumes the bit. Hoisted above the at-home block so an imp
-    // that eats food while sitting in its pipe drops a gift the same
-    // frame, matching the 6502 path where the post-stimuli &4552 was-fed
-    // promotion runs even on the at-home tick.
+    // &27c9/&2814/&4552 food absorption + WAS_FED latch. Hoisted above
+    // the at-home block so an imp eating in its pipe drops same frame,
+    // matching the 6502's post-stimuli was-fed promotion.
     bool was_fed_before = (obj.state & kNPC_WAS_FED) != 0;
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
         Object& touched = ctx.mgr.object(obj.touching);
@@ -393,20 +347,13 @@ void update_imp(Object& obj, UpdateContext& ctx) {
         }
     }
 
-    // &450c-&453f: at-home gift drop. Direct port of the 6502 sequence —
-    // the at-home block runs whenever the imp's current tile is PIPE
-    // (regardless of WAS_FED), drops a gift only if fed AND the per-
-    // variant counter is positive, and ALWAYS despawns the imp at the
-    // end (`JMP set_object_as_far_away` at &453f). The despawn matters:
-    // without it the imp camps the pipe and re-runs the block forever.
+    // &450c-&453f at-home gift drop. Runs on any PIPE tile, drops gift
+    // when fed+counter>0, ALWAYS despawns at end — without &453f the imp
+    // camps the pipe and re-runs the block forever.
     {
-        // Resolve via the tertiary so a "greenery bush in a pipe" cell
-        // (raw landscape type GREENERY_WITH_OBJECT_FROM_TYPE = 0x07,
-        // tertiary tile_and_flip redirected to PIPE) reads as PIPE here
-        // — what the imp visually walked back to. The 6502's tile_type
-        // at &08 is set by get_tile_and_check_for_tertiary_objects
-        // (&1715), which already does the redirect, so this matches the
-        // 6502 path.
+        // Resolve via tertiary so a bush-in-pipe (GREENERY_WITH_OBJECT_FROM_
+        // TYPE redirected to PIPE) reads as PIPE — same as the 6502's &1715
+        // get_tile_and_check_for_tertiary_objects.
         ResolvedTile res =
             resolve_tile_with_tertiary(ctx.landscape, obj.x.whole, obj.y.whole);
         uint8_t home_tile = res.tile_and_flip;
@@ -435,25 +382,14 @@ void update_imp(Object& obj, UpdateContext& ctx) {
             // imp settles instead of skidding off-centre.
             speed = static_cast<int8_t>(speed >> 2);
 
-            // &451b-&4525 (deviation, intentional): the 6502 also gates
-            // on `|centre_x_fraction| ≥ 0x68` — a 48-frac band around
-            // the tile centre. Skipped here because our walking homes
-            // the imp to bush.x.whole and stops when whole-tile coords
-            // match; the bush sits at x_fraction 0x40 (per the &3e39
-            // override in tertiary_spawn.cpp), which puts the imp's
-            // centre at ~0x60 — outside the band. The 6502 walks via
-            // velocity-targeting on update_walking_npc, so its imp's
-            // fraction sweeps through the centre naturally. Recovering
-            // the gate would require homing to the pipe tile centre
-            // rather than the bush; for now we accept earlier despawn
-            // as the cost of getting any drop at all.
+            // &451b-&4525 port deviation: 6502 also gates on
+            // |centre_x_fraction|>=0x68. We home to bush.x (frac 0x40 per
+            // &3e39 override) not pipe-centre, so the band never trips —
+            // accept earlier despawn as the cost of any drop firing.
 
-            // &4527-&4529: tile_collision_y_flags bit 7 — collision-to-
-            // bottom flag set THIS frame when the y revert fired on a
-            // downward move. Our equivalent is is_supported(), set by
-            // the foot-probe at the end of physics; semantically close
-            // enough (a bouncing imp probes off the floor a frame or
-            // two but settles within the gift counter's first window).
+            // &4527-&4529 tile_collision_y_flags bit 7 (landed-this-frame).
+            // Approximate with is_supported() — close enough since the imp
+            // settles within the gift counter's first window.
             bool landed = obj.is_supported();
             ctx.mgr.log_diag(
                 "imp p%d AT-PIPE @%u,%u landed=%d fed=%d gifts=%u",
@@ -483,26 +419,16 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                         static_cast<unsigned>(ctx.imp_gifts_remaining[tidx]));
                     if (gslot >= 0) {
                         Object& gift = ctx.mgr.object(gslot);
-                        // 6502 &4533-&4537: A holds gift_type after LDA,
-                        // TAX leaves it untouched, so create_projectile
-                        // sees vx = gift_type. The create_projectile
-                        // prologue at &33ab-&33ad runs invert_if_negative
-                        // on A when this_object_x_flip's bit 7 is set —
-                        // i.e. negate vx when the imp faces left so the
+                        // &4533-&4537: gift vx = gift_type, negated by
+                        // invert_if_negative when imp faces left so the
                         // gift flies the same way the imp is facing.
-                        // Mirror that here.
                         int8_t gift_vx = static_cast<int8_t>(imp_gift_type[tidx]);
                         if (obj.is_flipped_h()) gift_vx = static_cast<int8_t>(-gift_vx);
                         gift.velocity_x = gift_vx;
                         gift.velocity_y = -0x38;
-                        // Disarm the "undisturbed" pin in update_collectable.
-                        // POWER_POD / ALIEN_WEAPON inherit energy bit 7
-                        // either from init_object_from_type (0x4a..0x64
-                        // arm) or from get_initial_energy returning 0xff
-                        // (range &38..&49). Without clearing it the very
-                        // next frame's update_collectable sees energy &
-                        // 0x80 != 0 and zeros our launch velocity, so
-                        // the gift just sits inside the pipe.
+                        // Disarm update_collectable's undisturbed pin —
+                        // POWER_POD/ALIEN_WEAPON inherit energy bit 7
+                        // and would otherwise zero our launch velocity.
                         gift.energy &= 0x7f;
                         NPC::offset_child_from_parent(gift, obj);
                         static constexpr uint8_t kSoundSqueal[4] =
@@ -522,19 +448,10 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                         }
                     }
                 }
-                // &453f: JMP set_object_as_far_away — every landed
-                // imp at a pipe despawns, fed or not. The 6502
-                // path that consumes the "far away" flag at &1d18-&1d24
-                // routes KEEP_AS_TERTIARY types through the tertiary
-                // re-arm step (set bit 7 of the data byte so the spawn
-                // gate fires again next time the player is in range);
-                // imp type flags are 0x6a, KEEP_AS_TERTIARY (0x10) set,
-                // so return_to_tertiary is the matching call. The
-                // PENDING_REMOVAL flag isn't strictly needed (the slot
-                // is already inactive after return_to_tertiary) but
-                // routes the slot through step 14's `continue` so
-                // step 15 physics doesn't add a frame's gravity and
-                // accidentally drift y.whole back off zero.
+                // &453f set_object_as_far_away. Imps are KEEP_AS_TERTIARY
+                // so return_to_tertiary re-arms the spawn gate. PENDING_
+                // REMOVAL routes the slot through step 14's continue,
+                // preventing step 15 from drifting y.whole off zero.
                 ctx.mgr.log_diag(
                     "imp p%d DESPAWN at pipe @%u,%u",
                     ctx.this_slot, obj.x.whole, obj.y.whole);
@@ -563,24 +480,10 @@ void update_imp(Object& obj, UpdateContext& ctx) {
         mood = NPCMood::MINUS_TWO;
     }
 
-    // &455a-&455f: NPC path update + walking physics. The 6502 feeds
-    // walking_speed into update_walking_npc (&3b08), which subtracts the
-    // current velocity from the speed target and runs that difference
-    // through apply_weight_and_limit_to_acceleration — so walking_speed
-    // is a TARGET velocity, approached gradually via capped acceleration.
-    //
-    // Target is read from this_object_target_object_and_flags, which the
-    // mood/stimuli pass at &27d5-&2802 has already stamped this frame:
-    //   low 5 bits  = primary slot (0 = player)
-    //   bit 0x20    = AVOID — walk AWAY instead of TOWARDS
-    //   bits 6-7    = directness (we only honour the slot+AVOID part)
-    //
-    // For blue/cyan imps the player is in the phobia table (&316d &ba),
-    // so when the player is in range Mood::update_mood flips AVOID and
-    // the imp flees. Fed angry imps re-target their home BUSH via the
-    // 50%-chance-skipped home re-find — so a fed imp uninterrupted by
-    // the player walks home, and a fed imp with the player nearby
-    // alternates between fleeing and approaching every 64 frames.
+    // &455a-&455f update_walking_npc (&3b08). walking_speed is a TARGET
+    // velocity reached via capped acceleration. Target slot + AVOID flag
+    // come from this_object_target_object_and_flags (stamped by the mood
+    // pass at &27d5-&2802).
     if (mood == NPCMood::MINUS_TWO || mood == NPCMood::MINUS_ONE) {
         uint8_t target_slot = obj.target_and_flags & TargetFlags::OBJECT_MASK;
         bool avoid = (obj.target_and_flags & TargetFlags::AVOID) != 0;
@@ -611,23 +514,10 @@ void update_imp(Object& obj, UpdateContext& ctx) {
             obj.velocity_x = static_cast<int8_t>(nv);
         }
 
-        // Reduced port of update_walking_npc_and_check_for_obstacles
-        // (&3ae1) → consider_setting_npc_jumping (&3a54) → set_npc_
-        // jumping (&3a59). The 6502 detects walls and drops every 4
-        // frames via check_for_space_to_side_of_object (&399c) and rolls
-        // npc_walking_types_jump_probability_table (&397e) — for imps
-        // (walking type 2) that's 0x08/256 ≈ 3% per check, plus a 78%
-        // turn-or-jump roll (turn_probability 0xc8) when actually
-        // blocked. Without this, fed imps just press into the wall
-        // beneath the pipe and never climb back home.
-        //
-        // We don't have the per-axis collision probes the 6502 uses, so
-        // approximate "blocked" two ways:
-        //  - target is above us by ≥2 tiles: pipe is up there, jump.
-        //  - velocity_x has the wrong sign vs target_vx: bounce_reflect
-        //    flipped it after a wall hit last frame.
-        // Either condition fires at most once per 4 frames so jumps
-        // don't stack and the imp can rest between hops.
+        // &3ae1/&3a54/&3a59 reduced jump port. Without per-axis collision
+        // probes, approximate "blocked" via target-above-by-2 or velocity
+        // sign-flip (bounce_reflect after wall hit). Gated to ≤1/4 frames
+        // so jumps don't stack and the imp can rest between hops.
         int8_t dy = static_cast<int8_t>(target_y - obj.y.whole);
         // Only chase a target above us when we're actually approaching
         // it. Under AVOID the target IS the threat, so jumping toward
@@ -651,24 +541,16 @@ void update_imp(Object& obj, UpdateContext& ctx) {
         obj.velocity_x = static_cast<int8_t>((ctx.rng.next() & 0x0f) - 7);
     }
 
-    // &4562-&4578: if touching target (player or whatever we're
-    // chasing) and it's pick-upable, deal 5 damage and latch onto its
-    // velocity. The 6502's CPY &0e gate at &4564 means a fed imp
-    // walking back to its pipe won't damage the player it brushes past
-    // — we mirror that by skipping the contact-damage path when
-    // WAS_FED is latched.
+    // &4562-&4578 contact damage 5. The &4564 CPY &0e gate means a fed
+    // imp brushing past the player doesn't hurt them — mirror by skipping
+    // when WAS_FED is latched.
     if (obj.touching == 0 && !(obj.state & kNPC_WAS_FED)) {
         NPC::damage_player_if_touching(obj, ctx.mgr.player(), 5, ctx.damage_events);
     }
 
-    // &45c7-&45d3: imps roll to fire at the player. Port of
-    // find_a_target_and_fire_at_it_with_likelihood_A_divided_by_four
-    // entered with A = 8: A becomes 8/4 + 2 = 4, fires when rng <= 4
-    // (5/256 ≈ 2% per frame). Plus the 16-tile-per-axis range gate
-    // from calculate_firing_vector_from_distance (&335a CMP #&06 on
-    // relative_tiles_log) — without it imps would plink the player
-    // from across the map. Skip when already touching the player so a
-    // hugged imp doesn't keep launching crystals into its own face.
+    // &45c7-&45d3 find_a_target_and_fire (A=8 → fires when rng<=4, ~2%/frame).
+    // Range-gated to 16 tiles per axis via &335a CMP #&06; skip when already
+    // touching the player so a hugged imp doesn't shoot itself.
     bool not_at_target = (obj.touching != 0);
     const Object& player_for_range = ctx.mgr.player();
     int8_t rdx = static_cast<int8_t>(obj.x.whole - player_for_range.x.whole);
@@ -694,12 +576,9 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                 int vy = kMag * ady / total;
                 b.velocity_x = static_cast<int8_t>(dx >= 0 ? vx : -vx);
                 b.velocity_y = static_cast<int8_t>(dy >= 0 ? vy : -vy);
-                // Clear the collectable "undisturbed" pin (energy bit 7
-                // armed by init_object_from_type for type 0x4a..0x64).
-                // CORONIUM_CRYSTAL falls in that range as a static
-                // collectable, but when fired by an imp it must fly —
-                // step 15's pin_undisturbed branch zeroes velocity each
-                // frame otherwise.
+                // Clear collectable undisturbed pin: CORONIUM_CRYSTAL
+                // (type 0x4a..0x64) inherits energy bit 7 from
+                // init_object_from_type; step 15 would zero our velocity.
                 b.energy &= 0x7f;
                 NPC::offset_child_from_parent(b, obj);
 
@@ -723,11 +602,8 @@ void update_imp(Object& obj, UpdateContext& ctx) {
     if (obj.velocity_x == 0) {
         NPC::change_object_sprite_to_base_plus_A(obj, 0);
     } else {
-        // update_sprite_offset_using_scaled_velocities divides by 8 (X=2)
-        // rather than the default 16 (X=3) that our helper uses; the
-        // resulting off/2 still lands in the 0..2 range after the two
-        // LSRs that follow. Approximation is close enough for animation
-        // cadence; full /8 scaling is TODO.
+        // /8 scaling (X=2) approximated by helper's default /16; off/2
+        // still lands in 0..2 — full scaling TODO.
         uint8_t off = NPC::update_sprite_offset_using_velocities(obj, 0x0c);
         off >>= 2;
         if (off > 2) off = 2;
@@ -819,14 +695,9 @@ void update_red_slime(Object& obj, UpdateContext& ctx) {
         sprite_offset = a;
     }
 
-    // +0..+3 selects the four SLIME animation frames. The 6502 ends with
-    // JMP &32aa subtract_width_from_position — X-only centring, NOT the
-    // full &3292 entry. The slime is v-flipped (ceiling-mounted) and
-    // spawns with y_frac=0, so a Y centring shift on the first cycle
-    // (-20 fraction units) underflows y.whole down by 1, parking the
-    // slime — and every RED_DROP it later spawns — inside the solid
-    // ceiling tile, where the drop tile-collides on its first physics
-    // step and is removed before it can fall.
+    // Must use &32aa subtract_width_from_position (X-only), not full
+    // &3292: ceiling-mounted slime with y_frac=0 would underflow y.whole
+    // and park itself + spawned RED_DROPs inside the solid ceiling.
     NPC::change_object_sprite_x_only(obj, static_cast<uint8_t>(sprite_offset));
 }
 
@@ -892,12 +763,8 @@ void update_worm(Object& obj, UpdateContext& ctx) {
     NPC::damage_player_if_touching(obj, ctx.mgr.player(), 3, ctx.damage_events);
     NPC::face_movement_direction(obj);
 
-    // &4ea1-&4eb3: distance-gated squeal pair. The 6502 plays both
-    // back-to-back to layer two pitches into one warble, only when the
-    // creature is within ~15 tiles of the screen centre and the random
-    // roll favours nearer creatures. play_at's 16-tile cutoff gives us
-    // the same audible range; the rng gate keeps it from chattering
-    // every frame.
+    // &4ea1-&4eb3 squeal pair: two pitches layered into one warble.
+    // play_at's 16-tile cutoff matches the 6502's distance gate.
     if ((ctx.rng.next() & 0x0f) == 0) {
         static constexpr uint8_t kSoundWormA[4] = { 0x33, 0xf3, 0x09, 0xb4 };
         static constexpr uint8_t kSoundWormB[4] = { 0x33, 0xf3, 0x07, 0xb5 };
@@ -916,43 +783,29 @@ void update_maggot(Object& obj, UpdateContext& ctx) {
     update_worm(obj, ctx);
 }
 
-// &4F21: Piranha or wasp - flying/swimming predator. Port of
-// update_piranha_or_wasp. Both share the same routine in the 6502, with
-// a single `is_wasp` branch flipping gravity (sinks vs floats), the
-// default target (LARGE_HIVE vs SMALL_HIVE) and the water/air element
-// gate. aggressiveness is stored in obj.state.
+// &4F21 update_piranha_or_wasp. Single routine; is_wasp branch flips
+// gravity, default target (LARGE_HIVE vs SMALL_HIVE), and element gate.
+// Aggressiveness stored in obj.state.
 void update_piranha_or_wasp(Object& obj, UpdateContext& ctx) {
     const bool is_wasp = (obj.type == ObjectType::WASP);
 
-    // &4f2b-&4f33: piranhas get a +4 sinking acceleration, wasps get −1
-    // (countering the +1 gravity applied by the main loop). We model that
-    // here by adjusting velocity_y directly, matching cancel_gravity and
-    // adding +4 for piranhas.
+    // &4f2b-&4f33 gravity tweak: piranhas +4 (sink), wasps -1
+    // (cancel_gravity vs the main loop's +1).
     if (is_wasp) {
         NPC::cancel_gravity(obj);
     } else {
         if (obj.velocity_y < 127 - 4) obj.velocity_y += 4;
     }
 
-    // &4f33-&4f42: 1-in-2 chance every frame of considering a new target.
-    // When aggressiveness (obj.state) >= rnd, aim at the player directly;
-    // otherwise fall back on the species' default nest type. The 6502
-    // updates target_and_flags here (not velocity) and lets the later
-    // move_towards_target_with_probability_X at &4f75 carry the actual
-    // motion via a vector from obj to target. Updating target_and_flags
-    // (rather than slamming velocity_x/y) preserves the ±0x20 emerge
-    // momentum the hive gives a fresh wasp, letting blending into the
-    // seek vector happen gradually instead of stalling on tick one.
-    //
-    // Home-hive fallback: the 6502 calls find_object for the nearest
-    // SMALL_HIVE; we approximate with "leave target_and_flags unchanged",
-    // which keeps the spawning hive (set by update_hive) as the home.
+    // &4f33-&4f42 1-in-2 retarget. Must update target_and_flags (not
+    // velocity) so the hive's ±0x20 emerge momentum blends gradually
+    // into the seek vector instead of stalling on tick one. Home-hive
+    // fallback: leave target_and_flags as set by update_hive.
     if (ctx.rng.next() & 0x40) {
         bool target_player = obj.state >= (ctx.rng.next());
         if (target_player) {
-            // Low 5 bits = target slot; 0 = player. Preserve directness
-            // / AVOID bits in the top 3 (they encode path-planning
-            // state, not target identity).
+            // Low 5 bits = target slot (0=player); preserve directness/
+            // AVOID in top 3 (path-planning state).
             obj.target_and_flags = static_cast<uint8_t>(
                 (obj.target_and_flags & 0xe0) | 0);
         }
@@ -982,16 +835,9 @@ void update_piranha_or_wasp(Object& obj, UpdateContext& ctx) {
     // &4f68: face movement direction (flip_object_to_match_velocity_x).
     NPC::face_movement_direction(obj);
 
-    // &4f6b-&4f73: if not colliding with tiles top/bottom AND out of
-    // element (piranha above water OR wasp below water), leave — they
-    // don't move outside their medium.
-    //
-    // Important: use the per-column waterline, not NPC::is_underwater
-    // which tests against the fixed upper-world SURFACE_Y (0x4e). Wasps
-    // spawn in the lower world well below SURFACE_Y but in air pockets,
-    // not in water — the SURFACE_Y shortcut flagged every wasp as
-    // "in water", so they hit this `return` before their seek/jitter
-    // could produce any motion and got stuck next to the hive.
+    // &4f6b-&4f73 out-of-element bail. Must use per-column waterline:
+    // SURFACE_Y shortcut wrongly flags lower-world air pockets as water,
+    // stranding wasps that spawn there.
     bool in_water =
         Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole);
     bool out_of_element = is_wasp ? in_water : !in_water;
@@ -1060,20 +906,14 @@ static void update_bird_common(Object& obj, UpdateContext& ctx) {
     // is effectively a no-op today — kept for faithfulness.
     NPC::enforce_minimum_energy(obj, birds_energy_table[tidx]);
 
-    // &4654-&4659: if the bird has just taken >=8 damage, set its
-    // visibility bit (obj.state). Invisible birds read that flag to
-    // temporarily reveal themselves. We approximate "was_damaged" with
-    // the WAS_DAMAGED flag the main loop sets via check_if_object_was_
-    // damaged (&253c).
+    // &4654-&4659 visibility on damage. WAS_DAMAGED flag approximates the
+    // 6502's &253c check; invisible birds read obj.state to reveal.
     if (obj.flags & ObjectFlags::WAS_DAMAGED) {
         obj.state = 0x80;   // non-zero → visible
     }
 
-    // &465b-&4668: sprite frame from velocity magnitude mod 0x14, shifted
-    // right twice → 0..4. Value 4 collapses to 2 (BIRD_THREE), so we get
-    // a 4-frame wing cycle that dips through the middle pose on fast
-    // movement. change_object_sprite_to_base_plus_A indexes from
-    // object_types_sprite[type] (SPRITE_BIRD_ONE = 0x59 for all birds).
+    // &465b-&4668 sprite cycle: |v|%0x14 >> 2, with 4→2 so the 4-frame
+    // wing cycle dips through the middle pose on fast movement.
     {
         uint8_t off = NPC::update_sprite_offset_using_velocities(obj, 0x14);
         off >>= 2;
@@ -1131,12 +971,9 @@ void update_red_magenta_bird(Object& obj, UpdateContext& ctx) {
     update_bird_common(obj, ctx);
 }
 
-// &462B: Invisible bird. Stays invisible until it's been damaged; that's
-// tracked by obj.state (non-zero = recently damaged = visible). We
-// clear obj.visibility (stored as bit 7 of obj.palette in our port's
-// convention? actually in the 6502 it's &2b this_object_visibility; we
-// approximate with bit 7 of obj.palette since that's how the 6502 routes
-// invisibility into plotting).
+// &462B update_invisible_bird. Visible only after damage (obj.state!=0).
+// 6502 stores visibility at &2b; we use bit 7 of obj.palette since that's
+// the plot path that honours invisibility in our port.
 void update_invisible_bird(Object& obj, UpdateContext& ctx) {
     // &462b-&462f: if bird hasn't taken damage recently, clear the top
     // bit of this_object_visibility to make it invisible again.
@@ -1146,25 +983,10 @@ void update_invisible_bird(Object& obj, UpdateContext& ctx) {
     update_bird_common(obj, ctx);
 }
 
-// &4170 update_gargoyle. Faithful port of the 6502 routine. The data
-// byte selects one of 5 sub-types (bits 6-0 = `.4218421` per the &4170
-// header doc; bit 7 is the unspawned flag and is masked off here).
-// Each sub-type has its own firing cadence, projectile type, and
-// velocity vector. Tables below are byte-for-byte copies from
-// &418b-&419e:
-//
-//   type | freq mask | vx    | vy   | projectile
-//     0  |   0x0f    | 0x11  | 0xc0 | LIGHTNING       (every 16 frames)
-//     1  |   0x07    | 0x7f  | 0x0c | PLASMA_BALL     (every  8 frames)
-//     2  |   0x07    | 0x7f  | 0x04 | PLASMA_BALL     (every  8 frames; type 2 unused)
-//     3  |   0x07    | 0x7f  | 0xf9 | PLASMA_BALL     (every  8 frames)
-//     4  |   0x03    | 0x01  | 0x9a | LIGHTNING       (every  4 frames)
-//
-// vy values 0xc0/0xf9/0x9a are negative int8 (upward / upward-left
-// trajectories); 0x7f and 0x11 are positive (toward the right). The
-// 6502's create_projectile at &33ab applies invert_if_negative to vx
-// based on the gargoyle's x_flip, mirroring the projectile when the
-// gargoyle faces left — same logic here.
+// &4170 update_gargoyle. Data byte bits 6-0 select one of 5 sub-types
+// (bit 7 = spawn-gate, masked). Tables below are byte-for-byte from
+// &418b-&419e; create_projectile (&33ab) negates vx via x_flip so the
+// projectile mirrors when the gargoyle faces left.
 void update_gargoyle(Object& obj, UpdateContext& ctx) {
     static constexpr uint8_t kFreqMask[5] = { 0x0f, 0x07, 0x07, 0x07, 0x03 };
     static constexpr int8_t  kVx[5] = {
@@ -1225,15 +1047,9 @@ void update_gargoyle(Object& obj, UpdateContext& ctx) {
 
 // &4704: Triax - the boss, teleports and attacks
 void update_triax(Object& obj, UpdateContext& ctx) {
-    // &4704-&4710: if Triax is touching a destinator, absorb it and
-    // teleport away. This is what produces the intro beat — Triax starts
-    // in primary slot 1 next to the destinator tertiary, so on the first
-    // frame he touches it, eats it, and teleports to y=0 (removed).
-    //
-    // `&0a23` (tertiary_objects_data + &9d) is the destinator's tertiary
-    // slot at Triax's lab (&64, &d6). Setting bit 7 re-arms the
-    // needs-creating flag so the destinator respawns there next time the
-    // player visits, which is where the player must retrieve it from.
+    // &4704-&4710 absorb-and-teleport. Re-arming tertiary &9d (Triax's lab
+    // at &64,&d6) sets needs-creating so the destinator respawns there for
+    // the player to retrieve. Drives the intro beat.
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
         Object& target = ctx.mgr.object(obj.touching);
         if (target.type == ObjectType::DESTINATOR) {
@@ -1249,26 +1065,19 @@ void update_triax(Object& obj, UpdateContext& ctx) {
 
     Mood::update_mood(obj, ctx);
 
-    // LOS-gated behaviour. update_npc_path raycasts once every 16 frames and
-    // updates directness bits + (tx, ty). Triax chases the player directly
-    // only while the line of sight is clear; otherwise his directness decays
-    // and he wanders via the relaxed-path branch — matches &4712 not_absorbed
-    // which gates most action on `target_object_and_flags & 0x80`.
+    // &4712 not_absorbed LOS gate. update_npc_path's 16-frame raycast
+    // updates directness; Triax chases only with clear LOS, otherwise
+    // wanders via the relaxed-path branch.
     NPC::update_npc_path(obj, ctx);
 
     const Object& player = ctx.mgr.player();
     int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
     int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);
 
-    // &4714-&4718: if Triax can't see the player (DIRECTNESS_TWO bit of
-    // target_and_flags clear), 1-in-256 frames he gives up and teleports
-    // away (ty=0, which the step-8 teleport handler interprets as
-    // "remove"). The 6502 only teleports *toward* the player via
-    // consider_teleporting_to_random_tile_near_player (&488b), and that
-    // routine gates on `this_object_surrounded_by_tiles`. We don't track
-    // that flag, so skip the teleport-to-player path entirely — otherwise
-    // Triax spawns at y=0xfe during the lower-world event, the player
-    // flies up to the surface, and Triax warps to the surface to chase.
+    // &4714-&4718 no-LOS give-up: 1-in-256 frames ty=0 (step-8 = remove).
+    // Skip teleport-toward-player (&488b) since we don't track
+    // this_object_surrounded_by_tiles — without that gate Triax would
+    // warp to the surface to chase during the lower-world event.
     uint8_t lvl = NPC::directness_level(obj);
     if (lvl < 2 && ctx.rng.next() == 0) {
         obj.ty = 0;

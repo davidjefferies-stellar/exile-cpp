@@ -11,19 +11,10 @@
 namespace Collision {
 
 bool is_tile_type_solid(uint8_t type) {
-    // Only genuinely non-obstructing tile types short-circuit to false.
-    // Everything else defers to the pattern check (tile_threshold_at_x +
-    // is_obstructed), which correctly produces "no obstruction" for
-    // patterns that are naturally empty. Marking something like SWITCH
-    // or NEST as non-solid here would bypass the pattern and let the
-    // player walk straight through a tile that has a real obstruction
-    // band (switch has `tiles_obstruction_y_offsets[0x08] = 0xb0` — a
-    // thin surface at the top of the tile the player can stand on).
-    //
-    // METAL_DOOR / STONE_DOOR are listed so that callers that haven't
-    // gone through substitute_door_for_obstruction still treat the raw
-    // door tile as passable. Player motion always substitutes first so
-    // it never sees the raw door types here.
+    // Only short-circuit genuinely empty types; everything else defers to
+    // the pattern check so tiles with thin obstruction bands (switches,
+    // nests) still block correctly. Raw door types listed as passable —
+    // callers must run substitute_door_for_obstruction first.
     switch (static_cast<TileType>(type & TileFlip::TYPE_MASK)) {
         case TileType::SPACE:
         case TileType::VARIABLE_WIND:
@@ -308,20 +299,10 @@ bool overlaps_solid_object(const Object& obj, int self_slot,
         const Object& other = all_objects[i];
         if (!other.is_active()) continue;
 
-        // The 6502's apply_collision_to_objects_velocities at &2bb6 uses
-        // a mass-ratio model: velocity is transferred between colliders
-        // scaled by 2^(other_weight − self_weight). When the collider is
-        // much heavier, the self-side ratio underflows to zero and the
-        // lighter object simply fails to move into the heavier one —
-        // the hard block the user sees walking into a wall / door /
-        // cannon. We emulate that with a position-revert whenever the
-        // other side is strictly heavier than us (any nonzero weight
-        // difference already gives ≥2× transfer → effectively blocking
-        // on the lighter side).
-        //
-        // INTANGIBLE (flag 0x80) objects never block — explosions,
-        // lightning, transporter beams, fireballs. Opening/open doors
-        // are also short-circuited below.
+        // &2bb6 apply_collision_to_objects_velocities mass-ratio model:
+        // strictly-heavier collider blocks the lighter side (emulated as
+        // a position revert). INTANGIBLE (0x80) and open/opening doors
+        // never block.
         uint8_t tidx = static_cast<uint8_t>(other.type);
         uint8_t tflags = (tidx < static_cast<uint8_t>(ObjectType::COUNT))
                          ? object_types_flags[tidx] : 0;
@@ -379,18 +360,9 @@ static int process_one_side(int transfer, bool double_it, int start_v) {
 }
 
 // Port of &2bee calculate_transfer_velocities + &2bc6 apply_collision_
-// to_object_velocity. Computes lesser/greater transfer values from the
-// half-velocity-difference and weight ratio, then routes them to the
-// two sides per the BMI / DEX-LDX swap at &2bd6-&2bde.
-//
-// Heavier side (this_heavier): adds `greater` (negative-signed when
-//   this_v > other_v) to itself; adds `lesser` (positive) to other.
-// Lighter side: adds -lesser to itself; adds -greater to other (the
-//   `invert_if_positive` + index swap at &2bd8-&2bde inverts both).
-//
-// `smallest_overlap_in_this_axis` mirrors the per-axis bit pattern in
-// `collision_velocity_direction_flags_table` (&29dc): both transfers on
-// the impact axis are doubled, the other axis isn't.
+// to_object_velocity. `smallest_overlap_in_this_axis` mirrors the impact
+// axis bits in collision_velocity_direction_flags_table (&29dc) —
+// transfers on the impact axis are doubled.
 VelocityTransfer apply_mass_ratio_velocity(
         int8_t this_v_in, int8_t other_v_in,
         uint8_t this_weight, uint8_t other_weight,
@@ -429,27 +401,10 @@ uint8_t substitute_door_for_obstruction(
         return tile_and_flip;
     }
 
-    // Read the live door data byte. If a primary owns this tertiary
-    // slot, that's authoritative (update_door mutates it each frame).
-    // Otherwise fall back to the tertiary store (with the spawn gate
-    // stripped — bit 7 is for spawning, not door state).
-    //
-    // Destroyed-door handling (port deviation, no 6502 analogue): when
-    // the door's energy hits 0, object_update step 12 mutates the slot
-    // IN-PLACE into an EXPLOSION, repurposing tertiary_data_offset as
-    // the explosion duration counter (10→0). The original substitution
-    // treated that counter as door flags, so bit 1 of each duration
-    // value (10=0b1010 open, 9=0b1001 closed, 8=closed, 7=open, ...)
-    // would flicker the tile between SPACE and solid mid-explosion —
-    // the user could drop into the tile during an "open" frame, then
-    // land on a solid pattern when the bit cleared.
-    //
-    // After the explosion is reaped, the tertiary fallback still holds
-    // whatever update_door last wrote (typically OPENING-clear), so the
-    // tile reverted to permanently-solid until the door respawns. The
-    // SLOW_OR_DESTROYED bit (DoorFlag::SLOW_OR_DESTROYED = 0x08) is the
-    // only durable signal that this tile was destroyed — treat it as
-    // permanently passable until something explicitly resets it.
+    // Live primary owns authoritative state; tertiary fallback strips
+    // bit 7 (spawn gate, not door state). Port deviation: when energy hits
+    // 0 the slot mutates to EXPLOSION and tertiary_data_offset is reused
+    // as a duration counter — treat SLOW_OR_DESTROYED as permanently open.
     uint8_t data = static_cast<uint8_t>(tertiary_byte_fallback & 0x7f);
     bool destroyed_explosion = false;
     if (data_offset > 0) {
@@ -467,42 +422,20 @@ uint8_t substitute_door_for_obstruction(
         }
     }
 
-    // &3e91-&3e94 door_tiles_table: per door orientation × open state.
-    //   index 0 (h closed): TILE_SPACESHIP_WALL_HORIZONTAL_QUARTER (0x17)
-    //   index 1 (h open):   TILE_SPACE (0x19)
-    //   index 2 (v closed): TILE_STONE_SLOPE_SEVENTY_EIGHT (0x2a)
-    //   index 3 (v open):   TILE_SPACE (0x19)
-    //
-    // The 6502 picks the orientation from the tile's flip bits at
-    // &3ea1-&3ea7: orientation = fh XOR fv (0 = horizontal door,
-    // 1 = vertical door). Both-set or neither-set means horizontal —
-    // and that's load-bearing for collision: STONE_SLOPE_78 is
-    // solid only in its left quarter, so substituting it for a CLOSED
-    // HORIZONTAL door (a 1-tile-wide solid slab the player walks ON)
-    // makes the player sink into the door past the slope's solid
-    // region. Horizontal doors must use the SPACESHIP_WALL_HORIZONTAL_
-    // QUARTER tile, whose obstruction is a uniform thin top slab.
+    // &3e91-&3e94 door_tiles_table + &3ea1-&3ea7 orientation = fh XOR fv.
+    // Horizontal closed → SPACESHIP_WALL_HORIZONTAL_QUARTER (thin top slab
+    // the player walks on); vertical closed → STONE_SLOPE_78 (left
+    // quarter solid). Both-set / neither-set means horizontal.
     bool opening   = (data & 0x02) != 0;
     bool destroyed = (data & 0x08) != 0; // DoorFlag::SLOW_OR_DESTROYED
     bool fh = (tile_and_flip & TileFlip::HORIZONTAL) != 0;
     bool fv = (tile_and_flip & TileFlip::VERTICAL)   != 0;
     bool vertical = (fh != fv);
 
-    // CRITICAL: preserve the ORIGINAL door tile's flip bits.
-    //
-    // The 6502 substitution at &3ebf-&3ec2 stores a bare type byte to
-    // `&08 ; tile_type_and_flip`, but set_obstruction_data_variables_
-    // for_top_tile at &2462 reads `&09 ; tile_flip` for the
-    // y_offset-nibble selection AND the &247a collision-flip XOR.
-    // `&09` retains the ORIGINAL door tile's flip bits — so a
-    // horizontal door with flip_v=true substituted to SPACESHIP_WALL_
-    // HORIZONTAL_QUARTER (0x17) ends up using the LOW nibble of
-    // tiles_obstruction_y_offsets[0x17] = 0x3 → y_offset 0x3f, with
-    // collision_flip = true. That gives a thin top slab the player
-    // walks on. Without preserving the flip we'd get y_offset 0xbf and
-    // solid-bottom-quarter — the player sinks past the empty top
-    // three-quarters of the door tile and gets stuck on the next tile
-    // down.
+    // CRITICAL: preserve ORIGINAL door flip bits. The 6502 stores bare
+    // type to &08 but &2462 reads &09 (original flips) for the y_offset
+    // nibble + &247a collision-flip XOR — without this the substitute's
+    // obstruction band lands on the wrong half of the tile.
     uint8_t flip_bits = tile_and_flip & ~TileFlip::TYPE_MASK;
     if (opening || destroyed || destroyed_explosion) {
         return static_cast<uint8_t>(TileType::SPACE) | flip_bits;

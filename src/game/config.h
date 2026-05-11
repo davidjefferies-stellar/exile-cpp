@@ -49,26 +49,10 @@ struct StartupConfig {
     bool whistle_one_collected = false;
     bool whistle_two_collected = false;
 
-    // [distances] — activation-ring radii (in tiles) for the primary /
-    // secondary / tertiary caches. Each field maps to a specific branch of
-    // the 6502 lifecycle machinery; see object_manager.cpp:check_demotion
-    // (&1bb7) and tertiary_spawn.cpp for details. The defaults below are
-    // our port's working values — the 6502 ROM values are noted in the
-    // comments but not all are faithful (KEEP_AS_TERTIARY bumped 1→12 to
-    // cope with our wider viewport).
-    //
-    //   demote_tertiary  : primary → tertiary for statics (doors, switches).
-    //                      6502: 1. Port: 12 to avoid spawn/demote churn.
-    //   demote_moving    : primary → (secondary | tertiary) for moving /
-    //                      airborne KEEP_AS_PRIMARY_FOR_LONGER objects.
-    //                      6502: 12. Port: 12.
-    //   demote_settled   : same flag but the object is slow AND supported.
-    //                      6502: 4. Port: 4.
-    //   promote_secondary: secondary → primary. 6502: 4. Port: 4.
-    //   spawn_tertiary   : tile tertiary → primary (render-time spawn
-    //                      gate in spawn_tertiary_object). Port: 4,
-    //                      matched to demote_settled so settled objects
-    //                      don't oscillate between the two states.
+    // [distances] activation-ring radii (tiles). See &1bb7 check_demotion +
+    // tertiary_spawn.cpp. demote_tertiary 6502:1 / Port:12 (statics —
+    // bumped for wider viewport, avoid spawn/demote churn). spawn_tertiary
+    // matched to demote_settled so settled objects don't oscillate.
     uint8_t demote_tertiary   = 12;
     uint8_t demote_moving     = 12;
     uint8_t demote_settled    = 4;
@@ -84,20 +68,10 @@ struct StartupConfig {
     int primary_slots   = 16;
     int secondary_slots = 32;
 
-    // [keys] — port of &0806 player_keys_collected. Eight-entry array,
-    // indices 0..5 map to the six key object types (CYAN_YELLOW_GREEN_KEY
-    // through BLUE_CYAN_GREEN_KEY); indices 6..7 remain for the 6502's
-    // transporter-beam slots (shared with the upper-colour doors via
-    // consider_toggling_lock's shift math at &31bb). Each byte: 0x80 =
-    // collected, 0 = not collected. The RCD's door-unlock path reads
-    // this bitmask, not the pocket stack — keys never occupy pockets.
-    //
-    //   index 0 : CYAN_YELLOW_GREEN_KEY
-    //   index 1 : RED_YELLOW_GREEN_KEY
-    //   index 2 : GREEN_YELLOW_RED_KEY
-    //   index 3 : YELLOW_WHITE_RED_KEY
-    //   index 4 : RED_MAGENTA_RED_KEY
-    //   index 5 : BLUE_CYAN_GREEN_KEY
+    // [keys] &0806 player_keys_collected. 8 entries; 0..5 = the six key
+    // object types (CYAN_YELLOW_GREEN..BLUE_CYAN_GREEN), 6..7 are
+    // transporter-beam slots (&31bb shift math). 0x80 = collected. Read
+    // by RCD door-unlock — keys never occupy pockets.
     std::array<uint8_t, 8> keys_collected = {0, 0, 0, 0, 0, 0, 0, 0};
 
     // [landscape] — pick which procedural-landscape implementation runs.

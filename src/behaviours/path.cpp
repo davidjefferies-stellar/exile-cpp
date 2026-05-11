@@ -96,15 +96,8 @@ bool has_line_of_sight_randomized(const Object& obj,
                                   uint8_t target_slot,
                                   const UpdateContext& ctx,
                                   uint8_t nearest_object_distance) {
-    // Port of &3cb2-&3cba inside find_object. The 6502 works in &20
-    // fractions (1/8 tile each), so `max_distance_6502` ranges 0..255
-    // representing 0..32 tiles. Our raycast works in 16-bit fraction
-    // units (1/256 tile), so multiply by 0x20 to convert.
-    //
-    //   &3cb2 JSR rnd
-    //   &3cb5 AND #&4f         ; keep bits 0-3 and bit 6 only
-    //   &3cb7 EOR nearest_object_distance
-    //   &3cba JSR check_for_obstruction_between_objects
+    // &3cb2-&3cba inside find_object. 6502 uses &20-fractions (1/8 tile),
+    // ours uses 1/256 tile → multiply by 0x20 to convert the cap.
     uint8_t r = ctx.rng.next();
     uint8_t max_distance_6502 =
         static_cast<uint8_t>((r & 0x4f) ^ nearest_object_distance);

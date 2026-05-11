@@ -1,31 +1,13 @@
 #pragma once
 #include <cstdint>
 
-// Raw BBC Micro sprite data — ported straight out of the disassembly.
-//
-//   &53ec sprite_data : 128×81 four-colour bitmap, 32 bytes per row.
-//   &5e0c..&5f83    : sprite geometry tables (width/height/x/y).
-//
-// Each byte of BBC_SPRITE_DATA packs four 2-bit logical colours (0..3):
-//
-//   bit 7: pixel 4 high-bit (value 2)      pixel 4 = leftmost on screen
-//   bit 6: pixel 3 high-bit
-//   bit 5: pixel 2 high-bit
-//   bit 4: pixel 1 high-bit                pixel 1 = rightmost on screen
-//   bit 3: pixel 4 low-bit  (value 1)
-//   bit 2: pixel 3 low-bit
-//   bit 1: pixel 2 low-bit
-//   bit 0: pixel 1 low-bit
-//
-// Use bbc_sprite_pixel(x, y) to read a pixel at (x, y) in the 128×81 sheet;
-// returns a logical colour 0..3 (0 = transparent).
+// &53ec sprite_data: 128x81 four-colour bitmap, 32 bytes/row.
+// &5e0c-&5f83: sprite geometry tables (width/height/x/y).
+// Byte packs 4 pixels: hi-bits 7..4, lo-bits 3..0; pixel 4 = leftmost.
 
 constexpr int BBC_SHEET_W = 128;
-// Standard release sheet is 81 rows; rows 81..92 are appended for the
-// EXILE1 pre-release dog sprites (frames 1 & 2 at sprite ids &7d / &7e),
-// and rows 93..104 for the EXILE1 crab sprites (frames 1 & 2 at sprite
-// ids &7f / &80). See `exile-EXILE1-disassembly.txt` and
-// `dog_crab_sprites.h` for the pre-release source bytes and provenance.
+// 81 standard rows + 81..92 EXILE1 dog (&7d/&7e), 93..104 crab (&7f/&80).
+// See exile-EXILE1-disassembly.txt + dog_crab_sprites.h.
 constexpr int BBC_SHEET_H = 105;
 constexpr int BBC_SHEET_BYTES_PER_ROW = BBC_SHEET_W / 4;   // 32
 constexpr int BBC_SHEET_BYTE_COUNT = BBC_SHEET_BYTES_PER_ROW * BBC_SHEET_H; // 3360
@@ -37,13 +19,9 @@ constexpr int BBC_SPRITE_COUNT = 129;
 // 2976-byte blob — defined in sprite_data.cpp to keep this header lightweight.
 extern const uint8_t BBC_SPRITE_DATA[BBC_SHEET_BYTE_COUNT];
 
-// Sprite geometry tables. Original 125 entries (sprite ids 0x00..0x7c)
-// extended by 2 to host EXILE1 dog frame 1 (id 0x7d) and frame 2 (0x7e).
-//
-//   width  byte: bits 7-4 = width-1 in pixels,   bit 0 = 1 if h-flipped in sheet
-//   height byte: bits 7-3 = height-1 in rows,    bit 0 = 1 if v-flipped in sheet
-//   sheet-x byte: high-nibble = x mod 16,       low 3 bits = x / 16
-//   sheet-y byte: bits 7-3 = y mod 32,          bits 1-0 = y / 32
+// Sprite geometry (125 original + 4 EXILE1 dog/crab).
+// width: bits7-4=w-1, bit0=h-flip; height: bits7-3=h-1, bit0=v-flip.
+// sheet-x: hi=x%16, lo3=x/16; sheet-y: bits7-3=y%32, bits1-0=y/32.
 inline constexpr uint8_t BBC_SPRITE_WIDTH_FLIP[BBC_SPRITE_COUNT] = {
     0xc0, 0xa0, 0x50, 0x90, 0x40, 0x50, 0x60, 0x40, 0x21, 0x20, 0x20, 0x21, 0x11, 0x11, 0x50, 0x30,
     0x60, 0x51, 0x50, 0x50, 0x80, 0x50, 0x50, 0xb0, 0xb0, 0x80, 0x80, 0x50, 0x90, 0x70, 0x50, 0x30,

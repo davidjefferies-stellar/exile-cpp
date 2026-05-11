@@ -7,23 +7,16 @@
 
 namespace NPC {
 
-// Not a single 6502 routine — the original doesn't centralise this.
-// Most flying creatures call `DEC this_object_acceleration_y` inline
-// after move_towards_target (e.g. birds at &4686, wasps at &4f31) to
-// cancel the +1 gravity that apply_acceleration_to_velocities (&1f01)
-// applies every frame. We factor it out so the behaviour .cpp's don't
-// have to mutate velocity_y by hand.
+// Port-only helper. 6502 inlines `DEC this_object_acceleration_y` per
+// flier (birds &4686, wasps &4f31) to cancel &1f01's +1 gravity.
 void cancel_gravity(Object& obj) {
     // Counteract the +1 gravity applied by physics each frame.
     if (obj.velocity_y > 0) obj.velocity_y--;
 }
 
-// Not a direct 6502 port. The original uses the much more elaborate
-// calculate_firing_vector_from_angle_A (&3311) fed with a magnitude-
-// plus-angle pair from consider_finding_target / consider_updating_npc
-// _path. This helper is the reduced "just move toward target_x / y at
-// `speed`" used by simpler creatures (imps, clawed robots) that want a
-// cheap homing update.
+// Reduced port. 6502 uses &3311 calculate_firing_vector_from_angle_A
+// with magnitude+angle; this is the cheap "head to (target_x,_y) at
+// speed" form for imps / clawed robots.
 void move_toward(Object& obj, uint8_t target_x, uint8_t target_y, int8_t speed) {
     int8_t dx = static_cast<int8_t>(target_x - obj.x.whole);
     int8_t dy = static_cast<int8_t>(target_y - obj.y.whole);
@@ -35,11 +28,8 @@ void move_toward(Object& obj, uint8_t target_x, uint8_t target_y, int8_t speed) 
     else if (dy < 0) obj.velocity_y = -speed;
 }
 
-// Not a 6502 port — helper. The 6502 picks animation frames per-type
-// via change_object_sprite_to_base_plus_A (&3292) fed from the
-// per-type sprite-offset calc at &2555. Use that pair instead when
-// matching original behaviour; this helper stays for simple creatures
-// that don't need the offset-plus-timer machinery.
+// Port-only helper. 6502 path is &3292 change_object_sprite_to_base_plus_A
+// fed from &2555; use that when matching original behaviour.
 void set_sprite_from_velocity(Object& obj, uint8_t base_sprite, int num_frames) {
     int frame = 0;
     if (obj.velocity_x != 0 || obj.velocity_y != 0) {
@@ -85,12 +75,8 @@ void damage_player_if_touching(Object& obj, Object& player, uint8_t damage,
     }
 }
 
-// Port of give_object_minimum_energy (&352e). Holds the type's HP floor
-// each frame so weak attacks regenerate away. The &3530 BEQ leave
-// short-circuit is critical: when damage has just brought energy to
-// exactly 0, the object is mid-explode and must NOT be healed —
-// otherwise step 12's explosion path never fires and the NPC feels
-// immortal.
+// &352e give_object_minimum_energy. &3530 BEQ skips when energy==0
+// (mid-explode); healing here makes the NPC immortal.
 void enforce_minimum_energy(Object& obj, uint8_t min_energy) {
     if (obj.energy == 0) return;
     if (obj.energy < min_energy) {
@@ -98,19 +84,13 @@ void enforce_minimum_energy(Object& obj, uint8_t min_energy) {
     }
 }
 
-// Convenience wrapper — not a 6502 routine. The original reaches the
-// player via consider_finding_target / consider_updating_npc_path
-// (&3bf8 / &3d26) and `objects_target_object_and_flags`. seek_player
-// shortcuts the lookup for updates that always want the player.
+// Port-only wrapper. 6502 path is &3bf8/&3d26 plus target_and_flags.
 void seek_player(Object& obj, const Object& player, int8_t speed) {
     move_toward(obj, player.x.whole, player.y.whole, speed);
 }
 
-// Not a 6502 routine — the inverse of seek_player. The original avoids
-// targets via `avoid_fireballs` (&3c09) which uses a negated angle
-// feeding move_towards_target; flee_player is our simpler sign-only
-// equivalent, used by a handful of behaviours that run from the player
-// without needing the full vector math.
+// Port-only inverse of seek_player. 6502 equivalent is &3c09
+// avoid_fireballs with negated angle into move_towards_target.
 void flee_player(Object& obj, const Object& player, int8_t speed) {
     int8_t dx = static_cast<int8_t>(obj.x.whole - player.x.whole);
     int8_t dy = static_cast<int8_t>(obj.y.whole - player.y.whole);
@@ -133,31 +113,22 @@ void face_movement_direction(Object& obj) {
     }
 }
 
-// Port of consider_flipping_object_to_match_velocity_x (&2578). The 6502
-// does `LDA #&03 / AND rnd_state / BNE leave` — a 1-in-4 chance of even
-// attempting the flip this frame. Prevents single-frame sign changes in
-// velocity_x (common when seek_player trims the delta to zero near the
-// target) from turning into visible sprite flicker.
+// &2578 consider_flipping_object_to_match_velocity_x. 1-in-4 rng gate
+// suppresses sprite flicker from single-frame velocity_x sign changes.
 void consider_face_movement_direction(Object& obj, Random& rng) {
     if ((rng.next() & 0x03) != 0) return;
     face_movement_direction(obj);
 }
 
-// Reduced port of create_child_object (&33b8) / create_projectile
-// (&33ab). The 6502 routines handle vector-from-angle velocity, x_flip
-// inheritance and sub-tile centring; this helper only does the "put a
-// new primary at this object's position" part. Callers wanting the
-// full launch math should compute their own velocities afterwards.
+// Reduced port of &33b8 create_child_object / &33ab create_projectile.
+// Just spawns at the parent's position — callers compute velocities.
 int fire_projectile(Object& obj, ObjectType bullet_type, UpdateContext& ctx) {
     return ctx.mgr.create_object_at(bullet_type, 4, obj);
 }
 
-// Port of create_child_object (&33b8-&342f) X/Y offset. Shifts `child`
-// from the parent's origin onto the firing side of the parent's AABB with
-// a relative-velocity pre-compensation. Called from NPC firing code and
-// from Weapon::fire so that player bullets and turret/robot bullets share
-// the same spawn geometry. Skipping this causes the bullet to spawn
-// inside the parent's tile and explode on frame 1.
+// &33b8-&342f create_child_object X/Y offset. Shifts onto firing side
+// with relative-velocity pre-compensation. Skipping it makes bullets
+// spawn inside the parent's tile and explode on frame 1.
 void offset_child_from_parent(Object& child, const Object& parent) {
     if (child.sprite > 0x80 || parent.sprite > 0x80) return;
 
@@ -211,11 +182,8 @@ void offset_child_from_parent(Object& child, const Object& parent) {
 }
 
 uint8_t angle_from_deltas(int8_t dx, int8_t dy) {
-    // Port of &22d4 calculate_angle_from_vector. Same core algorithm the
-    // projectile.cpp port uses for bullet orientation — duplicated here to
-    // avoid a cross-TU dependency, and because the 6502 itself reaches this
-    // code from two separate entry points (&22cc for velocities, &22d4 for
-    // arbitrary vectors).
+    // &22d4 calculate_angle_from_vector (also reached from &22cc for
+    // velocities). Duplicated from projectile.cpp to avoid cross-TU dep.
     auto is_positive = [](int8_t v) { return static_cast<uint8_t>(v) <= 0x7f; };
     auto abs_u8      = [](int8_t v) {
         uint8_t u = static_cast<uint8_t>(v);
@@ -253,12 +221,9 @@ uint8_t angle_from_deltas(int8_t dx, int8_t dy) {
 
 void vector_from_magnitude_and_angle(uint8_t magnitude, uint8_t angle,
                                      int8_t& vx, int8_t& vy) {
-    // Port of &2357. Within a quadrant, rel ∈ [0, 0x40]:
-    //   a = min(0x20, rel)          "near" component
-    //   b = min(0x20, 0x40 - rel)   "far" component
-    // so |a| + |b| ranges from 0x20 (cardinals) to 0x40 (45°).
-    // We scale linearly to the caller's magnitude; at magnitude=0x20 this
-    // matches the 6502 tables at #&6173 byte-for-byte.
+    // &2357. Per-quadrant rel∈[0,0x40]: near=min(0x20,rel),
+    // far=min(0x20,0x40-rel); at magnitude=0x20 matches 6502 tables
+    // at &6173 byte-for-byte.
     uint8_t quad = angle >> 6;
     uint8_t rel  = angle & 0x3f;
     int a_raw = (rel <= 0x20) ? rel : 0x20;
@@ -325,21 +290,10 @@ bool compute_firing_vector(const Object& from, const Object& target,
     int8_t out_vx, out_vy;
     vector_from_magnitude_and_angle(firing_velocity, angle, out_vx, out_vy);
 
-    // --- &3362-&338c gravity compensation -------------------------------
-    // The 6502's 8-bit division loop at &336a-&3374 has an off-by-one that
-    // makes its effective output `(magnitude * 8) / firing_velocity` — the
-    // first ROL A consumes the carry left by the pre-loop ASL rather than
-    // a dividend bit, so the quotient is half what a conventional
-    // algorithm would produce. The scaling loop at &337e then shifts by
-    // (tiles_log + 4) and keeps the high byte. Algebraic form:
-    //
-    //   gravity_comp = (magnitude << (tiles_log - 1)) / firing_velocity
-    //
-    // Works out the same as doing the literal 6502 register dance, and
-    // produces the right numbers — e.g. a flat 2-tile shot at firing_
-    // velocity 45 yields gravity_comp = 3, which lifts the bullet just
-    // enough to reach the target without arcing past it. The earlier
-    // attempt lost the halving and fired nearly-vertical on flat shots.
+    // &3362-&338c gravity compensation. The 6502's div loop at &336a-&3374
+    // has an off-by-one (first ROL consumes pre-loop ASL carry) so the
+    // effective formula is gravity_comp = (mag << (tiles_log-1)) / fvel.
+    // Dropping the halving overshoots and fires nearly-vertical.
     if (firing_velocity == 0) return false;
     int shift = tiles_log - 1;
     int gravity_comp = (shift >= 0)
@@ -371,11 +325,8 @@ bool compute_firing_vector(const Object& from, const Object& target,
 
 bool fire_at_target(const Object& from, const Object& target,
                     Random& rng, int8_t& vx, int8_t& vy) {
-    // Port of &278a-&2791. Random firing velocity in [&b4, &f3] (i.e.
-    // firing_velocity in [&2d, &3c] after the >> 2). The RNG gate in
-    // &276c that decides "fire this frame?" based on energy / entropy
-    // is the caller's responsibility — typical sites already wrap the
-    // call in an every-N-frames condition plus an energy check.
+    // &278a-&2791. Random firing velocity in [&b4,&f3] (=&2d..&3c after
+    // >>2). The &276c "fire this frame?" gate is caller responsibility.
     uint8_t fvt4 = static_cast<uint8_t>(
         0xb4 + (rng.next() & 0x3f));
     return compute_firing_vector(from, target, fvt4, vx, vy);
@@ -418,16 +369,9 @@ uint8_t update_sprite_offset_using_velocities(Object& obj, uint8_t modulus) {
     return obj.timer;
 }
 
-// Port of change_object_sprite_to_base_plus_A (&3292). Indexes the
-// per-type base sprite in object_types_sprite[] and adds `offset` for
-// the animation frame. Also runs the &329e-&32b3 centring shim:
-// position += (old_size - new_size) / 2 on both axes so a sprite swap
-// keeps the visual centre fixed (otherwise the red slime cycle pulses
-// from its left edge instead of around the middle).
-//
-// Width/height are stored as (n-1) << shift in the 6502 tables — same
-// fraction-unit scale (1px = 16 x-units, 1row = 8 y-units) used by the
-// position fraction byte, so we can add directly to obj.x/y.fraction.
+// &3292 change_object_sprite_to_base_plus_A. Runs the &329e-&32b3
+// centring shim so the visual centre stays fixed across a sprite swap.
+// Width/height stored as (n-1)<<shift in fraction units.
 static int sprite_width_units(uint8_t s) {
     if (s > 0x80) return 0;
     int w = sprite_atlas[s].w;
@@ -455,12 +399,9 @@ void change_object_sprite_to_base_plus_A(Object& obj, uint8_t offset) {
     shift_position_signed(obj.y.whole, obj.y.fraction, dy);
 }
 
-// Port of the slime's sprite-update path: store sprite directly, then
-// JMP &32aa subtract_width_from_position. X-only centring — used by
-// ceiling-mounted breathing creatures whose y-anchor must stay pinned.
-// Skipping the Y shift is critical: the slime spawns with y_frac=0
-// (v-flipped), and a -20 dy on the first cycle would underflow y.whole
-// by 1, putting subsequent RED_DROP spawns in the solid ceiling tile.
+// Slime sprite-update via &32aa subtract_width_from_position. X-only:
+// the ceiling y-anchor must stay pinned; a -20 dy would underflow
+// y.whole and put RED_DROP spawns inside the ceiling tile.
 void change_object_sprite_x_only(Object& obj, uint8_t offset) {
     uint8_t tidx = static_cast<uint8_t>(obj.type);
     if (tidx >= static_cast<uint8_t>(ObjectType::COUNT)) return;
@@ -482,11 +423,7 @@ void dampen_velocities_twice(Object& obj) {
     }
 }
 
-// Per-axis port of the 6502's apply_weighted_acceleration_to_this_
-// object_velocity (&31f6):
-//   delta = desired_vel - current_vel      ; signed
-//   delta = clamp(delta, -max_accel, max_accel)
-//   current_vel += delta
+// &31f6 apply_weighted_acceleration_to_this_object_velocity, per-axis.
 static void apply_weighted_acceleration(int8_t& v, int8_t desired,
                                          uint8_t max_accel) {
     int delta = int(desired) - int(v);
@@ -499,19 +436,9 @@ static void apply_weighted_acceleration(int8_t& v, int8_t desired,
     v = static_cast<int8_t>(nv);
 }
 
-// Reduced port of consider_absorbing_object_touched (&3be1). The 6502:
-//
-//   LDY this_object_touching
-//   CMP objects_type, Y      ; A = prey type passed in
-//   BNE leave
-//   JSR check_object_touching_angle  ; rejected at glancing angles
-//   BMI leave
-//   JSR set_object_for_removal
-//   JSR play_low_beep
-//
-// We skip the &3bd5 angle gate (see header). PENDING_REMOVAL is the
-// port's set_object_for_removal equivalent — the main loop's GC pass
-// reaps the slot.
+// &3be1 consider_absorbing_object_touched. Port-only: skips the &3bd5
+// glancing-angle gate. PENDING_REMOVAL is our set_object_for_removal —
+// main-loop GC reaps the slot.
 void consider_absorbing_object_touched(Object& obj, ObjectType prey_type,
                                        ObjectManager& mgr) {
     if (obj.touching >= GameConstants::PRIMARY_OBJECT_SLOTS) return;
@@ -523,16 +450,9 @@ void consider_absorbing_object_touched(Object& obj, ObjectType prey_type,
     Audio::play_at(Audio::CH_ANY, kSoundLowBeep, obj.x.whole, obj.y.whole);
 }
 
-// Reduced port of consider_finding_target (&3bf8) for the simplest
-// "nearest object of type X" case (Y = 0 / no range gate). The 6502
-// runs find_object (&3c2a) which considers obstructions and uses a
-// distance-randomised LOS cutoff; this helper does a plain Chebyshev-
-// distance scan over primaries — cheaper, faithful enough for the two
-// callers that want it (bird → wasp at &4671, fish → piranha at &4774).
-//
-// Byte-wrapped deltas via int8_t cast match the 6502's 8-bit unsigned
-// SBC; |dx|/|dy| max gives Chebyshev distance, the same metric the
-// 6502's find_object derives from get_range_of_object_Y.
+// &3bf8 consider_finding_target. Reduced for "nearest object of type X"
+// (Y=0 / no range gate). Skips the &3c2a LOS cutoff used by bird→wasp
+// at &4671 and fish→piranha at &4774. Chebyshev via int8_t wraps.
 void consider_finding_target(Object& obj, ObjectType prey_type,
                              UpdateContext& ctx) {
     if (!ctx.every_sixteen_frames) return;
@@ -555,28 +475,10 @@ void consider_finding_target(Object& obj, ObjectType prey_type,
     }
 }
 
-// Port of move_towards_target_with_probability_X (&31da). The 6502
-// sequence is:
-//   CPX rnd ; BCC leave                 ; prob X/256
-//   STY maximum_acceleration            ; Y is the clamp magnitude
-//   set_target_object_x_y_from_this_object_tx_ty
-//   use_vector_between_object_centres (A = magnitude)
-//   for axis in (y, x):
-//     apply_weighted_acceleration_to_this_object_velocity(vector_N)
-//
-// `use_vector_between_object_centres` (&3347) returns (vector_x,
-// vector_y) as a diamond-metric signed pair roughly proportional to
-// (target - self) with magnitude `magnitude`. We approximate that
-// with a per-axis sign*magnitude — good enough since apply_weighted_
-// acceleration clamps the delta to max_accel anyway: as long as the
-// desired-vel has the right sign and |desired - current| >= max_accel,
-// the creature accelerates by the full max_accel per call (matching
-// the 6502's big jumps).
-//
-// Previous reduced port nudged by max_accel/4 per call — too small to
-// survive bounce_reflect (which zeroes any |v| <= 2), so newly-
-// spawned birds couldn't build enough speed to escape the nest tile
-// once they touched any adjacent solid.
+// &31da move_towards_target_with_probability_X. Approximates the &3347
+// diamond-metric vector with per-axis sign*magnitude; apply_weighted_
+// acceleration clamps to max_accel anyway. A smaller nudge gets killed
+// by bounce_reflect's |v|<=2 zero, so newly-spawned birds get stuck.
 void move_towards_target_with_probability(Object& obj, UpdateContext& ctx,
                                           uint8_t magnitude,
                                           uint8_t max_accel,
@@ -594,11 +496,9 @@ void move_towards_target_with_probability(Object& obj, UpdateContext& ctx,
     int8_t tdx = static_cast<int8_t>(target.x.whole - obj.x.whole);
     int8_t tdy = static_cast<int8_t>(target.y.whole - obj.y.whole);
 
-    // Desired velocity ≈ sign(delta) * magnitude on each axis. The real
-    // &3347 uses a diamond metric that splits the magnitude between
-    // axes by the direction ratio, but the apply_weighted_acceleration
-    // clamp saturates to max_accel long before the ratio matters for
-    // creatures whose max_accel is small (birds: 8, wasps: 4, etc.).
+    // Approximates &3347's diamond metric with sign*magnitude per axis;
+    // the max_accel clamp saturates long before the ratio matters for
+    // small-max_accel creatures (birds: 8, wasps: 4).
     int desired_x = (tdx > 0) ?  int(magnitude)
                   : (tdx < 0) ? -int(magnitude) : 0;
     int desired_y = (tdy > 0) ?  int(magnitude)

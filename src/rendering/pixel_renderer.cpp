@@ -1,13 +1,6 @@
-// Faithful 6502 port of the BBC Micro Exile renderer. Only the
-// game-rendering pipeline lives here: tile / water / object / particle
-// blits, the player-state HUD strip (POCKETS / KEYS / WEAPONS), and
-// the lifecycle / input plumbing required to drive them.
-//
-// All developer overlays — tile-grid lines, activation rings, AABB
-// debug, switch / transporter wires, the editor checkboxes / palettes,
-// the sprite-viewer — live in pixel_renderer_debug.cpp. Entry points
-// from this file into that one go through the small pr_debug:: helper
-// surface declared in pixel_renderer.h.
+// Game-rendering pipeline only: tile/water/object/particle blits and
+// HUD strip. Developer overlays live in pixel_renderer_debug.cpp;
+// entry points go through pr_debug:: declared in pixel_renderer.h.
 
 #include "rendering/pixel_renderer.h"
 #include "rendering/sprite_atlas.h"
@@ -91,16 +84,9 @@ void PixelRenderer::blit_sprite_at_native(int cell_x, int cell_y,
     }
 }
 
-// Box-filtered sprite blit. Iterates SCREEN pixels and box-samples the
-// atlas pixels that fall under each one. At 1:1 or zoom-in the box is
-// a single atlas pixel and this collapses to nearest-neighbour; at
-// zoom-out the box covers multiple atlas pixels and their RGB
-// contributions are averaged.
-//
-// `fg` (per LUT slot) = 1 for pixels drawn with BBC logical-colour
-// 8..15. When `is_tile` is true such pixels set fg_mask. When false
-// (object blit), pixels with fg_mask[idx] already set are skipped —
-// the 6502's BMI past pre-existing foreground at &1066.
+// Box-filtered sprite blit — averages atlas pixels under each screen
+// pixel for zoom-out. fg[] marks BBC logical colours 8..15: tiles set
+// fg_mask, objects skip pixels where fg_mask is set (&1066 BMI).
 void PixelRenderer::blit_sprite(int dst_x, int dst_y, uint8_t sprite_id,
                                 bool flip_h, bool flip_v,
                                 const uint32_t lut[4],
@@ -243,13 +229,9 @@ bool PixelRenderer::world_to_screen(uint8_t wx, uint8_t wy,
     int dy = static_cast<int8_t>(wy - vp_center_y);
     int tpx = tile_px_x();
     int tpy = tile_px_y();
-    // Split the sub-tile offset into two independent floors instead of
-    // one combined `floor((wx_frac - vp_frac_x) * tpx / 256)`. The
-    // combined form snaps to a new pixel at different vp_frac_x values
-    // depending on `wx_frac`: a tile (wx_frac=0) snaps at one set of
-    // player-fraction crossings, an object (wx_frac=50) at shifted
-    // crossings, so as the player walks the relative offset between a
-    // static object and the tile it sits on oscillates ±1px.
+    // Two independent floors, not one combined. Combined form snaps at
+    // different vp_frac_x crossings depending on wx_frac, so static
+    // objects oscillate +/-1px relative to their tile as the player walks.
     int sub_x_view = floor_div_256(-int(vp_frac_x) * tpx);
     int sub_y_view = floor_div_256(-int(vp_frac_y) * tpy);
     int sub_x_obj  = floor_div_256( int(wx_frac)   * tpx);
@@ -329,11 +311,9 @@ void PixelRenderer::process_mouse() {
     prev_mouse_y = f.y;
 }
 
-// Tile type (0-0x3f) → atlas sprite_id. Bit 7 XORs flip_v (matches
-// the original's tiles_sprite_and_y_flip_table at &04ab). Bit 7 set
-// means the tile's obstruction sits at the bottom when flip_v from
-// the landscape is 0. Entries pointing at sprite 0x46 (NONE, 1×1
-// transparent) are stored here as 0xff to skip the blit entirely.
+// Tile (0..0x3f) → sprite_id. &04ab tiles_sprite_and_y_flip_table; bit 7
+// XORs flip_v (obstruction-at-bottom flag for collision &2477).
+// 0xff = transparent (sprite 0x46) — skip blit entirely.
 const uint8_t TILE_SPRITE_ID[64] = {
     /* 0x00 */ 0xff,         /* 0x01 */ 0xce,         /* 0x02 */ 0xff,         /* 0x03 */ 0xff,
     /* 0x04 */ 0xff,         /* 0x05 */ 0xbb,         /* 0x06 */ 0xff,         /* 0x07 */ 0x18,
@@ -467,11 +447,8 @@ void PixelRenderer::render_tile(uint8_t world_x, uint8_t world_y,
 
     uint8_t entry = TILE_SPRITE_ID[info.tile_type & 0x3f];
     uint8_t sid = entry & 0x7f;
-    // Bit 7 of TILE_SPRITE_ID mirrors the &04ab flag that marks the
-    // tile's obstruction as being at the bottom — used for COLLISION
-    // (&2477) not rendering. Rendering flip comes from the landscape's
-    // tile_flip XOR the sprite's intrinsic flip (applied inside
-    // blit_sprite).
+    // Bit 7 = &04ab obstruction-at-bottom flag (collision only, not
+    // rendering). Rendering flip = landscape tile_flip XOR sprite flip.
     if (entry != 0xff && sid <= 0x80) {
         // Compute sub-tile offset so the sprite aligns to the correct
         // half of the cell when flipped — matches &2420-&243f.
@@ -500,33 +477,17 @@ void PixelRenderer::render_tile(uint8_t world_x, uint8_t world_y,
     pr_debug::render_tile_overlay(*this, sx, sy, world_x, world_y, info);
 }
 
-// Port of the 6502 raster-palette swap at &12a6-&12d8. Instead of
-// reprogramming VDU colour 0 at scanline boundaries (not possible in
-// a framebuffer renderer), we pre-fill the screen behind the tile
-// blits: pixels that end up logical-colour 0 are drawn transparent in
-// blit_sprite, so whatever we paint here shows through.
-//
-// Above the waterline: leave whatever begin_frame cleared to (black).
-// On the waterline:    one pixel row of cyan (=&06), matching the
-//                      1-line delay_loop wait in the IRQ handler.
-// Below the waterline: blue (=&04) all the way to the bottom.
+// &12a6-&12d8 raster-palette swap. Framebuffer can't reprogram colour 0
+// mid-scanline, so pre-fill below blits: above=black, waterline row=cyan
+// (&06, 1-line delay_loop), below=blue (&04). Logical 0 blits transparent.
 void PixelRenderer::render_water_column(uint8_t world_x,
                                         uint8_t waterline_y) {
     int tpx = tile_px_x();
 
-    // Port of &16db calculate_waterline_timer's tri-state decision:
-    //   &16ec BCC: waterline_y < screen_origin_y → entire screen below
-    //              waterline → colour 0 = blue.
-    //   &16f0 BCS (delta >= screen_height): entire screen above → black.
-    //   Else: waterline inside viewport → cyan one line, blue afterwards.
-    //
-    // Crucial: do the subtraction in signed int arithmetic, NOT
-    // uint8_t. The 6502's `SBC screen_origin_y` is strictly 8-bit
-    // unsigned, but that's only safe because the BBC camera can never
-    // pan outside the playable range. Our map-mode viewport pans
-    // freely, so a uint8_t underflow at the top of the map (0x03 →
-    // 0xF9) flips the unsigned comparison and every column would show
-    // submerged.
+    // &16db calculate_waterline_timer tri-state. MUST use signed int,
+    // not uint8_t: 6502's unsigned SBC only works because BBC camera
+    // can't pan past playable; our map-mode pans freely and underflow
+    // at the map top flips the compare and every column shows submerged.
     int vp_h = vp_h_tiles();
     int vp_top_y = int(vp_center_y) - vp_h / 2;
     int water    = int(waterline_y);
@@ -569,14 +530,9 @@ void PixelRenderer::render_object(Fixed8_8 world_x, Fixed8_8 world_y,
                           world_x.fraction, world_y.fraction)) return;
     if (info.sprite_id > 0x80) return;
 
-    // Object position (x, y) is the sprite's TOP-left in world
-    // coordinates, matching the 6502 at &0d91: screen_x = object_x −
-    // screen_start_x with no sprite-height offset.
-    //
-    // Pass an `fg` array of all-zero entries so blit_sprite performs
-    // the foreground-skip check against fg_mask — the 6502 "BMI
-    // skip_byte" at &1066 that hides objects behind foliage /
-    // spaceship overlays.
+    // &0d91 object pos = sprite top-left (no sprite-height offset).
+    // fg[]=0 makes blit_sprite check fg_mask (&1066 BMI hides objects
+    // behind foliage).
     uint32_t lut[4];
     uint8_t  fg[4] = {0, 0, 0, 0};
     resolve_palette(info.palette, /*is_tile=*/false, lut);
@@ -762,20 +718,10 @@ bool PixelRenderer::consume_right_click(int& tile_dx, int& tile_dy) {
 int PixelRenderer::get_key() {
     if (should_close) return 'q';
 
-    // Fenster's key scan uses indices 0..256; modifiers land in f.mod
-    // (bit 0 = ctrl). The mod bitmask doesn't distinguish left vs
-    // right ctrl, so when ctrl is flagged we probe the OS directly.
-    //
-    // Indices 256..262 are synthetic sentinels — modifiers (ctrl) and
-    // the four arrow keys, polled directly via GetAsyncKeyState on
-    // Windows. Fenster's WM_KEYDOWN handler maps lParam scancodes
-    // through a 128-entry table indexed by `HIWORD(lParam) & 0x1ff`,
-    // which Windows-style extended-scancode arrow keys (0x14B, 0x14D,
-    // 0x148, 0x150) overrun, so the f.keys[] entries for arrows never
-    // get set on Windows. Polling VK_LEFT etc. directly each frame
-    // sidesteps the table entirely. macOS and Linux populate the
-    // table correctly so the f.keys[19/20/17/18] path above still
-    // catches arrows on those platforms.
+    // Fenster keys 0..256; f.mod bit 0 = ctrl (no L/R distinction, so
+    // we probe OS). Indices 256..262 are synthetic for ctrl + arrows on
+    // Windows — fenster's scancode table overruns 0x14X extended codes
+    // so arrow f.keys[] never get set; macOS/Linux work via 19/20/17/18.
     while (key_scan_idx < 263) {
         int i = key_scan_idx++;
 

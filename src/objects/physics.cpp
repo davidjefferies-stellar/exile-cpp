@@ -53,18 +53,10 @@ void apply_acceleration(Object& obj, int8_t accel_x, int8_t accel_y,
         int sum = static_cast<int>(accel) + static_cast<int>(old_vel) + gravity_bit;
         int8_t new_vel = prevent_overflow(sum);
 
-        // Port deviation #2: when SUPPORTED, clamp any newly-computed
-        // *downward* y-velocity to 0. The walking branch in apply_player_
-        // input adds a small downward `accel_y` bias to "keep the player
-        // into the floor" (port of the 6502's &3b3a-&3b44 angle base).
-        // On the BBC that produces a sub-pixel oscillation invisible at
-        // 32-frac/pixel; at our 8-frac/pixel resolution every frac of
-        // walking-induced vy crosses a pixel boundary, hitting a fresh
-        // collision-bounce cycle each frame. Clearing the downward
-        // component while supported pins vy=0 on flat ground without
-        // breaking jumps (accel_y < 0 from jetpack/jump → new_vel < 0,
-        // not clamped) or slope descents (those go via velocity_x with
-        // SUPPORTED dropping naturally as the player crests an edge).
+        // Port deviation: clamp downward vy to 0 while SUPPORTED. Our
+        // 8-frac/pixel resolution magnifies the &3b3a-&3b44 floor-bias
+        // into a per-frame bounce; clamp pins vy=0 on flat ground without
+        // affecting jumps (vy<0) or slope descents (via vx).
         if (axis == 0 && supported && new_vel > 0) {
             new_vel = 0;
         }

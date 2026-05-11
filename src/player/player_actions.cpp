@@ -42,16 +42,10 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     accel_x = 0;
     accel_y = 0;
 
-    // Tab: turn the player around (port of &1e19 handle_swapping_
-    // direction — the 6502 action table's &17 entry). Edge-triggered so
-    // holding Tab doesn't spin the facing every frame.
-    //
-    // Toggle `player_facing_` rather than the FLIP_HORIZONTAL flag
-    // directly: update_player_sprite runs later in the frame and
-    // unconditionally rewrites the flag from player_facing_, so a flag
-    // toggle alone gets clobbered the same tick. The 6502 stores
-    // facing in player_object_x_flip (&38) which is the same single
-    // source of truth.
+    // Tab: turn around (&1e19 handle_swapping_direction). Edge-triggered.
+    // Toggle player_facing_ — update_player_sprite rewrites the flag from
+    // it later this frame, so a direct flag toggle gets clobbered. 6502's
+    // player_object_x_flip (&38) is the same single source of truth.
     {
         bool down = inp.turn_around;
         if (down && !turn_around_key_prev_) {
@@ -76,17 +70,10 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     // paths to increase max velocity (&3ba1 LDA #&f0 / &3ba3 ADC weight).
     const int accel_scale = inp.boost ? 2 : 1;
 
-    // 6502's set_object_jumping_or_flying (&2c7a) is triggered by
-    //   - up-thrust with a functioning jetpack (&2c75 BIT player_has_
-    //     functioning_jetpack / &2c91 in handle_using_booster).
-    //   - booster + horizontal direction (&2c8d-&2c91).
-    // The trigger sets state's low nibble to 0x0f, which makes
-    // update_walking_npc_or_player (&3b0b) see "not walking" via the
-    // BNE leave at &3b10 and skip the walk_along_flat_or_shallow_slope
-    // branch — the player keeps the accumulated thrust acceleration.
-    //
-    // Vertical input (down) also skips walking — pressing down while
-    // grounded shouldn't snap the X velocity; let thrust handle it.
+    // &2c7a set_object_jumping_or_flying triggers on jetpack/up-thrust or
+    // booster+horizontal, setting state low nibble to 0x0f so &3b0b sees
+    // "not walking" and skips the walk branch. Down-input also skips
+    // walking — let thrust handle vertical motion.
     bool flying =
         inp.jetpack || inp.move_up || inp.move_down ||
         (inp.boost && (inp.move_left || inp.move_right));
@@ -98,38 +85,18 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         accel_y = static_cast<int8_t>(2 * accel_scale);
     }
 
-    // Set facing from input direction BEFORE the walking model rewrites
-    // accel_x. The 6502 decides player_facing at &38b0-&38b7 from the
-    // input-driven acceleration_x (set by &2c6a INC / &2c6d DEC), then
-    // the walking branch at &3b53 overwrites accel_x with a slope-vector
-    // value — but that overwrite doesn't affect facing this frame
-    // because it happens AFTER the facing store. Deriving facing from
-    // accel_x in our port (which is read after the walking model) would
-    // flip the sprite 180° on every deceleration, since the walking
-    // model produces an opposite-sign accel_x to brake the velocity.
+    // Set facing from input BEFORE the walking branch overwrites accel_x.
+    // 6502 stores facing at &38b0-&38b7 from input-driven accel_x; the
+    // &3b53 walking overwrite (slope vector / braking) lands AFTER so
+    // facing isn't flipped on deceleration.
     if (inp.move_right)      player_facing_ = 0x00;
     else if (inp.move_left)  player_facing_ = 0x80;
 
-    // Walking branch — port of &3b25 walk_along_flat_or_shallow_slope.
-    //
-    // The 6502 doesn't accumulate `acceleration_x` from the &2c6a/&2c6d
-    // INC/DEC handlers when the player is on a walkable surface; instead
-    // it computes a target velocity = ±walking_speed (0x1f) and asks
-    // apply_weight_and_limit_to_acceleration for the per-frame step:
-    //   target = sign(direction) * 0x1f
-    //   diff   = target - velocity_x
-    //   accel  = clamp(diff >> weight, ±max_accel)        ; &3208 LSR
-    //   max_accel for player (weight 3) = 0x10 per &3abd-&3ac4
-    // That converges on walking_speed in ~2 frames and HOLDS — no
-    // overshoot, no "sticky" ramp.
-    //
-    // Walking gate — port of &3b0e-&3b10 update_walking_npc_or_player:
-    //   AND #&0f ; NPC_WALKING_MASK
-    //   BNE leave   ; non-zero counter → not walking
-    // The counter is in player.state's low nibble, reset to 0 on bottom
-    // collision and incremented otherwise (see integrate_player_motion).
-    // Bouncing on a partial pattern can keep the counter at 0 only on
-    // landing frames; that's exactly what the 6502 does too.
+    // Port of &3b25 walk_along_flat_or_shallow_slope:
+    //   diff  = sign(dir) * 0x1f - velocity_x
+    //   accel = clamp(diff >> weight, ±0x10) — converges in ~2 frames.
+    // Walking gate (&3b0e-&3b10): state low nibble (NPC_WALKING_MASK)
+    // must be 0; reset on bottom collision, otherwise incremented.
     uint8_t walk_counter = player.state & 0x0f;
     bool walking = (walk_counter == 0) && !flying;
     if (debug_log_.is_open()) {
@@ -150,15 +117,10 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         debug_log_.flush();
     }
     if (walking) {
-        // Port of &3b25 walk_along_flat_or_shallow_slope. The 6502 builds
-        // an angle from (tcA + 0x10) for moving-right-vs-surface, or
-        // (tcA + 0x6f) for moving-left-vs-surface, then converts
-        // magnitude+angle to (accel_x, accel_y) via &2357 calculate_
-        // vector_from_magnitude_and_angle. On flat ground (tcA=0) this
-        // reduces to "right + 22.5° down" / "left + 22.5° down" — the
-        // small downward bias keeps the player into the floor for
-        // continuous collision. On a slope the angle rotates with tcA,
-        // producing an accel along the slope tangent.
+    // &3b25 walk: angle = tcA + (right? 0x10 : 0x6f), then &2357 emits
+    // (accel_x, accel_y). On flat ground (tcA=0) this is "horizontal +
+    // 22.5° down" to keep the player into the floor; on slopes the angle
+    // rotates with tcA so accel runs along the slope tangent.
         constexpr int walking_speed = 0x1f;
         constexpr int max_accel     = 0x10;
         constexpr int player_weight = 3;
@@ -223,27 +185,10 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         particles_.emit(ParticleType::JETPACK, 1, player, rng_);
     }
 
-    // Whistle playing — full port of handle_playing_whistle_one at
-    // &2cac and handle_playing_whistle_two at &2c99.
-    //
-    // Whistle two (&2c99-&2caa):
-    //   BIT player_whistle_two_collected  ; negative if collected
-    //   BPL leave                          ; ignore if not collected
-    //   play_sound (b0 24 b6 e2)           ; high note
-    //   STA whistle_two_activating_object  ; A = this_object = player slot 0
-    //   BPL play_sound_for_whistle         ; always (A=0 is positive)
-    //
-    // Whistle one (&2cac-&2cba):
-    //   BIT player_whistle_one_collected
-    //   BPL leave
-    //   ROR whistle_one_active             ; bit 7 set
-    //   ; fall through to play_sound_for_whistle
-    //
-    // play_sound_for_whistle (&2cb4): play_sound (b0 24 b6 b3) — the
-    // shared low note. So whistle two emits TWO sounds (the high note
-    // at &2c9e plus the shared low note at &2cb4), giving the
-    // characteristic two-tone "tweet"; whistle one emits ONE sound
-    // (just the low note).
+    // Whistles: &2cac whistle_one (low note only) and &2c99 whistle_two
+    // (high note at &2c9e + shared low at &2cb4 → two-tone "tweet"). Both
+    // gated on "_collected" flags. Whistle two also stamps whistle_two_
+    // activating_object = player slot.
     static constexpr uint8_t kSoundWhistleHigh[4] = { 0xb0, 0x24, 0xb6, 0xe2 };
     static constexpr uint8_t kSoundWhistleLow[4]  = { 0xb0, 0x24, 0xb6, 0xb3 };
     if (inp.whistle_one && whistle_one_collected_) {
@@ -256,11 +201,9 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         Audio::play(Audio::CH_ANY, kSoundWhistleLow);
     }
 
-    // Aim control — port of &30fc update_player_aiming_angle + the I/K/O
-    // handlers at &3120..&3129. The 6502 runs an accel → velocity → angle
-    // chain; key presses nudge the acceleration. We use a simpler one-step
-    // model that feels close enough at 50 fps: each key frame moves the
-    // angle by a fixed step, clamped to the -0x3f..+0x3f range (±~90°).
+    // Aim control — port of &30fc + the I/K/O handlers at &3120-&3129.
+    // Port deviation: fixed-step instead of the 6502's accel→velocity→
+    // angle chain; clamped to ±0x3f.
     {
         constexpr int AIM_STEP = 2;
         int8_t angle = static_cast<int8_t>(player_aim_angle_);
@@ -301,17 +244,10 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         }
     }
 
-    // &2d33 handle_firing with the &2d36-&2d3b "BPL leave" branch
-    // faithfully applied: firing while holding an object doesn't launch a
-    // bullet — it sets `player_object_fired = held_slot` instead. Doors,
-    // transporters and the RCD itself read that flag to detect "player
-    // aimed the RCD at me". The flag lives for one frame; Game::run
-    // clears it back to 0xff at the end of each tick.
-    //
-    // SPACE is `repeat = no` in the 6502 action table at &0d (line 3572
-    // of the disassembly) — one press fires one bullet. Gate on the
-    // 0→1 edge so holding the key doesn't spam bullets every frame
-    // and drain the weapon ammo in a tenth of a second.
+    // &2d33 handle_firing + &2d36-&2d3b branch: firing while holding sets
+    // player_object_fired = held_slot (one-frame flag read by doors /
+    // transporters / RCD) instead of launching a bullet. SPACE is
+    // repeat=no in the &0d action table — edge-gate on 0→1.
     bool fire_down = inp.fire;
     bool fire_edge = fire_down && !fire_key_prev_;
     fire_key_prev_ = fire_down;
@@ -325,30 +261,17 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         }
     }
 
-    // Inventory actions are split across three keys:
-    //   ,  pickup the touching object (no-op if nothing in reach or
-    //      we're already holding something).
-    //   m  drop the held object straight down (no horizontal velocity
-    //      added — gravity takes it from the player's hand).
-    //   .  throw the held object: same as drop but with a horizontal
-    //      kick in the player's facing direction so it sails away.
-    //
-    // Each is rising-edge gated. Mirrors the 6502's per-key "just-
-    // pressed" register at &126b — without this, holding a key would
-    // trigger every frame.
+    // Inventory keys (rising-edge gated, mirrors 6502 just-pressed at
+    // &126b):
+    //   ,  pickup touching   m  drop straight down   .  throw forward
 
     auto pickup_now = [&](void) {
         if (held_object_slot_ < 0x80) return;                  // already holding
 
-        // Fresh AABB scan against the player's current position when
-        // the key fires, with a small ±2 fraction-unit inflation in
-        // each direction to forgive sub-pixel misalignment. Falls back
-        // to player.touching if nothing overlaps the inflated AABB.
-        // The 6502 reads this_object_touching (&3b) set by check_for_
-        // collisions earlier in the frame; our port's player.touching
-        // is refreshed at the end of integrate_player_motion (last
-        // frame), which can be stale when the player walks past a
-        // collectable's narrow AABB faster than the key edge.
+        // Fresh AABB scan inflated by ±2 frac-units; falls back to
+        // player.touching. The 6502 reads &3b set earlier this frame;
+        // our port's player.touching is set at end-of-motion last
+        // frame — can be stale if the player passes a narrow AABB fast.
         int target_slot = -1;
         {
             int p_x = static_cast<int>(player.x.whole) * 256 +

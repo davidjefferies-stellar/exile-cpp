@@ -12,19 +12,10 @@
 
 namespace Wind {
 
-// Port of &1c47-&1c92: apply_surface_wind.
-//
-// Wind is centred at (x=0x9B, y=0x4E) and blows INWARD. The original
-// routine computes a desired velocity from distance, then at &1c84
-// hands off to `add_weighted_vector_component_to_this_object_velocity`
-// (&3f94) which:
-//   delta = desired - current_velocity
-//   delta >>= Y                                   (weight factor)
-//   |delta| clamped to max_acceleration (0x0c)    (&3213)
-//   current_velocity += delta                     (&31fc)
-//
-// Wind saturates because we go through add_weighted_vector_component,
-// not by adding `desired >> Y` directly to the velocity each frame.
+// &1c47-&1c92 apply_surface_wind. Centred at (0x9B, 0x4E), blows
+// INWARD. At &1c84 hands off to add_weighted_vector_component (&3f94)
+// — delta = (desired - vel) >> weight, clamped to max_accel 0x0c —
+// which is what makes wind saturate instead of accumulating.
 void apply_surface_wind(Object& obj) {
     // Only above surface (y < 0x4f, &1c49 CMP #&4f / BCS skip)
     if (obj.y.whole >= 0x4f) return;
@@ -50,11 +41,8 @@ void apply_surface_wind(Object& obj) {
         // &1c61: no wind if |dist| < 0x1e
         if (dist < 0x1e) continue;
 
-        // Weight factor:
-        //   base = weight + 2  (LDY weight / INY at &1c5b then INY at &1c78)
-        //   -1 at dist >= 0x32 (&1c69 DEY)
-        //   -1 at dist >= 0x3c (&1c6e DEY)
-        //   -2 at dist >= 0x48 (&1c74 DEY DEY — strength ceiling hit)
+        // Weight: base = weight+2 (&1c5b/&1c78 INY); -1 at dist>=0x32
+        // (&1c69), -1 at >=0x3c (&1c6e), -2 at >=0x48 (&1c74).
         int shift_count = weight + 2;
         if (dist >= 0x32) shift_count--;
         if (dist >= 0x3c) shift_count--;
@@ -88,11 +76,8 @@ void apply_surface_wind(Object& obj) {
     }
 }
 
-// Compute the bigger of the two axis strengths from the same distance
-// table apply_surface_wind uses. Callers use this to gate side effects
-// like particle emission. Returning the max (not sum) mirrors the
-// 6502, which only produces one particle per frame regardless of how
-// many axes of wind are active.
+// Max (not sum) of the two axis strengths — mirrors the 6502, which
+// emits one particle/frame regardless of how many axes are active.
 uint8_t surface_wind_magnitude(const Object& obj) {
     if (obj.y.whole >= 0x4f) return 0;
 
@@ -220,12 +205,9 @@ void apply_tile_environment(Object& obj,
                             uint8_t frame_counter,
                             Random& rng,
                             ParticleSystem& particles) {
-    // &1f29-&1f33 set tile_x/tile_y from the object's centre (this_object_x /
-    // this_object_y); we do the same with the whole-tile coords. The exact
-    // 6502 path checks the top tile and optionally the bottom tile when the
-    // sprite straddles a tile boundary. Sampling a single tile is close
-    // enough for visible effects; doing both adds bookkeeping for a small
-    // win.
+    // &1f29-&1f33 tile from object centre. 6502 also samples the bottom
+    // tile when sprite straddles a boundary; single-tile sampling is
+    // close enough for visible effects.
     uint8_t tx = obj.x.whole;
     uint8_t ty = obj.y.whole;
 
@@ -272,11 +254,9 @@ void apply_tile_environment(Object& obj,
 
     if (!active) return;
 
-    // is_underwater treats partially-submerged objects the same as fully
-    // submerged. The 6502 distinguishes via this_object_waterline (&20):
-    // 0xff means "completely underwater". As a rough approximation, treat
-    // anything 4+ tiles below the waterline as fully submerged, matching
-    // the +1 weight modifier the 6502 applies at &3f61.
+    // 6502 distinguishes fully vs partially submerged via &20
+    // this_object_waterline (0xff = fully). Approximate with >=4 tiles
+    // below waterline → +1 weight at &3f61.
     uint8_t wy = Water::get_waterline_y(obj.x.whole);
     bool in_water    = obj.y.whole >= wy;
     bool fully_under = obj.y.whole >= static_cast<uint8_t>(wy + 4);

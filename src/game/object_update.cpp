@@ -19,15 +19,8 @@
 
 // Port of &30e9-&30f5 apply_tile_collision_to_position_and_velocity's
 // bounce math, applied per-axis (our integration is axis-separated
-// whereas the 6502 uses a single vector).
-//
-//   magnitude = min(|v|, 0x20)           ; &30e7 cap
-//   magnitude = max(magnitude - 2, 0)    ; &30e9 lose 2
-//   magnitude = magnitude * 7 / 8        ; &30ef damp 7/8
-//   new_v     = -sign(old_v) * magnitude ; reflect
-//
-// Settles within 3-4 bounces because each pass loses ~25% of magnitude
-// (sub-2 gets clamped, 7/8 takes the rest).
+// whereas the 6502 uses a single vector). Cap 0x20, lose 2, damp 7/8,
+// reflect — settles within 3-4 bounces.
 static int8_t bounce_reflect(int8_t v_in) {
     int mag = (v_in < 0) ? -v_in : v_in;
     if (mag > 0x20) mag = 0x20;
@@ -36,26 +29,18 @@ static int8_t bounce_reflect(int8_t v_in) {
     return static_cast<int8_t>(v_in > 0 ? -mag : mag);
 }
 
-// Companion to bounce_reflect for the *other* axis on a collision. The
-// 6502's &30ef calculate_seven_eighths damps the *combined* vector
-// magnitude and then splits it between vx and vy via the reflected angle.
-// Our axis-separated integration would otherwise leave the non-colliding
-// axis at full velocity, so a thrown grenade would slide forever along
-// the floor after the first bounce. Apply the 7/8 damping-without-reflect
-// on the other axis to approximate that magnitude coupling.
-// Port of &3235 calculate_seven_eighths.
+// Port of &3235 calculate_seven_eighths — damp without reflect on the
+// non-colliding axis to approximate the 6502's combined-magnitude split
+// that our axis-separated integration would otherwise miss.
 static int8_t damp_seven_eighths(int8_t v_in) {
     int mag = (v_in < 0) ? -v_in : v_in;
     mag = mag * 7 / 8;
     return static_cast<int8_t>(v_in > 0 ? mag : -mag);
 }
 
-// AABB-corner solid probe for the held primary's penetration check at
-// step 3. Returns true if any of the four corners (top-left, top-right,
-// bottom-left, bottom-right) sits inside a solid tile. Used by the
-// axis-separated revert to test "if I left this axis at the new flush
-// value but kept the other axis at the old held position, does the
-// sprite still penetrate a wall?".
+// AABB-corner solid probe for the held primary's penetration check
+// at step 3 — axis-separated revert tests post-move flush vs. old
+// held position to detect a wall slap.
 static bool held_aabb_solid(const Landscape& landscape,
                              Fixed8_8 hx, Fixed8_8 hy, int hw, int hh) {
     int right_abs = int(hx.whole) * 256 + int(hx.fraction) + hw;
@@ -99,19 +84,10 @@ static void nudge_velocity(int8_t& v, int sign) {
     v = static_cast<int8_t>(nv);
 }
 
-// Full object-object overlap response — port of &2b51-&2bb0 applied to
-// the (this, other) pair after check_for_collisions has confirmed an
-// overlap. Picks the smallest of the four edge penetration depths,
-// pushes `obj` out by that depth, adds a ±2 velocity nudge along the
-// same axis, and runs the &2bb6 mass-ratio velocity transfer for both
-// axes (with smallest-overlap doubling on the impact axis). Symmetric
-// touching stamp matches &2b1d-&2b27.
-//
-// Caller pre-filters: skip when either side is intangible or when this
-// is a newly-created bullet (they manage their own collision response
-// in common_bullet_update). The 6502 has no hard-revert; the push-out
-// here is what prevents the embedded-pair state that pure velocity
-// transfer can't break.
+// Port of &2b51-&2bb0 object-object overlap response: smallest-edge
+// push-out + ±2 nudge + &2bb6 mass-ratio transfer + symmetric touching
+// stamp (&2b1d-&2b27). Caller filters intangibles and newly-created
+// bullets (they self-handle in common_bullet_update).
 static void resolve_obj_overlap_response(Object& obj, int slot,
                                          Object& other, int other_slot) {
     int this_l = obj.x.whole * 256 + obj.x.fraction;
@@ -123,11 +99,8 @@ static void resolve_obj_overlap_response(Object& obj, int slot,
     int other_r = other_l + spr_w_units(other.sprite);
     int other_b = other_t + spr_h_units(other.sprite);
 
-    // Edge labels:
-    //   0 right (this extends past other-left → push left, sign -1)
-    //   1 left  (this extends past other-right → push right, sign +1)
-    //   2 bot   (this extends past other-top   → push up, sign -1)
-    //   3 top   (this extends past other-bot   → push down, sign +1)
+    // pen[] edges: 0 right (push -x), 1 left (+x),
+    // 2 bot (push -y), 3 top (+y).
     int pen[4];
     pen[0] = this_r  - other_l;
     pen[1] = other_r - this_l;
@@ -188,30 +161,18 @@ void Game::update_objects() {
         Object& obj = object_mgr_.object(slot);
         if (!obj.is_active()) continue;
 
-        // Step 3: Handle held objects. 6502 &1afd-&1b54 snaps the held
-        // primary flush to the player's facing side (height-centred,
-        // x_flip-mirrored, velocity copied from player), then falls
-        // through into the SAME check_for_collisions routine every
-        // other primary uses. The drift between the snap-set position
-        // (saved in held_expected_*) and the post-resolve position is
-        // what feeds &1ca9 consider_dropping_held_object below.
+        // Step 3: &1afd-&1b54 — snap held primary flush to player's
+        // facing side, then run the shared check_for_collisions. Drift
+        // (held_expected_* vs post-resolve) feeds &1ca9 drop test.
         if (slot == held_object_slot_) {
             Fixed8_8 prev_held_x = obj.x;
             Fixed8_8 prev_held_y = obj.y;
             HeldObject::update_position(obj, player);
             held_expected_x_ = obj.x;
             held_expected_y_ = obj.y;
-            // Step 15 normally resets pre_collision_magnitude to 0 at
-            // the top of each frame, but we skip step 15 for held
-            // primaries. Without an explicit reset here, a high
-            // magnitude captured BEFORE pickup (e.g. the impact frame
-            // where the player walked into the flask to grab it)
-            // persists forever, and update_full_flask's >= 0x14
-            // trigger fires every frame → continuous water bleed
-            // (re-arms timer = 0x10 → 8 particles/frame indefinitely).
-            // Resetting matches step 15 so TileCollision::resolve
-            // below only re-stamps the value if the held actually
-            // penetrates solid geometry this frame (slap into a wall).
+            // Held primaries skip step 15's per-frame reset; clear here
+            // or a pre-pickup impact magnitude pins update_full_flask's
+            // >= 0x14 trigger and bleeds water indefinitely.
             obj.pre_collision_magnitude = 0;
             TileCollision::Result tcr = TileCollision::resolve(
                 obj, prev_held_x.whole, prev_held_x.fraction,
@@ -260,23 +221,10 @@ void Game::update_objects() {
             }
         }
 
-        // Step 9b: Refresh `touching` BEFORE the type-specific update reads
-        // it. The 6502 calls check_for_collisions at &1b54 ahead of the
-        // per-type dispatch so update routines see a touching field that
-        // reflects the current overlap (most notably &4704 update_triax,
-        // which absorbs the destinator on its first frame). The end-of-
-        // update OR #&80 at &1dd6-&1dda handles cross-frame staleness;
-        // here we just detect this frame's overlap and stamp both sides.
-        //
-        // The 6502 SKIPS this call for static objects at &1b50 (BIT &2c
-        // / BMI &1bb7), relying solely on the symmetric stamp from other
-        // slots' check_for_collisions to set their touching. We run it
-        // for all weights — overlap detection is symmetric, so the answer
-        // matches, and it gives static objects a fresh stamp on the same
-        // frame an overlap starts rather than waiting for a later slot.
-        // The frame-fresh clear on no-overlap only fires for non-static
-        // because static touching is owned by the end-of-update OR and
-        // by other slots' symmetric stamps, not by self-checks.
+        // Step 9b: Port of &1b54 check_for_collisions — refresh touching
+        // before per-type dispatch so update routines (notably &4704
+        // update_triax) see this frame's overlap. We run for all weights
+        // unlike the 6502 (&1b50 skips statics); symmetric so it matches.
         {
             auto early_coll = Collision::check_object_collision(
                 obj, slot,
@@ -305,15 +253,9 @@ void Game::update_objects() {
                               &particles_,
                               held_object_slot_, player_object_fired_,
                               // &311d player_aiming_angle_with_flip:
-                              // mirror across the vertical axis when
-                              // player is facing left. Match Weapon::
-                              // get_firing_velocity's (0x80 - s) form
-                              // exactly so AIM particles and bullets
-                              // always agree on direction — the EOR/+1
-                              // form is algebraically the same but
-                              // routing both through the same explicit
-                              // signed subtract keeps any future tweak
-                              // synchronised across the two paths.
+                              // mirror via (0x80 - s) when facing left,
+                              // matching Weapon::get_firing_velocity so
+                              // AIM particles and bullets agree.
                               static_cast<uint8_t>(player.is_flipped_h()
                                   ? (0x80 - static_cast<int8_t>(player_aim_angle_))
                                   : static_cast<int8_t>(player_aim_angle_)),
@@ -328,15 +270,9 @@ void Game::update_objects() {
             update_fn(obj, uctx);
         }
 
-        // Step 11: 6502 &1ca9-&1cc4 consider_dropping_held_object.
-        // The original computes a 16-bit signed drift between the
-        // pre-collision "snap-to-player-side" position (saved in
-        // held_expected_* during step 6/7) and the current obj.x/y
-        // (which TileCollision::resolve may have pushed back if the
-        // snap penetrated a wall). Drop if drift on either axis
-        // leaves the [-0x30, +0x30) frac window — that's the 6502's
-        // `(diff + 0x30) >= 0x60 OR high-byte ≠ 0` test expressed
-        // as a signed bound.
+        // Step 11: &1ca9-&1cc4 consider_dropping_held_object. Drop if
+        // signed drift between held_expected_* and post-resolve obj.x/y
+        // leaves the [-0x30, +0x30) frac window on either axis.
         if (slot == held_object_slot_) {
             int drift_x =
                 (static_cast<int>(held_expected_x_.whole) * 256 +
@@ -355,49 +291,23 @@ void Game::update_objects() {
             }
         }
 
-        // Step 12: Handle explosions. Port of &1ce3-&1cf3: when energy
-        // hits zero, mutate the slot IN-PLACE into an EXPLOSION via
-        // explode_object_with_duration_A (&40db). The 6502 routes
-        // through the per-type explosion routine — for "explode with
-        // squeal" types (doors, hives, grenades, bullets) duration =
-        // (initial_energy / 32) + 3, which is what we use here so the
-        // boom is visible.
-        //
-        // Mutating IN-PLACE is critical for tertiary-backed primaries
-        // like doors: keeping the same slot keeps obj.tertiary_slot
-        // pointing at the door's entry, and tertiary_spawn.cpp's
-        // dedup scan blocks re-spawning the door while the explosion
-        // still occupies the slot.
+        // Step 12: Port of &1ce3-&1cf3 — energy=0 mutates slot IN-PLACE
+        // into EXPLOSION via &40db. Duration = (initial_energy/32)+3.
+        // Must stay in-place: tertiary-backed primaries (doors) keep
+        // obj.tertiary_slot so dedup blocks immediate respawn.
         if (obj.energy == 0 && obj.type != ObjectType::EXPLOSION &&
             !object_type_is_indestructible(static_cast<uint8_t>(obj.type))) {
-            // 6502 &1ce3-&1cf3 dispatches energy=0 through
-            // update_routine_addresses_high_table[type]'s top two bits.
-            // OBJECT_EXPLOSION (0x44) → 00 indestructible → no-op;
-            // EMPTY_FLASK / FULL_FLASK / keys / weapons / pickups / Triax
-            // / static cosmetics → also 00, also no-op (they sit at
-            // energy 0 instead of transmuting). Without the indestructible
-            // guard, the explosion radius from a grenade would convert a
-            // nearby flask into an EXPLOSION sprite. Without the
-            // EXPLOSION guard, step 12 would re-fire every tick on the
-            // mutated slot, restoring tertiary_data_offset to its full
-            // duration and producing an infinite damage well.
+            // &1ce3-&1cf3 dispatch top-two-bits = 00 (indestructible) is
+            // a no-op for flasks/keys/pickups/EXPLOSION itself. Without
+            // the guard, grenade radius mutates flasks; without the
+            // EXPLOSION guard, step 12 re-fires on its own mutated slot.
             uint8_t init_e = get_initial_energy(static_cast<uint8_t>(obj.type));
             uint8_t duration = static_cast<uint8_t>((init_e >> 5) + 3);
 
-            // Port-only deviation: swap small projectile sprites for
-            // SPRITE_FIREBALL so their explosions are visible on our
-            // wider viewport. The 6502 keeps the original sprite for
-            // every explosion (a bullet's 3x2 sprite flickers under
-            // the cycling palette), which on the BBC's ~10-tile-wide
-            // screen reads fine but on our 40-tile viewport vanishes
-            // into nothing. Doors and other large sprites keep their
-            // original sprite so the palette flicker plays out on
-            // the source shape (matches 6502 visually).
-            //
-            // Range &12..&1b is the 6502's OBJECT_RANGE_PROJECTILES
-            // (active grenade through hovering balls). Those are the
-            // types whose 6502 sprites are 3x2..6x4 — too small for
-            // our viewport to pick up the palette cycle on its own.
+            // Port-only deviation: swap small projectile sprites
+            // (&12..&1b OBJECT_RANGE_PROJECTILES) for SPRITE_FIREBALL
+            // so explosions read on our 40-tile viewport. Larger sprites
+            // keep their original — palette flicker matches 6502.
             uint8_t t = static_cast<uint8_t>(obj.type);
             bool is_projectile = (t >= 0x12 && t <= 0x1b);
             if (is_projectile) {
@@ -439,14 +349,9 @@ void Game::update_objects() {
             continue;
         }
 
-        // Step 14: Reap PENDING_REMOVAL objects.
-        //
-        // The 6502's set_object_for_removal at &2516 just sets the flag;
-        // the main loop later zeroes the slot. It does NOT bounce the
-        // object back to tertiary — PENDING_REMOVAL means "this thing is
-        // GONE" (collected, exploded, despawned) and reviving it would
-        // undo whatever effect set the flag, and would re-arm bit 7 of
-        // the data byte so collected items respawn a few frames later.
+        // Step 14: Reap PENDING_REMOVAL (port of &2516). Don't bounce
+        // back to tertiary — that would re-arm bit 7 and respawn
+        // collected items a few frames later.
         if (obj.flags & ObjectFlags::PENDING_REMOVAL) {
             object_mgr_.remove_object(slot);
             if (slot == held_object_slot_) held_object_slot_ = 0x80;
@@ -456,16 +361,10 @@ void Game::update_objects() {
         // Step 9: Apply wind (only above surface)
         Wind::apply_surface_wind(obj);
 
-        // Wind particle emission — port of &3f73 add_wind_particle_
-        // using_velocities. One PARTICLE_WIND per frame with probability
-        // `magnitude / 0x7f`: stronger wind → visibly more drift trails.
-        // The 6502's flow at &3f73-&3f91 is: (1) calculate_angle_from_vector
-        // turns the active wind (vector_x, vector_y) into &b5; (2) the
-        // probability gate at &3f76-&3f7b checks that &b7 magnitude exceeds
-        // a random byte; (3) add_particle reads the angle and the type's
-        // spd_rand/spd_base to pick a base velocity in the wind direction.
-        // emit_directed reproduces step 3, so wind particles now drift in
-        // the actual wind direction rather than a random one.
+        // Port of &3f73 add_wind_particle_using_velocities — one
+        // PARTICLE_WIND per frame with probability magnitude/0x7f,
+        // emitted in the wind's direction (calculate_angle_from_vector
+        // then emit_directed feeds spd_rand/spd_base at &2357).
         {
             int8_t wvx = 0, wvy = 0;
             Wind::surface_wind_vector(obj, wvx, wvy);
@@ -478,64 +377,36 @@ void Game::update_objects() {
 
         // Step 15: Apply physics (gravity + velocity)
         if (slot != held_object_slot_) {
-            // Per-type physics gate:
-            //   weight 7           -> fully static; pin position, zero velocity.
-            //   "undisturbed pin"  -> energy bit 7 set on a type whose update
-            //                         routine pins via consider_disturbing_object
-            //                         (collectables, inactive grenade). The
-            //                         6502 keeps these still by simply NOT
-            //                         calling add_A_to_position from inside
-            //                         the type's update — there's no global
-            //                         "integrate velocity into position" step
-            //                         like ours has. Without an equivalent
-            //                         skip here, gravity adds +1 to vy each
-            //                         frame and our generic integration drifts
-            //                         the object downward even after the
-            //                         type's pin zeroed velocity. Treat it
-            //                         like fully_static.
-            //   INTANGIBLE (0x80)  -> keeps its velocity but skips gravity
-            //                         (explosions, lightning, transporter beams,
-            //                         moving fireballs, invisible inert — these
-            //                         are "not physical" in the 6502's sense).
-            //   otherwise          -> gravity + wind + velocity integration as normal.
+            // Per-type physics gate: weight 7 = fully static; energy
+            // bit 7 on types >= 0x4a = undisturbed-pin (6502 omits
+            // add_A_to_position; we need an explicit skip or gravity
+            // drifts pinned collectables). INTANGIBLE skips gravity.
             uint8_t tidx = static_cast<uint8_t>(obj.type);
             uint8_t tflags = (tidx < static_cast<uint8_t>(ObjectType::COUNT))
                              ? object_types_flags[tidx] : 0;
             bool fully_static = obj.weight() >= 7;
             bool gravity_exempt = (tflags & ObjectTypeFlags::INTANGIBLE) != 0;
-            // "undisturbed" pin via energy bit 7 — see comment above.
-            // Active for the types whose update_fn runs the consider_
-            // disturbing_object pin (collectables 0x4a..0x64 and the
-            // inactive grenade dispatch chain). The bit gets cleared on
-            // touch in update_collectable, after which physics resumes.
+            // Energy-bit-7 pin covers collectables 0x4a..0x64 and the
+            // inactive-grenade chain; cleared on touch in
+            // update_collectable, after which physics resumes.
             bool pin_undisturbed = (obj.energy & 0x80) != 0 &&
                                     static_cast<uint8_t>(obj.type) >= 0x4a;
-            // BUSH pins unconditionally. &4ba9 update_bush is just JSR
-            // set_this_object_velocities_to_zero + JMP set_this_object_
-            // position_from_previous_position — the bush freezes in
-            // place every frame regardless of touch. Bushes are weight 6
-            // (flags 0xd6 & 0x07), so they fall outside fully_static; pin
-            // them explicitly here or a wasp/projectile leaves residual
-            // velocity that gravity then integrates.
+            // &4ba9 update_bush pins unconditionally. Bushes are
+            // weight 6 (fall outside fully_static) — explicit pin
+            // here, or wasp/projectile residual velocity drifts them.
             bool pin_bush = obj.type == ObjectType::BUSH;
 
             if (fully_static || pin_undisturbed || pin_bush) {
                 obj.velocity_x = 0;
                 obj.velocity_y = 0;
-                // Static objects still need to notice when something is
-                // touching them — switches fire on touching==player, doors
-                // self-close on touching!=none, etc. The 6502's &2a64
-                // check_for_collisions runs for every object, regardless of
-                // weight; skipping it for weight-7 statics meant the switch
-                // never saw the player even with overlapping AABBs.
+                // Statics need touching for switch fire / door close;
+                // 6502 &2a64 check_for_collisions runs regardless of
+                // weight, so we do too.
                 auto obj_coll = Collision::check_object_collision(
                     obj, slot,
                     reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(object_mgr_.object(0)));
-                // Only stamp on overlap. Cross-frame staleness is handled
-                // by the end-of-update OR #&80 at the bottom of the slot
-                // loop (port of &1dd6-&1dda); a no-clear here just means
-                // step 9b's stamp earlier this frame survives until that
-                // OR runs.
+                // Stamp on overlap only; cross-frame staleness is
+                // handled by the &1dd6-&1dda OR #&80 at slot-loop end.
                 if (obj_coll.collided) {
                     obj.touching = static_cast<uint8_t>(obj_coll.other_slot);
                     object_mgr_.object(obj_coll.other_slot).touching =
@@ -550,29 +421,16 @@ void Game::update_objects() {
                     obj.velocity_y--;
                 }
 
-                // ====================================================
-                // Tile collision — TileCollision::resolve port of the
-                // 6502 &2f8c-&30df chain. Walks AABB edges, builds an
-                // obstruction vector, pushes the object out perpendicular
-                // to the surface, and reflects velocity at reduced angle.
-                // Same module the player uses; covers slopes, walls,
-                // floors, ceilings under one pipeline.
-                //
-                // Object-object overlap is handled below by the &2bb6
-                // mass-ratio velocity transfer in both the heavier-
-                // blocker and lighter-target branches.
-                // ====================================================
+                // Tile collision — TileCollision::resolve, port of
+                // &2f8c-&30df. Object-object overlap is handled below
+                // by the &2bb6 mass-ratio transfer.
                 Fixed8_8 ou_old_x = obj.x;
                 Fixed8_8 ou_old_y = obj.y;
                 obj.x.add_velocity(obj.velocity_x);
                 obj.y.add_velocity(obj.velocity_y);
 
-                // Clear SUPPORTED before the resolve; it'll be re-set
-                // below if landed_on_bottom comes back true. The 6502
-                // doesn't have a SUPPORTED flag per se — it derives the
-                // "grounded" state from tile_collision_y_flags bit 7
-                // (set when the collision was "more to the bottom" of
-                // the AABB, i.e. the object landed on something).
+                // SUPPORTED re-set from tcr.landed_on_bottom below;
+                // 6502 derives it from tile_collision_y_flags bit 7.
                 obj.flags &= ~ObjectFlags::SUPPORTED;
 
                 TileCollision::Result tcr = TileCollision::resolve(
@@ -585,23 +443,9 @@ void Game::update_objects() {
                     obj.flags |= ObjectFlags::SUPPORTED;
                 }
 
-                // Object-object overlap response. Port of &2b51-&2bb0
-                // (smallest-overlap push-out + ±2 velocity nudge + per-
-                // axis &2bb6 mass-ratio transfer). Same response runs
-                // for both heavier-blocker and lighter-target overlaps —
-                // the 6502 doesn't distinguish at &2b97. We split the
-                // detection only to keep overlapping_solid_slot's
-                // weight filter for the door/turret/cannon case, where
-                // it picks the heavier overlap when multiple are present;
-                // the response itself is shared.
-                //
-                // Newly-spawned bullets are exempt because their initial
-                // position deliberately overlaps the firer's AABB (port
-                // of &2afd-&2b0e). Projectile types (ICER_BULLET 0x13 ..
-                // PLASMA_BALL 0x19) also skip: bullets run their own
-                // velocity transfer + explosion inside the type-specific
-                // update routine (see projectile.cpp around line 198) so
-                // adding it here would double-apply.
+                // Port of &2b51-&2bb0 — split detection keeps the
+                // weight filter for door/turret/cannon; bullets (&2afd)
+                // and projectiles 0x13..0x19 self-handle.
                 {
                     uint8_t self_idx = static_cast<uint8_t>(obj.type);
                     bool is_projectile = (self_idx >= 0x13 && self_idx <= 0x19);
@@ -616,26 +460,14 @@ void Game::update_objects() {
                     int blocker = Collision::overlapping_solid_slot(
                         obj, slot, all_primaries);
                     if (eligible && blocker >= 0) {
-                        // Heavier-blocker overlap: same response as the
-                        // lighter case (the 6502 doesn't distinguish at
-                        // &2b97 — push out + nudge + transfer for every
-                        // overlap). For very fast objects this can let
-                        // the moving primary clip through a static door
-                        // when the smallest-overlap edge is on the far
-                        // side, but the BBC's per-frame velocities are
-                        // small enough that the near-side overlap stays
-                        // smallest in practice. Same behaviour the 6502
-                        // exhibits.
+                        // Heavier-blocker: same &2b97 response as lighter
+                        // — push out + nudge + transfer for every overlap.
                         Object& other = object_mgr_.object(blocker);
                         resolve_obj_overlap_response(obj, slot, other, blocker);
                     } else if (eligible) {
-                        // Lighter target (or any other overlap). Without
-                        // this, a grenade (weight 4) thrown at a flask
-                        // (weight 2) flies straight through — the
-                        // overlapping_solid_slot filter above only fires
-                        // for HEAVIER targets, so light pickups are
-                        // invisible to the moving primary unless we
-                        // explicitly handle them here.
+                        // Lighter target: overlapping_solid_slot only
+                        // matches HEAVIER, so grenade vs flask would
+                        // fly through without this explicit branch.
                         auto coll = Collision::check_object_collision(
                             obj, slot, all_primaries);
                         if (coll.collided) {
@@ -664,11 +496,8 @@ void Game::update_objects() {
                     }
                 }
 #if 0
-                // Sprite AABB in 16-bit fraction-unit space. The 6502
-                // stores (pixels-1)*16 in its width table and (rows-1)*8
-                // in its height table (see &5e89 / the port at
-                // tertiary_spawn.cpp:186); derive the same here so the
-                // probe matches what the renderer actually draws.
+                // Sprite AABB in 16-bit fraction units — 6502 stores
+                // (pixels-1)*16 / (rows-1)*8 in its size tables (&5e89).
                 int obj_h_units = (obj.sprite <= 0x80)
                     ? (sprite_atlas[obj.sprite].h > 0
                         ? (sprite_atlas[obj.sprite].h - 1) * 8 : 0)
@@ -678,14 +507,9 @@ void Game::update_objects() {
                         ? (sprite_atlas[obj.sprite].w - 1) * 16 : 0)
                     : 0;
 
-                // Probe a single (tile_x, tile_y) cell at an explicit
-                // sub-tile (x_frac, y_frac). Door tiles are swapped for
-                // their live closed/open substitute so primaries collide
-                // with closed doors like the player does, and the pattern-
-                // based `tile_and_flip_obstructs_point` handles slopes
-                // and spaceship-wall tiles where only a sub-section is
-                // solid — same per-section resolution as the 6502's
-                // &2fce LDA (&7c),Y / CMP y_fraction check.
+                // Single-cell probe at explicit (x_frac, y_frac).
+                // Door substitution + tile_and_flip_obstructs_point
+                // give the same per-section resolution as 6502 &2fce.
                 auto probe_tile = [&](uint8_t ttx, uint8_t tty,
                                       uint8_t ttx_frac,
                                       uint8_t tty_frac)->bool {
@@ -700,13 +524,9 @@ void Game::update_objects() {
                         subst, ttx_frac, tty_frac);
                 };
 
-                // Sample all four corners of the sprite's AABB
-                // unconditionally. Even when corners share a tile, their
-                // (x_frac, y_frac) differ and the obstruction threshold
-                // is a function of x_section / y_frac, so "same tile"
-                // doesn't mean "same obstruction answer" — required for
-                // slopes and partial-tile patterns. The probes are
-                // idempotent when corners collapse onto the same point.
+                // All four corners unconditionally — even shared-tile
+                // corners have different x_frac/y_frac, and partial-
+                // tile patterns (slopes) need the per-corner answer.
                 auto any_tile_solid = [&](uint8_t tx, uint8_t tx_frac,
                                           uint8_t ty, uint8_t ty_frac)->bool {
                     int right_abs  = static_cast<int>(tx) * 256 +
@@ -725,29 +545,18 @@ void Game::update_objects() {
                     return false;
                 };
 
-                // 6502 &1b `tile_top_or_bottom_collision` only flags
-                // top/bottom (Y-axis) collisions — side (X-axis) hits go
-                // into `left_obstruction` / `right_obstruction` which
-                // bullets and piranha/wasp behaviour don't read. Mirror
-                // that here: tile_collision is set *only* on the Y revert.
-                //
-                // The tile-pattern probe isn't enough on its own around
-                // closed doors: STONE_SLOPE_78 (the door substitute) is
-                // only solid in the tile's left quarter, while the door
-                // sprite spans ~half the tile. For the remaining band we
-                // fall back to overlaps_solid_object — same mechanism
-                // player_motion.cpp uses. Without this a grenade dropped
-                // near tile-centre passes through a closed door.
+                // &1b tile_top_or_bottom_collision flags Y-axis only;
+                // X-hits go into left/right_obstruction (piranha/wasp
+                // don't read). overlaps_solid_object fallback covers
+                // closed-door bands STONE_SLOPE_78 misses.
                 auto& all_primaries =
                     reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
                         object_mgr_.object(0));
                 obj.tile_collision = false;
                 obj.pre_collision_magnitude = 0;
 
-                // Per-axis "escape" relaxation — partial port of &306c
-                // apply_tile_collision_to_position_and_velocity. Allow
-                // the move only if the start position has its OPPOSITE
-                // side blocked (motion in the escape direction).
+                // Per-axis escape — partial port of &306c. Allow move
+                // only if the OPPOSITE start side is blocked.
                 auto side_corners = [&](uint8_t tx, uint8_t tx_frac,
                                         uint8_t ty, uint8_t ty_frac,
                                         bool& top, bool& bot,
@@ -775,14 +584,9 @@ void Game::update_objects() {
                              obj.y.whole, obj.y.fraction,
                              start_top, start_bot, start_left, start_right);
 
-                // Object-object overlap at start relaxes for newly-spawned
-                // bullets and for intangible objects (explosions, lightning,
-                // transporter beams, fireballs). The relax is needed because
-                // a bullet's spawn position can overlap its firer's AABB on
-                // frame 1 — without an escape, the next frame's revert
-                // would pin it inside the firer. Restricted to NEWLY_CREATED
-                // + INTANGIBLE so an established primary stuck inside a
-                // closed door's AABB stays trapped instead of phasing out.
+                // Start-overlap relax for NEWLY_CREATED bullets (spawn
+                // inside firer's AABB) and INTANGIBLE only — otherwise
+                // an established primary stuck in a door phases out.
                 bool start_obj_overlap = false;
                 if ((obj.flags & ObjectFlags::NEWLY_CREATED) ||
                     (tflags & ObjectTypeFlags::INTANGIBLE)) {
@@ -798,19 +602,10 @@ void Game::update_objects() {
                     int  obj_blocker = Collision::overlapping_solid_slot(
                         obj, slot, all_primaries);
                     bool obj_blocked = (obj_blocker >= 0);
-                    // Object-overlap relax only escapes another object's AABB,
-                    // never punches through tiles — otherwise a player pushing
-                    // a resting collectable would walk it through walls/floor.
-                    //
-                    // Side-relax (clauses 2/3) is tile-pattern-only and gated
-                    // on !obj_blocked so heavier-primary collisions (door,
-                    // cannon, hive) outrank the tile-pattern escape — without
-                    // the gate, substitute_door_for_obstruction's sub-tile
-                    // pattern (e.g. STONE_SLOPE_78, solid only in the left
-                    // quarter) lets an object straddling the door's AABB
-                    // phase out through the empty band. Clause 1 stays
-                    // unconditional because bullets must leave their firer's
-                    // AABB on frame 1.
+                    // Object-overlap relax escapes object AABBs only,
+                    // never tiles. Side-relax gated on !obj_blocked so
+                    // heavier primaries outrank tile-pattern escape;
+                    // clause 1 stays unconditional for frame-1 bullets.
                     bool relax_x = (start_obj_overlap && !tile_blocked) ||
                         (obj.velocity_x > 0 && start_left  && !start_right && !obj_blocked) ||
                         (obj.velocity_x < 0 && start_right && !start_left  && !obj_blocked);
@@ -825,13 +620,9 @@ void Game::update_objects() {
                         obj.x = old_x;
                         obj.velocity_x = bounce_reflect(obj.velocity_x);
                         obj.velocity_y = damp_seven_eighths(obj.velocity_y);
-                        // Port of &2b1d-&2b27: when a primary bumps a heavier
-                        // primary, BOTH sides' touching get stamped. Without
-                        // this, the heavier side (door, hive, cannon) never
-                        // sees the toucher because its own step 9b runs
-                        // post-revert when the AABBs no longer overlap, so
-                        // update_door's touched-and-unlocked toggle at &4d0d
-                        // never fires from contact.
+                        // Port of &2b1d-&2b27 — symmetric stamp so the
+                        // heavier side (door, hive) sees the toucher
+                        // before its own post-revert step 9b runs.
                         if (obj_blocked) {
                             obj.touching = static_cast<uint8_t>(obj_blocker);
                             object_mgr_.object(obj_blocker).touching =
@@ -848,12 +639,9 @@ void Game::update_objects() {
                     int  obj_blocker = Collision::overlapping_solid_slot(
                         obj, slot, all_primaries);
                     bool obj_blocked = (obj_blocker >= 0);
-                    // Same side-relax gating as the X-axis above: a heavier
-                    // primary (closed horizontal door, etc.) must outrank
-                    // the tile-pattern escape. Without !obj_blocked here, a
-                    // jumping imp whose top edge clipped the door tile's
-                    // sub-tile-thin SPACESHIP_WALL_HORIZONTAL_QUARTER pattern
-                    // could escape upward through the door's primary AABB.
+                    // Same gating as X-axis: heavier primary must
+                    // outrank tile-pattern escape, or a jumping imp
+                    // escapes upward through a horizontal door's AABB.
                     bool relax_y = (start_obj_overlap && !tile_blocked) ||
                         (obj.velocity_y > 0 && start_top && !start_bot && !obj_blocked) ||
                         (obj.velocity_y < 0 && start_bot && !start_top && !obj_blocked);
@@ -869,10 +657,8 @@ void Game::update_objects() {
                         obj.velocity_y = bounce_reflect(obj.velocity_y);
                         obj.velocity_x = damp_seven_eighths(obj.velocity_x);
                         obj.tile_collision = true;
-                        // Symmetric touching stamp — same as the X-axis
-                        // revert above. A flask landing on top of a
-                        // closed door triggers the Y-axis branch (gravity
-                        // pulled it onto the door's AABB), so this is
+                        // Symmetric stamp — gravity pulls a flask onto
+                        // the door's AABB, so the Y-axis branch is
                         // where the door learns about the flask.
                         if (obj_blocked) {
                             obj.touching = static_cast<uint8_t>(obj_blocker);
@@ -881,14 +667,9 @@ void Game::update_objects() {
                         }
                     }
 
-                    // Water splash — port of &2f69-&2f82 add_water_
-                    // particles_for_splash. If the object just crossed
-                    // the waterline this frame moving downward, emit one
-                    // PARTICLE_WATER at the crossing point with angle
-                    // &c0 (straight up): emit_directed feeds the angle +
-                    // the type's spd_rand/spd_base through &2357 so the
-                    // droplet starts with vy ≈ -(spd_base..spd_base+spd_rand)
-                    // and visibly leaps out of the water.
+                    // Water splash — port of &2f69-&2f82. Downward
+                    // waterline crossing emits one PARTICLE_WATER at
+                    // angle &c0 (straight up).
                     uint8_t wy = Water::get_waterline_y(obj.x.whole);
                     bool was_above = old_y.whole < wy;
                     bool now_at    = obj.y.whole >= wy;
@@ -913,12 +694,9 @@ void Game::update_objects() {
                 // SUPPORTED is driven by TileCollision::resolve's
                 // landed_on_bottom flag (see above).
 
-                // Object-object collision: stamp BOTH sides on overlap
-                // (port of &2b14-&2b27 in check_for_collisions). Late
-                // re-check after physics so a velocity-driven move into
-                // another primary is registered this frame; the
-                // end-of-update OR #&80 at the bottom of the slot loop
-                // handles cross-frame staleness.
+                // Symmetric overlap stamp (&2b14-&2b27) — late re-check
+                // after physics so velocity-driven moves register this
+                // frame; end-of-update OR #&80 clears staleness.
                 auto obj_coll = Collision::check_object_collision(
                     obj, slot,
                     reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(object_mgr_.object(0)));
@@ -932,13 +710,9 @@ void Game::update_objects() {
             }
         }
 
-        // &3ef2 update_invisible_switch_tile — collision branch. Per-
-        // primary scan covers type-filtered switches the player path
-        // can't trigger: the (&7f, &77) closer at idx &ae is type &4c
-        // (OBJECT_EMPTY_FLASK) so only a flask resting on / thrown
-        // across the cell will fire it. Same head→feet AABB walk
-        // integrate_player_motion uses; the helper itself bails fast
-        // when the resolved tile isn't INVISIBLE_SWITCH.
+        // &3ef2 update_invisible_switch_tile collision branch — scans
+        // primaries for type-filtered switches the player can't trigger
+        // (e.g. flask-only at &7f,&77 idx &ae).
         {
             uint8_t sprite_id = obj.sprite;
             uint8_t h_frac = 0;
@@ -960,19 +734,10 @@ void Game::update_objects() {
             }
         }
 
-        // &1dd6-&1dda end-of-update touching clear. The 6502 ORAs
-        // #&80 into objects_touching before STA-ing it back to
-        // persistent storage every slot, every frame — so the next
-        // frame's load starts from "not touching" UNLESS a later
-        // slot's check_for_collisions symmetrically stamps it
-        // (&2b22-&2b24). Static slots (doors, switches, transporters)
-        // skip the 6502's own check_for_collisions entirely; their
-        // touching reflects only those symmetric stamps. Without this
-        // clear in our port, an object that briefly overlapped a
-        // static door left its slot pinned there forever — door.
-        // touching stayed positive, update_door's "closing + touched
-        // → speed = 0xff" clamp at &4cea fired every frame, and the
-        // door closed at -1 (≈5s) instead of the table value (≈0.3s).
+        // &1dd6-&1dda end-of-update touching clear — next frame starts
+        // "not touching" unless a later slot's symmetric stamp
+        // (&2b22-&2b24) re-sets it. Without this, static doors stay
+        // pinned and close at &4cea's clamp speed instead of the table.
         obj.touching |= 0x80;
 
         // Step 18: Clear creation flags

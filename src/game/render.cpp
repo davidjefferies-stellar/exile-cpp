@@ -11,22 +11,10 @@
 #include "world/water.h"
 #include <cstdio>
 
-// Per-object regen floor for the Health overlay's left-of-bar label.
-// Mirrors the enforce_minimum_energy values scattered across the
-// behaviour TUs — the value `obj.energy` settles to each frame after
-// any incoming damage if no other clamps run. For frogmen, the shared
-// frogman_common 0x7f call dominates the per-variant 0x64 / 0x5a, so
-// the displayed floor is what the user actually observes (0x7f).
-//
-// Doors don't go through enforce_minimum_energy. update_door (&4cbe-
-// &4cd5) instead snaps energy back to 0xff every frame as long as
-// it's still ≥ the per-colour threshold in doors_energy_table. So the
-// "floor that energy regenerates to" is genuinely 0xff — but the
-// useful threshold for "how much damage to break the door" is the
-// table value, which we show instead so it's actionable.
-//
-// Any type without a regen mechanism returns 0 so the label is
-// suppressed for projectiles, statics, etc.
+// Per-object regen floor for Health overlay. Mirrors enforce_minimum_
+// energy across behaviour TUs (frogmen: shared 0x7f wins over per-variant).
+// Doors: &4cbe-&4cd5 regen to 0xff above threshold, so we display the
+// actionable break threshold instead. 0 = no regen mechanism, label hidden.
 static constexpr uint8_t kDoorBreakThreshold[4] = { 0x80, 0x74, 0xc0, 0x80 };
 
 static uint8_t energy_floor_for_obj(const Object& obj) {
@@ -74,16 +62,10 @@ static uint8_t energy_floor_for_obj(const Object& obj) {
     }
 }
 
-// Find a live primary whose tertiary_slot matches `slot`. Returns the
-// primary's tile position via out params. Used by the Wiring overlay so
-// an animating door is wired from its current position, not its home
-// tile. The linear scan is fine here — PRIMARY_OBJECT_SLOTS is small
-// and the overlay is off by default.
-// `slot` is a tertiary-entry index — Option-B-wide, can exceed 255 once
-// the bake creates more than 256 entries. Object::tertiary_slot is
-// uint16_t to match. Earlier signature took uint8_t and silently
-// truncated, so any entry at idx > 255 (e.g. our redirect switches at
-// 521 / 681) failed dedup and produced duplicate wires.
+// Find live primary by tertiary_slot for Wiring overlay (animating doors
+// wire from current pos, not home tile). slot must be uint16_t — entries
+// at idx > 255 (redirect switches at 521 / 681) silently truncated under
+// uint8_t and produced duplicate wires.
 static bool find_primary_at_slot(const ObjectManager& mgr, uint16_t slot,
                                  uint8_t& out_x, uint8_t& out_y) {
     for (int j = 1; j < GameConstants::PRIMARY_OBJECT_SLOTS; j++) {
@@ -198,21 +180,10 @@ void Game::render() {
         uint8_t ty = static_cast<uint8_t>(camera_.center_y + rclick_dy);
 
         if (editor_paint_kind_ == 1 && editor_paint_object_idx_ >= 0) {
-            // Object placement: stamp a SPACE_WITH_OBJECT_FROM_TYPE
-            // marker and override the freshly-baked tertiary entry to
-            // carry the chosen spawn type. set_tile already allocates
-            // an entry from the static ROM tables (whatever happens to
-            // match this column) — we then overwrite the entry's
-            // tile_and_flip + data + type so the tile resolves to the
-            // FROM_TYPE marker and the spawn dispatches the chosen
-            // object. data byte starts with bit 7 set ("needs spawn")
-            // so the next render frame promotes the entry to a primary.
-            //
-            // Inherit FlipX / FlipY from the editor's paint state so
-            // toggling those buttons produces a flipped sprite (e.g. a
-            // ceiling-mounted red slime that drips downward). The
-            // generic spawn path at &4062-&4079 propagates the tile's
-            // flip bits onto the spawned primary's flags.
+            // Object placement: stamp SPACE_WITH_OBJECT_FROM_TYPE marker,
+            // overwrite the baked tertiary's tile_and_flip/data/type so the
+            // chosen object spawns (data bit 7 = needs-spawn). Inherit
+            // FlipX/FlipY from editor state — &4062-&4079 propagates them.
             uint8_t flip_bits = editor_paint_tile_ & 0xc0;
             uint8_t marker_with_flip = static_cast<uint8_t>(
                 static_cast<uint8_t>(TileType::SPACE_WITH_OBJECT_FROM_TYPE) |
@@ -462,19 +433,10 @@ void Game::render() {
             info.tertiary_source_aliased =
                 landscape_.tertiary_source_aliased(wx, wy);
             info.switch_x_aliased = landscape_.switch_x_aliased(wx, wy);
-            // "Is a switch" = the cell's tertiary entry resolves to a
-            // tile_and_flip with tile_type 0x08 SWITCH. This catches
-            // both direct switches (raw landscape 0x08 with a tertiary
-            // in the SWITCH range) AND redirect switches (raw 0x00..
-            // 0x07 marker whose tertiary tile_and_flip is rewritten to
-            // SWITCH — e.g. METAL_DOOR cells at X=227 picking up source
-            // row idx 116 with tile_and_flip=0x08). spawn_tertiary_
-            // object dispatches on the resolved type, so both flavours
-            // produce a real switch primary.
-            //
-            // Also gate on from_map_data so procedurally generated
-            // marker cells that incidentally land on a switch-redirect
-            // X don't pollute the count.
+            // is_switch = resolved tile_type == 0x08 SWITCH. Catches both
+            // direct (raw 0x08 + SWITCH-range tertiary) and redirect (raw
+            // 0x00..0x07 marker whose tertiary tile_and_flip is rewritten,
+            // e.g. METAL_DOOR @ X=227). Gate on from_map_data.
             {
                 uint16_t cell_idx =
                     landscape_.tertiary_index_at(wx, wy);
@@ -494,15 +456,10 @@ void Game::render() {
         }
     }
 
-    // Collision-debug overlay. For each visible tile, shade the region
-    // the obstruction pattern reports as solid (per x-section), using
-    // the same tile_threshold_at_x + tile_obstruction_v_flip_bit that
-    // collision probes consult. Door tiles are run through
-    // substitute_door_for_obstruction first so a closed door shows its
-    // STONE_SLOPE_78 shape (left-quarter solid) rather than the raw
-    // passable door tile. This is the ground truth the AABB probes in
-    // object_update.cpp are querying, so sink-through / slope / door-
-    // substitute bugs show up as sprites clipping into the red band.
+    // Collision-debug overlay: shade per-x-section solid region using the
+    // same tile_threshold_at_x + tile_obstruction_v_flip_bit as collision
+    // probes. Doors run through substitute_door_for_obstruction so closed
+    // doors show their STONE_SLOPE_78 shape, matching what the AABB sees.
     if (renderer_->collision_enabled()) {
         auto& all_primaries =
             reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
@@ -522,21 +479,10 @@ void Game::render() {
                 bool fv = (subst & TileFlip::VERTICAL)   != 0;
                 bool coll_fv = fv ^ tile_obstruction_v_flip_bit(type);
 
-                // Eight vertical bars, one per x_section. For each, the
-                // threshold splits the tile into solid-above / solid-
-                // below depending on coll_fv. Sample the section's
-                // centre (xs * 0x20 + 0x10) so the reading matches
-                // tile_threshold_at_x's x_frac >> 5 quantisation.
-                //
-                // Two passes per section: first the filled solid region
-                // (red, low-contrast), then a 1-frac-tall surface line
-                // (yellow, high-contrast) at the exact threshold. The
-                // line makes the 8-section staircase explicit when
-                // zoomed in — adjacent same-threshold sections merge
-                // visually in the fill but the line still draws
-                // section-by-section, and the threshold's sub-pixel
-                // position lands on the right screen-pixel via
-                // render_tile_shade_rect's frac→px math.
+                // 8 x-sections, sampled at centre (xs*0x20+0x10) to match
+                // tile_threshold_at_x's x_frac>>5 quantisation. Two passes:
+                // red fill then yellow surface line — line makes the
+                // 8-section staircase explicit on adjacent same-threshold.
                 uint8_t prev_threshold = 0;
                 bool    prev_has_surface = false;
                 for (int xs = 0; xs < 8; xs++) {
@@ -562,15 +508,10 @@ void Game::render() {
                             static_cast<uint8_t>(xs * 0x20), y0,
                             0x20, h, 0xCC2222);
                     }
-                    // Surface line + risers only when this section has
-                    // any solid material (has_fill). A fully-clear
-                    // section's threshold sits on the tile edge with
-                    // nothing behind it — drawing the line there
-                    // produced stray horizontal stripes through empty
-                    // space. Fully-solid sections (threshold = 0 or
-                    // 0xff but has_fill true) DO have a real surface
-                    // at the tile edge — that's the floor/ceiling of
-                    // a rock block — so they keep their line.
+                    // Surface line + risers gated on has_fill. Empty section's
+                    // threshold sits on the tile edge → drawing produces stray
+                    // horizontal stripes. Fully-solid sections keep the line
+                    // (rock block floor/ceiling).
                     bool has_surface = has_fill;
                     if (has_surface) {
                         renderer_->render_tile_shade_rect(
@@ -620,18 +561,9 @@ void Game::render() {
         renderer_->render_object(obj.x, obj.y, info);
     }
 
-    // Health-bar overlay — draws a thick filled bar above each active
-    // primary, width = sprite width + small margin, fill proportional to
-    // energy / 0x7f. energy bit 7 (the collectable "undisturbed" pin) is
-    // masked out so pinned items don't read as full HP.
-    //
-    // Layout (sub-tile fraction units; 1px wide = 16, 1row tall = 8):
-    //   - Outer bar:  sprite_w + 8 frac wide, 16 frac tall  (~2 BBC rows)
-    //   - Black border: 2 frac inset on every side for contrast
-    //   - Background:   inset rect filled dim grey
-    //   - Foreground:   inset rect, width scaled by energy/127, bright HP colour
-    //   - Positioned 24 frac (3 rows) above the sprite's top edge so it
-    //     clears the sprite even on tall creatures.
+    // Health-bar overlay above each primary; fill = energy / max. For
+    // collectables (types 0x4a..0x64) bit 7 is the "undisturbed" pin —
+    // mask it off and treat 0x7f as full so pinned items don't read full.
     if (renderer_->health_bars_enabled()) {
         constexpr uint8_t BAR_PAD_X   = 8;   // 0.5 px each side
         constexpr uint8_t BAR_HEIGHT  = 16;  // ~2 BBC rows tall
@@ -645,15 +577,9 @@ void Game::render() {
             int w_pix = sprite_atlas[sid].w;
             int sprite_w_frac = (w_pix > 0 ? (w_pix - 1) : 0) * 16;
             int outer_w_frac = sprite_w_frac + BAR_PAD_X * 2;
-            // The collectable types 0x4a..0x64 store the "undisturbed"
-            // pin in bit 7 of energy (init_object_from_type's
-            // obj.energy |= 0x80; cleared on first touch). For those,
-            // mask bit 7 off and treat 0x7f as the full-bar value.
-            // Everything else uses the full 8-bit value — without this
-            // distinction a door's energy decreasing from 0x80 (bar
-            // empty after mask) to 0x7f (bar full after mask) looked
-            // like the bar was wrapping back to 127 instead of being
-            // about to hit zero.
+            // Collectables 0x4a..0x64 store undisturbed pin in energy bit 7;
+            // mask it off and use 0x7f as full. Doors use full 8 bits — else
+            // 0x80→0x7f looked like wrap back to full instead of near-zero.
             uint8_t tidx = static_cast<uint8_t>(obj.type);
             bool collectable_pin = (tidx >= 0x4a && tidx <= 0x64);
             uint8_t energy = collectable_pin ? (obj.energy & 0x7f) : obj.energy;
@@ -705,15 +631,10 @@ void Game::render() {
                     fill_rgb);
             }
 
-            // 4. Numeric energy to the right of the bar, regen floor to
-            // the left. 8 px per glyph in the debug font; pad an extra 2
-            // px so the digits don't kiss the black border. Right anchor
-            // is the bar's right edge in WORLD coords (left + outer_w)
-            // so world_to_screen scales correctly under zoom — adding a
-            // pixel-space dx alone would land the label inside the bar
-            // when tile_px_x grows. Floor reads from a per-type lookup
-            // mirroring the enforce_minimum_energy calls scattered
-            // across the behaviour TUs.
+            // Numeric energy right of bar, floor left. Right anchor in
+            // WORLD coords (left+outer_w) so world_to_screen scales under
+            // zoom — pixel-dx alone lands inside the bar when tile_px_x
+            // grows.
             {
                 int right_combined = x_combined + outer_w_frac;
                 uint8_t right_x      = static_cast<uint8_t>((right_combined >> 8) & 0xff);
@@ -816,15 +737,9 @@ void Game::render() {
                                       f.text, f.rgb, 0x000000);
     }
 
-    // Debug AABB overlay — pixel-precise bounding boxes used by object-object
-    // collision (see sprite_width_units / sprite_height_units in collision.cpp:
-    // width = (pe.w-1)*16, height = (pe.h-1)*8, in 1/256-of-a-tile units).
-    // Toggle with 'B'. Player is drawn in cyan; weight-7 statics (doors,
-    // switches) in red so blocking boxes stand out; everything else yellow.
-    // Show object AABBs when EITHER the keyboard 'B' toggle is on OR the
-    // bottom-HUD "Collision" checkbox is ticked. The two debug overlays
-    // are usually wanted together — tile-shading shows where blocking
-    // geometry is, AABBs show what's bumping into it.
+    // Debug AABB overlay — pixel boxes used by object-object collision
+    // (see collision.cpp sprite_*_units). Toggle 'B' or Collision checkbox.
+    // Player cyan, weight-7 statics red, else yellow.
     if (renderer_->aabb_overlay_enabled() || renderer_->collision_enabled()) {
         for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
             const Object& obj = object_mgr_.object(i);
@@ -966,17 +881,10 @@ void Game::render() {
         }
     }
 
-    // Wiring overlay: enumerate every switch / transporter in the level
-    // (tertiary + primary) and draw a wire from each to its target(s).
-    // Sources come from two places:
-    //  - Active primaries of type SWITCH / TRANSPORTER_BEAM (live
-    //    position, tracks motion).
-    //  - Tertiary entries of tile-type SWITCH (0x08) or TRANSPORTER (0x01)
-    //    whose slot isn't currently owned by a primary; we recover
-    //    tile_y by scanning the landscape column for the matching type.
-    // Targets resolve the same way via resolve_data_offset_to_tile.
-    // Green = switch→door, cyan = transporter→destination. The lookup is
-    // O(n * 256) per frame but only runs when the checkbox is on.
+    // Wiring overlay: switch/transporter sources from active primaries
+    // (live pos) AND tertiary entries (recover tile_y by column scan).
+    // Green = switch→door, cyan = transporter→destination. O(n*256), gated
+    // on the checkbox.
     {
         bool show_switches   = renderer_->switches_enabled();
         bool show_transports = renderer_->transports_enabled();
@@ -1044,15 +952,10 @@ void Game::render() {
                 }
             }
 
-            // --- Sources still in tertiary storage -----------------------
-            // Walk every per-cell tertiary entry and dispatch on its
-            // resolved tile_and_flip type — picks up REDIRECT switches
-            // / transporters too (e.g. raw METAL_DOOR cells whose
-            // tertiary tile_and_flip is rewritten to SWITCH 0x08, like
-            // (227,156) / (227,188) wiring through source row idx 116
-            // of the METAL_DOOR range). Iterating every entry rather
-            // than just the static SWITCH / TRANSPORTER ranges keeps
-            // redirects visible.
+            // Sources still in tertiary storage. Walk every entry and
+            // dispatch on resolved tile_and_flip type — keeps REDIRECT
+            // switches/transporters visible (e.g. raw METAL_DOOR cells at
+            // (227,156)/(227,188) rewritten to SWITCH 0x08).
             int n_entries = landscape_.tertiary_count();
             for (int idx = 1; idx < n_entries; ++idx) {
                 const TertiaryEntry& e = landscape_.tertiary_entry(idx);

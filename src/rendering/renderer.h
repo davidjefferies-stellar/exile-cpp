@@ -15,38 +15,25 @@ struct TileRenderInfo {
     // border so map authors can see at a glance where doors / switches
     // / transporters / spawnable objects live.
     bool    has_tertiary = false;
-    // True when the cell was sourced from the hand-authored
-    // map_overlay_data at bake time (port of &00 tile_was_from_map_data,
-    // set in get_tile_from_map_data at &17d6). Drawn cyan in the grid
-    // overlay so authored geometry — the player's spaceship interior,
-    // Triax's lab, set-piece corridors — stands out from procedurally
-    // generated cavern.
+    // Cell from map_overlay_data (&00 tile_was_from_map_data, set at
+    // &17d6). Drawn cyan in grid to mark authored geometry.
     bool     from_map_data = false;
-    // Index into map_overlay_data[0..1023] for cells where
-    // from_map_data is true. The grid overlay prints this number inside
-    // the cyan-bordered cell so authors can match a world cell to its
-    // ROM table slot at a glance.
+    // Index into map_overlay_data[0..1023] (when from_map_data set).
+    // Grid overlay prints this inside the cyan-bordered cell.
     uint16_t map_data_offset = 0;
     // True when another from-map-data cell shares this cell's
     // map_data_offset. The grid overlay swaps cyan for red on these so
     // duplicate ROM-slot references stand out.
     bool     map_data_aliased = false;
-    // True when this cell resolves to the same source-table tertiary
-    // entry as at least one other cell. The grid overlay shades the
-    // cell red so authors can spot two map tiles emitting the same
-    // tertiary marker.
+    // Cell shares its source-table tertiary entry with another cell —
+    // grid overlay shades red to flag duplicate markers.
     bool     tertiary_source_aliased = false;
-    // True when this cell is a SWITCH (tile_type 0x08) AND another
-    // SWITCH lives in the same world X column. The grid overlay
-    // shades the cell yellow so authors can spot switches that share
-    // an X (and therefore share runtime state under the 6502's
-    // x-only-in-range scan).
+    // Switch shares its X column with another switch — yellow shade
+    // flags pairs that share runtime state under 6502 x-only scan.
     bool     switch_x_aliased = false;
-    // True when this cell's RAW landscape byte is SWITCH (0x08) AND a
-    // tertiary is attached. The resolved tile_type is something else
-    // (wind / possible_leaf) because switches render as a background
-    // tile with a primary object on top — so this flag is the only
-    // reliable "this cell IS a switch" signal at render time.
+    // RAW landscape byte = SWITCH (0x08) + tertiary attached. Resolved
+    // type is wind/possible_leaf because switches render as background
+    // + primary; this flag is the only "IS a switch" signal at render.
     bool     is_switch = false;
 };
 
@@ -113,17 +100,9 @@ public:
     virtual void render_tile(uint8_t world_x, uint8_t world_y,
                              const TileRenderInfo& info) = 0;
 
-    // Paint the water backdrop for a single tile column. The 6502 does this
-    // by reprogramming physical palette register 0 (VDU colour 0) mid-frame
-    // via a raster timer at &12a6 / &12b8 / &12c2 / &12d8:
-    //   - above the waterline:   colour 0 = black (&00)
-    //   - on the waterline:      colour 0 = cyan  (&06) for one raster line
-    //   - below the waterline:   colour 0 = blue  (&04)
-    // Since colour-0 pixels in our blit_sprite are transparent, we emulate
-    // this by pre-filling the appropriate screen cells with the water /
-    // surface colours before the tile blits run. `world_x` is the column,
-    // `waterline_y` is the returned get_waterline_y(world_x). Default no-op
-    // for renderers that don't support it.
+    // &12a6-&12d8 raster palette swap: pre-fill cells black/cyan/blue
+    // above/on/below waterline since blit_sprite leaves colour-0 pixels
+    // transparent. Default no-op for renderers without water support.
     virtual void render_water_column(uint8_t /*world_x*/,
                                      uint8_t /*waterline_y*/) {}
 
@@ -163,11 +142,8 @@ public:
         tile_dx = 0; tile_dy = 0; return false;
     }
 
-    // Pop a pending right-click. Distinguished from a right-drag (camera
-    // pan) by a small motion threshold; a press+release without
-    // significant movement queues a click here and skips the pan path.
-    // Used by the editor as the PAINT action so left-click can stay as
-    // SELECT.
+    // Pop a pending right-click — press+release without drag motion.
+    // Editor uses this as PAINT so left-click can stay as SELECT.
     virtual bool consume_right_click(int& tile_dx, int& tile_dy) {
         tile_dx = 0; tile_dy = 0; return false;
     }
@@ -175,10 +151,8 @@ public:
     // Set overlay text drawn in the top-right corner.
     virtual void set_overlay_text(const char* /*text*/) {}
 
-    // Override the colour begin_frame clears the framebuffer to. Drives
-    // the &1f97 update_background_flash effect: while the cooldown is
-    // active the 6502 randomises palette colour 0 (the sky/black slot)
-    // each frame. Default 0 = black; pass any 0xRRGGBB to flash.
+    // Drives &1f97 update_background_flash: 6502 randomises palette
+    // colour 0 during cooldown. Default 0=black; any 0xRRGGBB flashes.
     virtual void set_clear_colour(uint32_t /*rgb*/) {}
 
     // Mark a world tile as the "selected" tile. Renderers with a visible tile
@@ -199,32 +173,23 @@ public:
     virtual void render_activation_overlay(uint8_t /*anchor_x*/,
                                            uint8_t /*anchor_y*/) {}
 
-    // Render a short text label anchored at a world tile. Used for the
-    // health-bar mood badge and any other small per-object debug text.
-    // x_frac/y_frac give the sub-tile position (1/256 of a tile, same
-    // unit as Object::x.fraction) so the label tracks moving NPCs
-    // smoothly; pixel_dx/pixel_dy are an extra screen-pixel offset
-    // applied after the tile-to-screen projection. fg/bg are 0xRRGGBB.
+    // Short text label at world tile + sub-tile frac (1/256 unit, same
+    // as Object::x.fraction) plus screen pixel_dx/dy offset.
+    // fg/bg are 0xRRGGBB.
     virtual void render_world_label(uint8_t /*world_x*/, uint8_t /*world_y*/,
                                     uint8_t /*x_frac*/, uint8_t /*y_frac*/,
                                     int /*pixel_dx*/, int /*pixel_dy*/,
                                     const char* /*text*/,
                                     uint32_t /*fg*/, uint32_t /*bg*/) {}
 
-    // Debug AABB overlay: draw the pixel-precise bounding box used by
-    // object-object collision for a single primary. Dimensions are given in
-    // the 6502's sub-tile units (1/256 tile = 1/8 sprite pixel), matching
-    // sprite_atlas.w/h minus one times 16/8 respectively. Gated by the
-    // renderer's own toggle key ('B' on Fenster).
+    // AABB overlay for object-object collision. Dimensions in 6502
+    // sub-tile units (1/256 tile = 1/8 sprite pixel). Gated by 'B'.
     virtual bool aabb_overlay_enabled() const { return false; }
     virtual void render_aabb(Fixed8_8 /*world_x*/, Fixed8_8 /*world_y*/,
                              int /*w_units*/, int /*h_units*/,
                              uint32_t /*rgb*/) {}
 
-    // --- Debug-overlay checkbox state, driven by the HUD-strip checkboxes.
-    //     Game reads these each frame to decide whether to render the
-    //     tile grid / tier labels / activation rings and whether the
-    //     camera, not the player, drives the activation anchor.
+    // HUD-strip checkbox state — Game reads each frame to gate overlays.
     virtual bool tile_grid_enabled()    const { return false; }
     virtual bool object_tiers_enabled() const { return false; }
     virtual bool map_mode_enabled()     const { return false; }
@@ -232,37 +197,27 @@ public:
     // relation at a time. Game reads each gate independently.
     virtual bool switches_enabled()     const { return false; }
     virtual bool transports_enabled()   const { return false; }
-    // "Algo only" — when on, cells whose landscape byte was sourced from
-    // map_overlay_data are rendered as SPACE so only the procedural
-    // generator's output is visible. Lets us inspect bake bugs without
-    // the hand-authored interiors confusing the picture.
+    // Algo only — hides map_overlay_data cells (render as SPACE) so
+    // procedural bake bugs aren't masked by authored interiors.
     virtual bool algo_only_enabled()    const { return false; }
-    // Collision-debug overlay: shade the solid region of every visible
-    // tile according to its obstruction pattern (per-x-section threshold
-    // from tile_data.h). Makes sink-through / slope / door-substitute
-    // bugs visible. Game passes each visible tile through
-    // render_collision_tile below when this returns true.
+    // Collision overlay — shades solid region via obstruction pattern.
+    // Game passes each visible tile to render_collision_tile when on.
     virtual bool collision_enabled()    const { return false; }
     // "Edit" checkbox — when on, the game treats left-click as a paint
     // (write tile) instead of a select (populate info overlay). The
     // paint tile itself is whatever was last clicked while edit was OFF,
     // tracked by Game.
     virtual bool editor_enabled()       const { return false; }
-    // "Sprites" checkbox — when on, Game skips the world render and the
-    // renderer paints a sprite-viewer overlay (palette grid, selected
-    // sprite at high zoom, full BBC sheet with the selection highlighted)
-    // instead. A debug aid for verifying which atlas region each
-    // sprite_id resolves to. Click handling lives in the renderer.
+    // Sprites — replaces world with sprite-viewer panels. Renderer
+    // owns click handling.
     virtual bool sprite_viewer_enabled() const { return false; }
     // "Health" checkbox — when on, Game draws a small horizontal bar
     // above every active primary (filled width = obj.energy / 0xff,
     // green→red gradient) so creature HP and projectile lifespan are
     // both visually inspectable.
     virtual bool health_bars_enabled() const { return false; }
-    // "Damage" checkbox — when on, Game records every damage event of the
-    // current frame (bullets, explosion radius, contact damage, …) and
-    // draws a floating amount above each victim plus a circle outline at
-    // each explosion source showing its effective radius.
+    // Damage — floats damage amounts above victims and rings each
+    // explosion source at its effective radius.
     virtual bool damage_overlay_enabled() const { return false; }
     // "Mood" checkbox — when on, Game draws the per-NPC mood badge
     // (HAPPY/CALM/ANGRY/FURY) and the WAS_FED status text above each
@@ -313,11 +268,8 @@ public:
     // placement semantics. Returns 0 if idx out of range.
     virtual uint8_t object_palette_type(int /*idx*/) const { return 0; }
 
-    // Shade a sub-tile rectangle in the given RGB. Coordinates are the
-    // 6502's 1/256-tile fraction units — same space as Fixed8_8 fraction
-    // and object AABBs. `world_x`/`world_y` select the tile; `x_frac`
-    // and `y_frac` the top-left of the sub-rectangle within it.
-    // Default no-op for renderers without overlay support.
+    // Shade a sub-tile rectangle in 1/256-tile fraction units (same as
+    // Fixed8_8 fraction / AABB). Default no-op.
     virtual void render_tile_shade_rect(uint8_t /*world_x*/, uint8_t /*world_y*/,
                                         uint8_t /*x_frac*/,  uint8_t /*y_frac*/,
                                         uint8_t /*w_frac*/,  uint8_t /*h_frac*/,

@@ -1,35 +1,12 @@
 #include "audio/audio.h"
 
-// fenster_audio.h is a single-header PCM playback library by the same
-// author as fenster.h (Serge Zaitsev — github.com/zserge/fenster).
-// Drop the file alongside fenster.h in deps/.
-//
-// fenster_audio.h was written for C, and its Windows backend assigns
-// `int16_t*` to `LPSTR` (`char*`) — implicit in C, a hard error in
-// C++. We get around it by compiling the implementation in a separate
-// C TU (fenster_audio_impl.c) and including only the declarations
-// here, wrapped in `extern "C"` so the symbols match.
-//
-// FENSTER_AUDIO_BUFSZ must match the per-tick sample count: the Windows
-// backend's waveOutWrite plays the entire fixed-size buffer regardless
-// of how many samples our write filled, so a mismatch leaves a stale
-// tail that audibly clicks. Setting it to 882 = 44100/50 means each
-// game tick exactly fills one buffer. Define on both sides (this file
-// and fenster_audio_impl.c) — they need to agree.
-//
-// On Windows, fenster_audio uses the legacy waveOut* API which lives in
-// winmm.lib. Auto-link it via the MSVC #pragma so the project's linker
-// config stays clean (matches how fenster.h relies on default-set libs).
+// PCM playback. FENSTER_AUDIO_BUFSZ must equal kSamplesPerTick (882 =
+// 44100/50) on both sides — a mismatch leaves a stale tail that clicks.
+// Impl lives in fenster_audio_impl.c so the C-only LPSTR cast compiles.
 #ifndef EXILE_NO_AUDIO
   #if defined(_WIN32)
-    // We bypass fenster_audio.h on Windows. Its waveOut backend sets
-    // WAVEFORMATEX::nBlockAlign = 1, but for PCM 16-bit mono Windows
-    // requires nBlockAlign == nChannels * wBitsPerSample/8 == 2.
-    // Modern waveOutOpen rejects the wrong-aligned format and returns
-    // an error — which the upstream code discards, leaving the device
-    // handle NULL and every subsequent waveOutWrite a silent no-op.
-    // Easier to write the ~30 lines of waveOut* glue ourselves than
-    // patch deps/. On macOS / Linux we still use fenster_audio.h.
+    // Hand-rolled waveOut* glue: fenster_audio.h sets nBlockAlign=1,
+    // which modern waveOutOpen rejects for 16-bit mono (needs 2).
     #if defined(_MSC_VER)
       #pragma comment(lib, "winmm.lib")
     #endif
@@ -61,26 +38,9 @@ constexpr int kSampleRate     = 44100;
 constexpr int kSamplesPerTick = 882;
 constexpr int kNumChannels    = 4;
 
-// Per-channel state. Mirrors the 6502's sound_channels_* arrays at
-// &11ac onwards. Each channel runs two parallel envelopes (volume +
-// frequency), each with its own duration / stage / loop bookkeeping.
-//
-// One sub-envelope's lifecycle:
-//   value           - current 8-bit output (0..0xff). Initial value
-//                     comes from params[1] / params[3] high nibble.
-//   duration        - total stages remaining; 0 = sub-envelope ended.
-//                     Decremented when a top-level (non-loop) stage
-//                     starts.
-//   stage_offset    - index into kEnvelopesTable; points at the DELTA
-//                     byte of the current stage (i.e. duration byte
-//                     was at stage_offset-1, already consumed).
-//   stage_duration  - frames remaining in current stage. When 0,
-//                     update_envelope advances to the next stage.
-//   loops_remaining - mid-loop iteration counter. 0 means "not in a
-//                     loop" or "next encounter starts a fresh loop".
-//   loop_offset     - byte index inside kEnvelopesTable where the
-//                     current loop body begins (the first stage's
-//                     duration byte).
+// Per-channel state. Mirrors 6502 sound_channels_* arrays at &11ac.
+// Each channel runs two parallel envelopes (volume + frequency).
+// stage_offset points at the DELTA byte (duration was already consumed).
 struct EnvState {
     uint8_t value;
     uint8_t duration;
@@ -100,28 +60,19 @@ struct Channel {
     // distant world sounds quieter. Set by play_at; play() leaves it
     // at zero so player-anchored sounds stay full-volume.
     uint8_t  volume_reduction;
-    // SN76489 noise channel state — only used by g_channels[0]. The
-    // 6502's sound_channels_set_frequency_byte_table at &11a4 starts
-    // with &e0 = "latch noise control register", so channel 0 IS the
-    // chip's noise generator (used for CH_PRIORITY: explosions, fire,
-    // hits). Channels 1..3 are tones and ignore these fields.
+    // SN76489 noise: g_channels[0] only. &11a4 starts with &e0
+    // (latch noise reg) so ch0 IS the noise gen (CH_PRIORITY).
     uint16_t noise_lfsr;     // 15-bit LFSR; must never be zero.
     uint32_t noise_phase;    // step counter; high-bit overflow shifts the LFSR.
 };
-// 6502 &1426: a channel is "busy" (can't be reused for a new sound)
-// while its volume envelope is still running. When vol_duration hits 0
-// the channel is free even though its volume may still be fading
-// quietly to silence in the background.
+// &1426: channel busy while vol envelope runs; free once duration hits
+// 0 even if volume is still fading quietly in the background.
 static bool channel_busy(const Channel& ch) {
     return ch.vol.duration != 0;
 }
 
-// Channel produces audible output when the SN76489's 4-bit volume
-// nibble is non-zero. The chip uses only the top nibble of the
-// envelope byte for actual attenuation; values below 0x10 are
-// silent. Truncating here means the fade reaches inaudibility
-// faster than a linear amplitude check would suggest, which matches
-// the 6502's perceived sound duration.
+// SN76489 only uses the top vol nibble; <0x10 is silent. This
+// matches the 6502's perceived fade duration.
 static bool channel_audible(const Channel& ch) {
     return (ch.vol.value & 0xf0) != 0;
 }
@@ -139,14 +90,8 @@ bool g_enabled = true;
 uint8_t g_listener_x = 0;
 uint8_t g_listener_y = 0;
 
-// Diagnostic log. Lives at exile-audio.log next to exile-debug.log so
-// the two stay decoupled — Audio doesn't need to talk to Game just to
-// emit a one-shot setup message. Opened lazily on first call; if the
-// open fails (read-only working dir, etc.) we silently drop messages.
-//
-// std::ofstream rather than std::fopen to dodge MSVC's C4996
-// deprecation, and to match how Game::debug_log_ writes its lifecycle
-// log.
+// exile-audio.log — lazy open, silently drops if open fails.
+// std::ofstream dodges MSVC C4996 on std::fopen.
 std::ofstream g_log;
 bool g_log_tried = false;
 
@@ -190,14 +135,8 @@ constexpr uint32_t kDebugToneInc =
 #endif
 bool g_open = false;
 
-// Map an 8-bit frequency-envelope output to a sample-mixer phase
-// increment. After the 6502's EOR #&ff inversion at &1345 and the
-// piecewise mapping to the SN76489's 12-bit divisor, higher envelope
-// byte = higher audible pitch. We approximate with a 5-octave
-// geometric sweep matching the SN76489's actual range
-// (~125 Hz..4 kHz):
-//     freq_hz(byte) = 125 * 2^(byte * 5 / 255)
-// Compile-time: build the full 256-entry table.
+// 8-bit freq envelope → phase increment. 5-octave geometric sweep over
+// SN76489 range: freq_hz(byte) = 125 * 2^(byte * 5 / 255).
 constexpr uint64_t phase_inc_for_byte(unsigned byte_value) {
     const uint64_t b = byte_value & 0xff;
     const uint64_t scaled = b * 5u;
@@ -225,19 +164,9 @@ struct PhaseTable {
 };
 constexpr PhaseTable kPhaseIncTable = PhaseTable{};
 
-// Faithful port of the 6502 frequency-envelope → SN76489 noise-control-
-// register pipeline at &1345-&135f. The freq envelope output goes
-// through EOR #&ff, a 4-step range mapping (limits / bases tables at
-// &119c / &11a0), a shift loop, then AND #&0f and ORA &e0 (the noise
-// control register's latch byte). The bottom 3 data bits of the
-// resulting byte are what actually drive the chip:
-//   bit 2 : mode        — 0 = periodic, 1 = white
-//   bit 1 : rate-hi   ─┐ 00 = N/512  = 488 Hz
-//   bit 0 : rate-lo   ─┤ 01 = N/1024 = 244 Hz
-//                       │ 10 = N/2048 = 122 Hz
-//                       └ 11 = follow tone-2 freq (we approx as 122)
-// We replay the 6502 pipeline byte-for-byte so envelope bytes near 0xff
-// hit the chip's slow/rumble mode rather than a bright hiss.
+// &1345-&135f freq envelope → SN76489 noise control register.
+// Byte-for-byte port so bytes near 0xff hit slow/rumble mode.
+// Bottom 3 bits drive chip: bit2=white/periodic, bits1-0=rate.
 constexpr uint8_t noise_reg_for_byte(unsigned byte_value) {
     constexpr uint8_t limits[4] = { 0x00, 0x40, 0x84, 0xb6 };  // &119c
     constexpr uint8_t bases[4]  = { 0xe0, 0x10, 0x4a, 0x80 };  // &11a0
@@ -288,12 +217,8 @@ int pick_channel(int hint) {
     return q;
 }
 
-// ============================================================================
-// Envelopes table — verbatim port of &2db9-&2e88. Each play_sound
-// param byte (params[0] for volume envelope, params[2] for frequency)
-// is an offset into this array, and the engine walks (duration, delta)
-// pairs from there. Bit 7 of a duration byte means "loop marker".
-// ============================================================================
+// &2db9-&2e88 envelopes table. params[0]/[2] index into here; engine
+// walks (duration, delta) pairs. Bit 7 of duration = loop marker.
 constexpr uint8_t kEnvelopesTable[208] = {
     0x88, 0x03, 0x10, 0x03, 0xf0, 0x80, 0x03, 0xc0,  // &2db9
     0x01, 0x04, 0x05, 0x06, 0x82, 0x0c, 0xfe, 0x03,
@@ -323,11 +248,8 @@ constexpr uint8_t kEnvelopesTable[208] = {
     0x10, 0xff, 0x14, 0xf8, 0x28, 0x02, 0x01, 0x00,
 };
 
-// ============================================================================
-// Per-frame envelope advance. Returns true if the sub-envelope is
-// still alive after this tick, false when it has run out of stages.
-// Mirrors update_sound_envelope at &1399-&13e3 line for line.
-// ============================================================================
+// &1399-&13e3 update_sound_envelope. Returns true while sub-envelope
+// alive, false when stages exhaust.
 static bool update_envelope(EnvState& e) {
     // &139a: ended already?
     if (e.duration == 0) return false;
@@ -343,9 +265,7 @@ static bool update_envelope(EnvState& e) {
             if (e.duration == 0) return false;
         }
 
-        // &13b1 INY ; LDA envelopes_table,Y. Y is one past stage_offset
-        // (which currently points at the previous delta byte) for the
-        // first stage; or at the marker, on the next encounter.
+        // &13b1 INY; Y is one past stage_offset (previous delta byte).
         uint8_t y = e.stage_offset + 1;
         uint8_t b = kEnvelopesTable[y];
 
@@ -539,17 +459,9 @@ void set_listener(uint8_t x, uint8_t y) {
 void tick() {
     if (!g_open) return;
 
-    // Advance per-frame state. For each channel, step both the volume
-    // and frequency envelopes (port of update_sound_channel_loop at
-    // &1320-&1397). The frequency envelope's new value is mapped to a
-    // phase_inc so the mixer's pitch tracks the envelope sweep.
-    //
-    // After the volume envelope ends, fade the volume to silence.
-    // The 6502 at &1328-&132f does SBC #&01 with C=0 → -2 per frame.
-    // Doubled here to -4 per frame because the BBC audio's perceived
-    // duration is shorter than a strict 1:1 port suggests — the
-    // SN76489's 4-bit volume cuts off at the nibble boundary, which
-    // happens twice as fast at -4.
+    // &1320-&1397 update_sound_channel_loop. After vol envelope ends,
+    // fade to silence: 6502 &1328-&132f is -2/frame, doubled to -4
+    // because SN76489's 4-bit volume cuts off twice as fast.
     for (auto& ch : g_channels) {
         if (!channel_audible(ch) && !channel_busy(ch)) continue;
         if (!update_envelope(ch.vol)) {

@@ -9,38 +9,12 @@
 
 namespace Behaviors {
 
-// &4B88: Generic collectable item (keys, weapons, equipment, etc.)
-// Port of update_collectable_object.
-//
-// `energy` is overloaded as a "disturbed" flag — bit 7 SET means
-// undisturbed (still pinned to spawn). The 6502 uses ASL/LSR at &4ba1
-// to clear that bit when something touches the object, then BIT/BPL at
-// &4ba5 to skip the rest of the routine if disturbed.
-//
-// Faithful behaviour:
-//   - If the player is currently holding this object, mark it collected
-//     and remove it (set_object_for_removal &2529 → PENDING_REMOVAL).
-//   - If something other than the player is touching us, clear bit 7
-//     of energy ("disturbed").
-//   - If still undisturbed, zero our velocity and snap back to the
-//     previous frame's position — the collectable is glued to its tile.
-//   - If disturbed, fall through and let the main physics step take
-//     over (gravity, water, tile collision).
+// &4B88 update_collectable_object. `energy` bit 7 = undisturbed pin
+// (ASL/LSR at &4ba1 clears it on touch; &4ba5 BPL skips rest while pinned).
 void update_collectable(Object& obj, UpdateContext& ctx) {
-    // The 6502's update_collectable_object at &4b88 auto-collects (sets
-    // PENDING_REMOVAL + decrements player_collected[type]) whenever the
-    // item is in the player's held slot. That path doesn't map cleanly
-    // onto our S/R pocket model — retrieving an item from a pocket
-    // drops it straight into the held slot, so an auto-collect fires
-    // next frame and the item vanishes the moment R is pressed.
-    //
-    // Port approach: skip the auto-collect for general collectables so
-    // the S/R pocket mechanism stays coherent. Whistles are the one
-    // exception — the 6502 treats them as permanent player state
-    // (player_whistle_*_collected at &0816/&0817) rather than a primary
-    // you keep in hand, so auto-collect matches the original here:
-    // touching the whistle flips the "have whistle" flag and the primary
-    // disappears, leaving Y/U keys enabled for the rest of the run.
+    // Port deviation: skip 6502 auto-collect for general collectables — it
+    // breaks the S/R pocket model. Whistles + keys keep auto-collect since
+    // the 6502 treats them as permanent player state, not held primaries.
     bool held_by_player =
         ctx.held_object_slot == static_cast<uint8_t>(ctx.this_slot);
     if (held_by_player) {
@@ -61,13 +35,9 @@ void update_collectable(Object& obj, UpdateContext& ctx) {
             Audio::play(Audio::CH_ANY, kSoundCollect);
             return;
         }
-        // Keys behave like whistles: auto-collect into
-        // player_keys_collected (port of &0806) and consume the primary.
-        // The door-unlock path (update_door's &4c9e hook) later reads
-        // the bitmask to decide whether the RCD can toggle a matching
-        // door's LOCKED flag. Keys skip the pocket stack entirely — this
-        // matches the 6502, where player_collected[key_type] is stamped
-        // directly at pickup rather than occupying an inventory slot.
+        // &0806 player_keys_collected: keys auto-collect into a bitmask
+        // (skipping the pocket) and update_door's &4c9e hook reads it to
+        // gate RCD-triggered LOCKED toggles.
         if (ctx.player_keys_collected) {
             int key_index = -1;
             switch (obj.type) {
@@ -104,20 +74,8 @@ void update_collectable(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4158 update_inactive_grenade. Port of:
-//   JSR consider_disturbing_object  (&4b9d — same pin/disturb bookkeeping
-//                                    that update_collectable runs)
-//   JSR check_if_object_fired       (&0bbf — returns Z=1 if the object
-//                                    was just launched via a turret etc.;
-//                                    unhandled in our port yet)
-//   if A == player_object_held → state = 1 (has-been-held)
-//   else if state != 0         → change_object_type to ACTIVE_GRENADE
-//
-// Net effect: the first time the player picks up an inactive grenade,
-// obj.state flips to 1. The moment they drop it (or R-retrieve then
-// swap), the next update sees "not held AND state != 0" and promotes
-// the primary to ACTIVE_GRENADE, whose update routine handles the
-// ticking-down countdown and eventual explosion.
+// &4158 update_inactive_grenade. Latch state=1 while held, then promote
+// to ACTIVE_GRENADE on drop so the countdown starts.
 void update_inactive_grenade(Object& obj, UpdateContext& ctx) {
     // &4158 consider_disturbing_object: pin-while-undisturbed behaviour.
     update_collectable(obj, ctx);
@@ -150,33 +108,10 @@ void update_inactive_grenade(Object& obj, UpdateContext& ctx) {
     // grenade's update will start its fuse timer on the next frame.
 }
 
-// &4360: Power pod — limited lifespan; pulses visibly and audibly twice
-// every 16 frames (when frame_counter_sixteen < 2). When its energy
-// finally hits zero the main loop's step-12 explosion path takes over
-// (6502 explosion type for OBJECT_POWER_POD is "turn into fireball",
-// from the &0491 &85 entry at line 619 of the disassembly).
-//
-// Port of &4360-&4373 with one port-only addition: the
-// "consider_disturbing_object" pin from update_collectable. Power pods
-// occupy the 0x4a..0x64 collectables range, so init_object_from_type
-// sets the energy bit-7 undisturbed pin (object_manager.cpp:105), but
-// the 6502's update_power_pod doesn't honour it — pods immediately
-// tick down regardless of whether the player has touched them. World-
-// placed pods (e.g. tertiary entry at (159, 107)) therefore disappear
-// after ~5 seconds of game time even if the player never approaches.
-//
-// We re-introduce the pin so a pod is dormant on its tile until
-// nudged: zero velocity + skip the energy decrement / pulse while
-// undisturbed; on touch the bit clears and the routine falls through
-// into the standard 6502 reduce_energy_by_one + flash + sound path.
-//
-//   JSR consider_disturbing_object       ; clear pin on touch
-//   if (pinned) zero velocity + return
-//   JSR reduce_energy_by_one
-//   LDA frame_counter_sixteen; CMP #&02
-//   JSR use_damaged_palette_if_carry_clear
-//   BCS leave
-//   play pulsing sound
+// &4360 update_power_pod. Pulses 2-in-16, decays to 0, then step-12 fireball.
+// Port deviation: re-introduce the &4b9d disturbed pin so world-placed pods
+// stay dormant until touched (6502 ticks them down regardless, which would
+// destroy untouched tertiary pods after ~5s).
 void update_power_pod(Object& obj, UpdateContext& ctx) {
     // Port deviation (mirrors &4b9d consider_disturbing_object): any
     // non-self touch clears bit 7 of energy. Pin velocity to 0 and
@@ -235,25 +170,15 @@ void update_destinator(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &43A7 update_empty_flask. Tiny routine: if the flask is below the
-// waterline (`this_object_in_water` bit 7 set), change type to
-// FULL_FLASK. Otherwise fall through as an inert collectable — the
-// 6502 explicitly reuses update_inert_object semantics here (no
-// motion, no pickup detection beyond the standard collectable path).
-// We skip the inert-body call; our main update loop handles gravity
-// and tile collision for EMPTY_FLASK naturally.
+// &43A7 update_empty_flask. If below waterline, change_object_type to
+// FULL_FLASK. Skip the inert-body call — our main loop handles gravity.
 void update_empty_flask(Object& obj, UpdateContext& ctx) {
     (void)ctx;
-    // Must check against the actual per-column waterline, not
-    // NPC::is_underwater's SURFACE_Y (0x4e) shortcut — that's the
-    // upper-world ceiling, and flagging any flask with y > 0x4e as
-    // submerged makes empty flasks transmute to full the instant they
-    // spawn anywhere on the playfield. 6502 reads `this_object_in_water`
-    // at &1f, computed per-column from the waterline table.
+    // Must use per-column waterline (this_object_in_water at &1f), not
+    // NPC::is_underwater's SURFACE_Y shortcut — that flags any flask with
+    // y > 0x4e as submerged and transmutes them on spawn.
     if (Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole)) {
-        // &43e4 change_object_type: the 6502 also refreshes sprite +
-        // palette from the per-type tables, which we mirror so the
-        // flask instantly reflects its full-state colour.
+        // &43e4 change_object_type also refreshes sprite + palette.
         obj.type    = ObjectType::FULL_FLASK;
         obj.sprite  = object_types_sprite[
             static_cast<uint8_t>(ObjectType::FULL_FLASK)];
@@ -262,24 +187,9 @@ void update_empty_flask(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &43AE update_full_flask. Port of the full routine.
-//
-// Trigger-to-empty rules (&43ae-&43bb):
-//   - Touching another object AND larger of |vx|,|vy| >= 0x0a — the
-//     flask hit something hard → start emptying.
-//   - OR `this_object_pre_collision_velocity_magnitude` >= 0x14 — the
-//     flask hit a tile hard. We don't track that byte yet, so
-//     approximate with the current-velocity check (the update_fn runs
-//     before physics-step integration, so velocity here is the
-//     would-be velocity for this frame; good enough).
-//
-// While emptying (timer != 0):
-//   - If touching a FIREBALL, set_object_for_removal on the fireball
-//     (&43d0) — splashing water douses fire.
-//   - Emit 8 PARTICLE_FLASK with angle=0xc0 (upward). The 6502 adds
-//     them all via add_particles; our helper takes a count directly.
-//   - Decrement timer. On reaching 0, change_object_type back to
-//     EMPTY_FLASK (&43e2-&43e4).
+// &43AE update_full_flask. Empties on hard contact (object impact with
+// max|v|>=0x0a, or pre-collision magnitude>=0x14 against a tile), running
+// a 16-frame splash that emits upward particles and douses fireballs.
 void update_full_flask(Object& obj, UpdateContext& ctx) {
     bool start_emptying = false;
 
@@ -292,15 +202,8 @@ void update_full_flask(Object& obj, UpdateContext& ctx) {
         if (max_vel >= 0x0a) start_emptying = true;
     }
 
-    // &43b7-&43bb: hit a tile hard.
-    //   LDA this_object_pre_collision_velocity_magnitude ; &1d
-    //   CMP #&14 ; BCC skip_starting_timer
-    // `pre_collision_magnitude` is captured by the physics revert in
-    // object_update before the bounce/damp pass — the raw velocity at the
-    // moment of impact. Post-revert velocity isn't usable here: a modest
-    // fall lands at ~0x10, bounces to ~0x0c via bounce_reflect, and the
-    // previous 0x08 fallback fired on every landing — water got knocked
-    // out of the flask even when it was gently placed on a ledge.
+    // &43b7-&43bb hit-tile-hard. Must read pre_collision_magnitude (raw
+    // pre-revert velocity); post-revert velocity fires on gentle landings.
     if (obj.pre_collision_magnitude >= 0x14) {
         start_emptying = true;
     }
@@ -324,19 +227,9 @@ void update_full_flask(Object& obj, UpdateContext& ctx) {
         }
     }
 
-    // &43d3-&43db: emit PARTICLE_FLASK upward.
-    //   LDA #&c0   ; angle = up
-    //   STA &b5    ; (consumed by add_particles' base-vector calc at
-    //                &21e1 — magnitude*spd_base[FLASK]=0x0a..0x11
-    //                yields a base_vy of -10..-17 frac/frame).
-    //   LDA #&08
-    //   JSR add_particles
-    //
-    // Port-only count reduction: 6502 emits 8/frame into a 32-slot pool,
-    // so during the 16-frame splash eviction caps live particles at ~32.
-    // Our pool is 256 (particle_system.h:73, scaled for our wider viewport),
-    // so 8/frame keeps all 128 emits alive — ~4× denser than the 6502.
-    // 2/frame matches the 6502's pool-capped peak (2 × 16 = 32 alive).
+    // &43d3-&43db emit PARTICLE_FLASK upward (angle=&c0). Count reduced
+    // 8→2/frame: our 256-slot pool doesn't evict like the 6502's 32-slot
+    // one, so 2×16 matches the 6502's pool-capped peak of ~32 live.
     if (ctx.particles) {
         ctx.particles->emit(ParticleType::FLASK, 2, obj, ctx.rng,
                             /*angle=*/0xc0);
@@ -353,21 +246,9 @@ void update_full_flask(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4351 update_remote_control_device.
-//
-// The 6502 boils this down to four lines:
-//   JSR check_if_object_fired  (&0bbf; Z=1 iff player_object_fired == this)
-//   BNE leave
-//   play_sound                 (audio not ported)
-//   JMP create_aim_particle    (&312b — emit one PARTICLE_AIM at the
-//                                       object's aiming angle)
-// When the player presses Fire while holding the RCD, `player_object_
-// fired` is set to the held slot (see apply_player_input) — that's the
-// signal this routine uses to know "I was just activated".
-//
-// Doors, transporters and the cannon (via &4c9e / &4dc8 /
-// check_if_object_hit_by_remote_control at &0bc5) all read the same
-// flag to detect "player aimed the RCD at me this frame".
+// &4351 update_remote_control_device. Player-fire sets player_object_fired
+// to the held slot (apply_player_input); doors/transporters/cannon read the
+// same flag via check_if_object_hit_by_remote_control (&0bc5).
 void update_control_device(Object& obj, UpdateContext& ctx) {
     update_collectable(obj, ctx);
 
@@ -380,22 +261,9 @@ void update_control_device(Object& obj, UpdateContext& ctx) {
     static constexpr uint8_t kSoundRCDFire[4] = { 0x57, 0x07, 0xc1, 0xd3 };
     Audio::play(Audio::CH_ANY, kSoundRCDFire);
 
-    // &435d JMP create_aim_particle (&312b): launch one PARTICLE_AIM
-    // along the player's aiming angle.
-    //
-    //   &312b JSR calculate_firing_vector_from_aiming_angle  (&330f)
-    //         → magnitude = (rnd & 3) + 0x40 = 64..67
-    //         → vector_x, vector_y = magnitude × (cos angle, sin angle)
-    //   &312e JSR flip_this_object_horizontally
-    //   &3133 JSR add_particle (Y = PARTICLE_AIM)
-    //         → reads &b4/&b6 as the new particle's base velocity
-    //
-    // emit_directed reproduces the 6502 path by converting
-    // (spd_base + rnd&spd_rand, angle) into vector_x/y before placing
-    // the particle. The plain emit() would use the RCD's own velocity
-    // as the base — ~0 while held — and the AIM particles would sit at
-    // the player's hands. AIM's spd_base = 0x3f and spd_rand = 0x01
-    // produce magnitude 63..64, close to the 6502's 64..67.
+    // &435d create_aim_particle (&312b). Must use emit_directed: plain
+    // emit() inherits the held RCD's ~0 velocity, leaving AIM particles
+    // stuck at the player's hands instead of streaming along aim angle.
     if (ctx.particles) {
         ctx.particles->emit_directed(
             ParticleType::AIM, ctx.player_aim_angle, obj, ctx.rng);
@@ -452,11 +320,8 @@ static void coronium_common(Object& obj, UpdateContext& ctx) {
     }
 
     if (touching_player || (player_holding && (ctx.rng.next() & 0xc0) == 0)) {
-        // Check radiation immunity (player_radiation_immunity_pill_collected)
-        // and whether coronium is underwater (radiation blocked by water).
-        // Per-column waterline — the SURFACE_Y shortcut would flag the
-        // whole lower world as "submerged" and silently suppress all
-        // coronium damage even in air pockets.
+        // Per-column waterline (radiation blocked by water). SURFACE_Y
+        // shortcut would suppress damage in lower-world air pockets.
         bool immune = false; // Would check player inventory
         bool underwater = Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole);
 
@@ -494,28 +359,10 @@ void update_coronium_crystal(Object& obj, UpdateContext& ctx) {
     coronium_common(obj, ctx);
 }
 
-// &4216 update_alien_weapon. The 6502 sequence is just:
-//   JSR &254e increase_energy_by_one_if_not_zero
-//   JSR &0bbf check_if_object_fired       (Z=1 iff player_object_fired
-//                                            == this slot)
-//   BNE  leave                              (not fired this frame)
-//   LDX  #&19 ; OBJECT_PLASMA_BALL
-//   LDA  #&40 ; x velocity
-//   JSR  &33a9 create_projectile_with_zero_velocity_y
-//                                          (BIT x_flip; invert_if_negative
-//                                            on vx; create child at parent's
-//                                            position; copy vector to
-//                                            objects_velocity)
-//   BCS  leave                              (no slot — silent)
-//   JMP  &14ad play_low_beep
-//
-// NB: the 6502 does NOT route the alien weapon through update_collectable
-// — its dispatch table at &03b9/&0432 sends type 0x47 directly to &4216,
-// not to &4b88. Calling our update_collectable() here turned out to be
-// fatal: the held-touch path clears energy bit 7 every frame, then the
-// regen above pushes the value through 0x80 (bit 7 set again). The next
-// frame's bit-7 clear hands back 0x00, and step 12 of the object loop
-// reads energy==0 and explodes the weapon.
+// &4216 update_alien_weapon. The 6502 dispatch at &03b9/&0432 routes type
+// 0x47 directly to &4216, NOT through update_collectable — routing through
+// it makes the held-touch bit-7 clear race the energy regen, hitting
+// energy==0 and triggering step-12 self-destruct.
 void update_alien_weapon(Object& obj, UpdateContext& ctx) {
     // &4216 increase_energy_by_one_if_not_zero — slow regen toward 0xff
     // when the weapon has any charge left. Clamps at 0xff so a freshly-
@@ -530,11 +377,9 @@ void update_alien_weapon(Object& obj, UpdateContext& ctx) {
         return;
     }
 
-    // &421e-&4225 spawn PLASMA_BALL. vx=0x40 baseline, negated when the
-    // weapon faces left (held inherits the player's FLIP_HORIZONTAL via
-    // HeldObject::update_position). vy=0 — the plasma trajectory is
-    // horizontal, the bullet's own update tracks the player toward
-    // whichever lock-on it picks up.
+    // &421e-&4225 spawn PLASMA_BALL with vx=0x40 (negated via FLIP_HORIZONTAL
+    // inherited from holding player), vy=0. Bullet's own update tracks the
+    // player via lock-on.
     int gslot = ctx.mgr.create_object_at(
         ObjectType::PLASMA_BALL, /*min_free_slots=*/1, obj);
     if (gslot < 0) return;

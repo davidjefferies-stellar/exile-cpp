@@ -32,17 +32,9 @@ static constexpr uint8_t bushes_palette_table[4] = {
     0xb1, 0x97, 0xfd, 0xf3,
 };
 
-// Port of &23e4-&23fe "is_leaf" logic. TILE_POSSIBLE_LEAF (0x11) passes
-// through this to decide:
-//   1) whether the leaf is removed entirely (tile_type becomes TILE_SPACE),
-//   2) whether its vertical-flip bit should be toggled,
-//   3) which palette (green / yellow / white) to render with.
-// The 6502 uses a bit-mixing chain of ROR/EOR/SBC over tile_y to drive all
-// three decisions at once. We reproduce the visible behaviour:
-//   * leaf removed when (y & 4) != (y & 1) — matches BCC at &23eb
-//   * a pseudo-random toggle of the vertical flip based on mixed y bits
-//   * palette is green by default; switches to yellow/white variants when
-//     the ORIGINAL tile_flip had V set (matches BVC at &23fc)
+// &23e4-&23fe is_leaf — decides removal, v-flip toggle, and palette via
+// bit-mixing on tile_y. Removed when (y&4) != (y&1) at &23eb. Yellow/
+// white variant when ORIGINAL tile_flip had V set (BVC at &23fc).
 struct PossibleLeafResult {
     bool     remove;
     uint8_t  tile_flip;
@@ -69,11 +61,8 @@ inline PossibleLeafResult process_possible_leaf(uint8_t tile_y,
         r.tile_flip ^= TileFlip::VERTICAL;
     }
 
-    // 3) Palette. The 6502 at &23f6 BITs the ORIGINAL tile_flip (before
-    //    the EOR that updated it): V clear → keep 0xb1 (rgy, green);
-    //    V set → ADC #&0a, giving 0xbb (cyy) or 0xbc (ywy) depending on
-    //    the carry-in from the earlier SBC. We pick between those two
-    //    from another bit of y.
+    // 3) Palette. &23f6 BITs the ORIGINAL tile_flip: V clear → 0xb1
+    // (green); V set → 0xbb/0xbc depending on a y bit.
     if (tile_flip & TileFlip::VERTICAL) {
         r.palette = (tile_y & 1) ? 0xbc : 0xbb;
     } else {
@@ -82,13 +71,9 @@ inline PossibleLeafResult process_possible_leaf(uint8_t tile_y,
     return r;
 }
 
-// Port of &239c calculate_palette_for_tile. The table values 0..6 trigger
-// procedural palettes that depend on tile position and flip; any other value
-// is used as-is.
-//
-// Leaf processing (case 0x05) mutates both tile_type (TILE_POSSIBLE_LEAF can
-// flip to TILE_SPACE when removed) and tile_flip (V toggle), so both are
-// passed by reference.
+// &239c calculate_palette_for_tile. Values 0..6 are procedural by (x,y,
+// flip); rest used as-is. Case 0x05 leaf mutates tile_type (POSSIBLE_LEAF
+// → SPACE when removed) and tile_flip — both by-ref.
 inline uint8_t resolve_tile_palette(uint8_t& tile_type, uint8_t tile_x,
                                     uint8_t tile_y, uint8_t& tile_flip) {
     uint8_t val = tiles_palette_table[tile_type & 0x3f];
@@ -115,17 +100,8 @@ inline uint8_t resolve_tile_palette(uint8_t& tile_type, uint8_t tile_x,
             return pal;
         }
         case 0x03: {
-            // Bush palette — bit-exact port of &23bf-&23cc:
-            //   ROL A; ROL A; ROL A   ; three rotates-through-carry of
-            //                          ; tile_flip, with c_in=1 from the
-            //                          ; CMP #&03 that brought us here
-            //   SBC tile_y            ; A -= tile_y + (1 - c)
-            //   ROR A                 ; rotate right through carry
-            //   CLC; ADC tile_x       ; A += tile_x with c=0
-            //   AND #&03              ; index into bushes_palette_table
-            //
-            // The carry chain matters: dropping it (e.g. naive
-            // `tile_flip << 3 - tile_y >> 1 + tile_x`) flips the index.
+            // &23bf-&23cc bush palette. Carry chain is load-bearing:
+            // naive `tile_flip<<3 - tile_y>>1 + tile_x` flips the index.
             uint8_t a = tile_flip;
             uint8_t c = 1;  // CMP #&03 at &23bb left c=1 (A==3, equal)
             for (int i = 0; i < 3; ++i) {
@@ -200,11 +176,8 @@ static constexpr uint8_t tiles_obstruction_y_offsets[] = {
     0x70, 0x77, 0x00, 0xb3, 0xb0, 0x00, 0x77, 0x00, 0x77, 0x00, 0x90, 0x2c, 0xc0, 0x00, 0x90, 0x0f,
 };
 
-// Bit 7 of tiles_sprite_and_y_flip_table at &04ab. "1" means the tile's
-// obstruction is at the TOP of the unflipped cell (ceiling-like); "0"
-// means at the BOTTOM (ground-like). Must be XOR'd with the landscape's
-// flip_v to get the effective collision flip the 6502 hands to its
-// obstruction-threshold test (&2477).
+// &04ab bit 7: 1 = obstruction at TOP (ceiling), 0 = BOTTOM (ground).
+// XOR with landscape flip_v for collision flip at &2477.
 inline bool tile_obstruction_v_flip_bit(uint8_t tile_type) {
     static constexpr uint8_t tiles_sprite_and_y_flip[64] = {
         0xc6, 0xce, 0xc6, 0xc6, 0xc6, 0xbb, 0xc6, 0x18,

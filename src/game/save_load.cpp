@@ -6,50 +6,10 @@
 #include <string>
 #include <vector>
 
-// ============================================================================
-// Save / load — human-readable text format.
-// ============================================================================
-//
-// The landscape is fully deterministic from the fixed world seed, so a save
-// only needs the mutable game state:
-//   * frame counter, RNG state
-//   * player / pocket / weapon / mushroom / whistle state
-//   * global events (flooding, earthquake, robot availability)
-//   * all 16 primary object slots (full field set)
-//   * all 32 secondary slots (compact packed form)
-//   * 235 bytes of tertiary data (door states, spawn gates, switch toggles)
-//
-// Layout:
-//
-//   # exile-cpp save v1
-//   version 1
-//   frame 0x4c
-//
-//   [player]
-//   weapon 1
-//   angle 0xc0
-//   ...
-//
-//   [events]
-//   flooding 0x00
-//   earthquake 0xff
-//   ...
-//
-//   [object 0]
-//   type PLAYER
-//   x 0x9b.80
-//   ...
-//
-//   [secondary 0]
-//   type 0x4c
-//   x 0x84
-//   ...
-//
-//   [tertiary]
-//   00 80 01 02 ...   (16 per line)
-//
-//   [rng]
-//   state 0x49 0x52 0x56 0x49
+// Save / load — text format. Landscape is deterministic from the seed,
+// so we persist only mutable state (frame, RNG, player, events, 16
+// primaries, 32 secondaries, 235 bytes tertiary). Hex 0x prefix, fixed
+// point 0xWW.FF; sections [player][events][object N][secondary N][rng].
 
 namespace {
 
@@ -244,14 +204,9 @@ bool Game::save_game(const std::string& path) const {
         f << "\n";
     }
 
-    // -------- tertiary data dump -----------------------------------------
-    //
-    // After the Option-B refactor each cell with a CHECK_TERTIARY tile
-    // owns its own TertiaryEntry in the landscape. We dump the live
-    // data byte for every entry (1..n; entry 0 is reserved as a
-    // permanent unused sentinel). The map file persists tile_and_flip
-    // and type bytes; only the data byte mutates at runtime, so that's
-    // all the game-state save needs.
+    // Tertiary: each CHECK_TERTIARY cell owns a TertiaryEntry. Dump
+    // live data byte only (entries 1..n; 0 is reserved sentinel) —
+    // tile_and_flip / type are static, persisted in the map file.
     f << "[tertiary]\n";
     int n_entries = landscape_.tertiary_count();
     f << "count " << n_entries << "\n";

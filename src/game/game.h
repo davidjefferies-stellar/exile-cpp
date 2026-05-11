@@ -154,17 +154,10 @@ private:
     uint8_t player_mushroom_timers_[2] = {0, 0};
     bool mushroom_immunity_collected_ = false;  // &0815
 
-    // Global event state (all ports of 6502 bytes at &081e-&0846).
-    //   flooding_state_      &081e  negative → endgame flood in progress
-    //   earthquake_state_    &081f  negative → earthquake running; gradually
-    //                               worsens via update_events (&25e7).
-    //   clawed_robot_availability_[4]        &083f
-    //       ff (negative) = dormant
-    //       00            = ready to respawn (teleport-energy building)
-    //       01 (positive) = already primary in the world
-    //   clawed_robot_teleport_energy_[4]     &0843
-    //       Counter that ticks up while the robot is dormant; once it
-    //       overflows past 0x80 the robot can rejoin the game (&2725).
+    // Global event state (&081e-&0846). flooding_state_ &081e, earthquake_
+    // state_ &081f (neg = running, worsens via &25e7). clawed_robot_
+    // availability_[4] &083f: ff dormant, 00 ready, 01 primary. _teleport_
+    // energy_[4] &0843 ticks up while dormant until past 0x80 (&2725).
     uint8_t flooding_state_   = 0;
     uint8_t earthquake_state_ = 0;
     uint8_t clawed_robot_availability_[4]   = {0, 0, 0, 0};
@@ -339,15 +332,10 @@ private:
     // logical colour); restores black on the tick the cooldown hits 0.
     void update_background_flash();
 
-    // Port of &34b4 store_object: pocket the currently-held primary (or
-    // drain it into the jetpack if it's a power pod). Returns true if the
-    // object was consumed. No-op + false if nothing is held, the object
-    // is too tall (>= 8 rows) to fit a pocket, or pockets are full.
-    //
-    // drain_power_pod: 6502 unconditionally drains — matches S. G's retrieve
-    // path passes false so a pre-seeded power_pod (from exile.ini [pockets],
-    // a state the 6502 couldn't reach) cycles like any other item instead of
-    // being consumed on every revolution.
+    // Port of &34b4 store_object: pocket held primary (or drain if power
+    // pod). drain_power_pod=false lets the retrieve path cycle a pre-seeded
+    // exile.ini [pockets] power_pod instead of consuming it each revolution
+    // (a state the 6502 couldn't reach).
     bool try_store_held(Object& player, bool drain_power_pod = true);
 
     // Port of &32c8 handle_dropping_object: release the currently-held

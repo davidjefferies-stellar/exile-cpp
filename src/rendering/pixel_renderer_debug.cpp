@@ -1,13 +1,6 @@
-// Debug overlays + editor widgets for the pixel renderer. Everything
-// that's NOT a faithful port of the BBC Micro 6502 rendering lives in
-// this translation unit: tile-grid lines, activation rings, AABB
-// overlays, switch / transporter wires, the bottom-strip checkboxes,
-// the tile / object editor palettes, and the sprite-viewer overlay.
-//
-// The faithful 6502 side (pixel_renderer.cpp) calls into the small
-// pr_debug:: helpers below from a handful of well-defined seams
-// (begin_frame / end_frame / render_tile / render_hud / process_mouse)
-// so the two TUs stay decoupled.
+// Port-only debug overlays + editor widgets. pixel_renderer.cpp calls
+// into pr_debug:: helpers from begin_frame / end_frame / render_tile /
+// render_hud / process_mouse seams to keep the two TUs decoupled.
 
 #include "rendering/pixel_renderer.h"
 #include "rendering/sprite_atlas.h"
@@ -19,12 +12,8 @@
 #include "objects/object_data.h"
 #include <cstdio>
 
-// --- Debug-panel layout -----------------------------------------------------
-//
-// Thirteen checkboxes laid out left-to-right across the bottom HUD
-// strip. Each entry is a small box with a text label to its right.
-// Geometry constants are shared between render_hud_panels and
-// consume_left_click so the visual layout and hit-test stay in lockstep.
+// Debug HUD-strip checkboxes — geometry constants shared between
+// render_hud_panels and consume_left_click to keep hit-test in sync.
 static constexpr int CHECKBOX_SIZE = 10;
 static constexpr int CHECKBOX_PAD  = 4;
 static constexpr int CHECKBOX_LABEL_GAP = 4;
@@ -43,11 +32,7 @@ static int checkbox_slot_y(int hud_y_px) {
     return hud_y_px + (16 - CHECKBOX_SIZE) / 2;
 }
 
-// --- Edit-palette layout -----------------------------------------------------
-//
-// 16-col × 4-row grid of clickable cells, one per tile type
-// (0x00..0x3f). Sits in a strip directly above the bottom HUD
-// checkboxes when "Edit" is on.
+// Edit palette: 16x4 grid of tile types 0x00..0x3f, above HUD when "Edit" on.
 static constexpr int PALETTE_COLS = 16;
 static constexpr int PALETTE_ROWS = 4;
 static constexpr int PALETTE_CELL_W = 64;
@@ -71,11 +56,8 @@ static int palette_cell_y(uint8_t t, int hud_y) {
     return palette_top_y(hud_y) + PALETTE_PAD_Y + row * PALETTE_CELL_H;
 }
 
-// --- Object palette (placeable creatures / items) layout ---------------------
-//
-// 16-col × 3-row grid that sits ABOVE the tile palette when Edit is on.
-// Click an entry to switch the editor's right-click action from
-// "paint tile" to "place object".
+// Object palette (creatures/items): 16x3 grid above tile palette. Click
+// switches right-click action from "paint tile" to "place object".
 static constexpr int OBJ_PALETTE_COLS  = 16;
 static constexpr int OBJ_PALETTE_ROWS  = 3;
 static constexpr int OBJ_PALETTE_GAP_Y = 8;
@@ -172,14 +154,8 @@ static int palette_flip_y(int idx, int hud_y) {
     return palette_top_y(hud_y) + PALETTE_PAD_Y + idx * PALETTE_FLIP_H;
 }
 
-// --- Sprite-viewer layout ----------------------------------------------------
-//
-// Three side-by-side panels that replace the world render when the
-// "Sprites" checkbox is on:
-//   1. Palette grid — 16-col × 8-row of all 125 atlas sprites + a few
-//      empty cells. Click selects.
-//   2. ROM spritesheet — 128×81 BBC sheet at 4× scale.
-//   3. Detail — the chosen sprite blown up to 8×.
+// Sprite-viewer layout — three panels: palette grid (16x8 atlas
+// sprites, click selects), ROM sheet at 4x, detail at 8x.
 static constexpr int SV_HEADER_Y      = 16;
 static constexpr int SV_HEADER_H      = 24;
 static constexpr int SV_PANELS_Y      = SV_HEADER_Y + SV_HEADER_H + 16;
@@ -404,11 +380,8 @@ bool consume_left_click(PixelRenderer& r) {
         }
     }
 
-    // Sprite-viewer hit-tests:
-    //   * Palette grid → select that sprite, clear pixel-mode.
-    //   * ROM sheet    → enter pixel-mode at the clicked atlas pixel.
-    //   * Anywhere else inside the viewer → absorb so it doesn't fall
-    //     through as a world click.
+    // Sprite-viewer clicks: palette grid selects, ROM sheet enters
+    // pixel-mode, elsewhere absorb so the click doesn't hit the world.
     if (r.sprite_viewer_on) {
         int gx = r.f.x - SV_GRID_X;
         int gy = r.f.y - SV_PANELS_Y;
@@ -502,11 +475,9 @@ void render_tile_overlay(PixelRenderer& r,
     bool highlighted = r.has_highlight
                        && r.highlight_x == world_x
                        && r.highlight_y == world_y;
-    // Tertiary-related visuals (magenta has-tertiary border, switch
-    // yellow border, alias hatches) only render when the Tertiary
-    // checkbox is on. Map-data colours (cyan from-map / red alias) and
-    // the grey grid stay on Grid alone — they're structural
-    // distinctions, not tertiary state.
+    // Tertiary visuals (magenta/yellow/hatches) require Tertiary on.
+    // Map-data colours (cyan/red) and grey grid render on Grid alone —
+    // they're structural, not tertiary state.
     bool show_tert = r.tertiary_overlay_on;
     uint32_t map_data_rgb = info.map_data_aliased ? 0xCC3333 : 0x33CCCC;
     uint32_t base = info.map_data_aliased    ? 0xCC3333
@@ -738,16 +709,8 @@ bool PixelRenderer::health_bars_enabled()  const { return health_bars_on;   }
 bool PixelRenderer::damage_overlay_enabled() const { return damage_overlay_on; }
 bool PixelRenderer::mood_overlay_enabled()   const { return mood_overlay_on; }
 
-// =============================================================================
-// render_sprite_viewer — atlas debug overlay. Replaces the world
-// render when the "Sprites" checkbox is on. Three side-by-side panels:
-//
-//   * palette grid : every atlas sprite (0x00..0x7c) at native scale
-//   * spritesheet  : the full BBC ROM sheet at 4×, coloured per-sprite
-//                    by a representative palette
-//   * detail       : the selected sprite at 8× plus a list of every
-//                    OBJECT_TYPE / TILE_TYPE that maps to it
-// =============================================================================
+// Atlas debug overlay (replaces world when "Sprites" is on): palette
+// grid, spritesheet at 4x, and 8x detail panel with type mappings.
 void PixelRenderer::render_sprite_viewer() {
     int hud_y = hud_y_px();
     fill_rect(0, 0, f.width, hud_y, 0x101018);
@@ -1180,13 +1143,8 @@ void PixelRenderer::render_wire(uint8_t x1, uint8_t y1,
     fill_rect(cx2 - hs, cy2 - hs, 2 * hs + 1, 2 * hs + 1, rgb);
 }
 
-// "Damage" overlay — paint a floating amount above each victim and a
-// circular outline around each explosion source. Source/target are in
-// whole-tile coordinates; we project to screen via world_to_screen.
-//
-// Circle is rendered as a polygon of ~24 short line segments using
-// fill_rect for each pixel — keeps the math simple and renders crisp at
-// any zoom. Numbers use the existing 8x8 font.
+// Damage overlay: floating amount per victim + ring per explosion.
+// Circle = ~24 segments via fill_rect; numbers use the 8x8 font.
 void PixelRenderer::render_damage_events(const std::vector<DamageVisual>& events) {
     if (!damage_overlay_on || events.empty()) return;
     int tpx = tile_px_x();

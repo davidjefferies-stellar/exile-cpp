@@ -8,21 +8,10 @@
 
 namespace Weapon {
 
-// Port of &2357 calculate_vector_from_magnitude_and_angle — the BBC's very
-// approximate "diamond" trig. The result satisfies |vx| + |vy| = magnitude:
-// points trace a rotated square instead of a circle, which is good enough
-// for pixel-space gameplay and avoids trig tables.
-//
-// Anchor points for magnitude=M (the 6502's table at ~&2172 with M=0x20):
-//
-//   angle 0x00 (right) → ( M,  0)
-//   angle 0x40 (down)  → ( 0,  M)
-//   angle 0x80 (left)  → (-M,  0)
-//   angle 0xc0 (up)    → ( 0, -M)
-//   angle 0x20 (45°)   → ( M,  M)   — diagonals are the |vx|+|vy| = M corner
-//
-// magnitude is taken in the int8_t-positive range (≤ 0x7f). Bullet fire
-// uses 0x40 + rng3, AIM particles use the legacy 0x20.
+// Port of &2357 calculate_vector_from_magnitude_and_angle — diamond trig
+// satisfying |vx|+|vy| = magnitude (rotated-square approximation; no
+// trig tables). magnitude <= 0x7f. Bullet fire 0x40+rng3, AIM particles
+// 0x20.
 static void diamond_vector(uint8_t angle, int magnitude,
                            int8_t& vx, int8_t& vy) {
     uint8_t quad = angle >> 6;        // 0..3

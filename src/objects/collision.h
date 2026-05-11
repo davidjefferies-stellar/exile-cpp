@@ -72,17 +72,10 @@ ObjectCollisionResult check_object_collision(
     const Object& obj, int slot,
     const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects);
 
-// Pixel-precise AABB overlap check against any weight-7 non-INTANGIBLE
-// static object (doors, switches, etc.). Returns true if `obj`'s AABB
-// overlaps such a primary. Port-approximation of the 6502's velocity
-// transfer in apply_collision_to_objects_velocities (&2bb6): when a
-// light object (player) hits a heavy one (door), the mass ratio
-// effectively reflects the light object's velocity. We model this as a
-// position revert in the caller — same end result: player stops at the
-// door boundary. Used alongside substitute_door_for_obstruction because
-// STONE_SLOPE_78's pattern only covers the left quarter of the tile,
-// whereas the door sprite spans ~half the tile, so tile obstruction
-// alone would let the player fall through parts of the door sprite.
+// AABB overlap vs weight-7 non-INTANGIBLE statics (doors, switches).
+// Port-approximation of &2bb6's mass-ratio reflection; caller reverts
+// position. Needed alongside substitute_door_for_obstruction because
+// STONE_SLOPE_78's pattern only covers the door sprite's left quarter.
 bool overlaps_solid_object(const Object& obj, int self_slot,
                            const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects,
                            int skip_slot = -1);
@@ -98,22 +91,10 @@ int overlapping_solid_slot(const Object& obj, int self_slot,
                            const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects,
                            int skip_slot = -1);
 
-// Port of calculate_transfer_velocities (&2bee-&2c14) +
-// apply_collision_to_object_velocity (&2bc6-&2bed). Given two objects'
-// velocity components on one axis and their weights, returns the new
-// velocities after an elastic(-ish) mass-ratio collision.
-//
-// The 6502 computes:
-//   half_diff = (this_v - other_v) / 2
-//   transfer  = half_diff / 2^|weight_diff|     (rounded toward -inf)
-//   lesser    = transfer        (applied to heavier side)
-//   greater   = half_diff - transfer (applied to lighter side)
-// Each is then halved and, depending on whether this side was "hit
-// from" that direction, doubled. Signs flip for the heavier side so
-// the two objects end up moving apart.
-//
-// We expose it as a simple "velocity-in, velocity-out" helper so the
-// player-motion block path can use it in place of "velocity = 0".
+// Port of &2bee calculate_transfer_velocities + &2bc6 apply_collision_
+// to_object_velocity. Mass-ratio elastic-ish transfer:
+//   transfer = ((this_v - other_v)/2) / 2^|weight_diff|
+// Heavier side gets `lesser`, lighter gets `greater`, axis-doubled.
 struct VelocityTransfer {
     int8_t this_v;
     int8_t other_v;
@@ -123,16 +104,10 @@ VelocityTransfer apply_mass_ratio_velocity(
     uint8_t this_weight, uint8_t other_weight,
     bool smallest_overlap_in_this_axis);
 
-// Port of &3ebd-&3ec2 door_tiles_table substitution. Given a tile+flip
-// byte and the data_offset of the tertiary entry it came from, returns
-// the tile_and_flip to use for OBSTRUCTION checks. For METAL_DOOR /
-// STONE_DOOR tiles this swaps in TILE_STONE_SLOPE_78 (closed door, solid)
-// or TILE_SPACE (open door, passable) based on the live DOOR_FLAG_OPENING
-// bit — the same mechanism the 6502 uses to make doors block at the tile
-// level. All other tiles pass through unchanged. Preserves flip bits.
-//
-// The live state is read from any primary currently linked to the
-// tertiary slot (preferred), falling back to the stored tertiary byte.
+// Port of &3ebd-&3ec2 door_tiles_table substitution. Swaps METAL_DOOR /
+// STONE_DOOR for STONE_SLOPE_78 (closed) or SPACE (open) based on the
+// live DOOR_FLAG_OPENING bit; preserves flip. Reads live state from a
+// linked primary if any, else the stored tertiary byte.
 uint8_t substitute_door_for_obstruction(
     uint8_t tile_and_flip, int data_offset,
     const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects,

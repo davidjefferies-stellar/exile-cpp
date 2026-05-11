@@ -1,18 +1,9 @@
-// Compiled as C (note the .c extension — cl.exe picks the language by
-// extension). C++ rejects fenster_audio.h's Windows backend because of
-// the implicit `lpData = int16_t*` conversion at line 101, which is
-// fine C but a hard error in C++. Compiling the implementation as C
-// here lets the header-only file work without modifying deps/.
-//
-// The matching audio.cpp wraps its include in `extern "C"` and defines
-// FENSTER_HEADER so that side gets only the declarations — the symbols
-// resolve to the definitions in this TU.
+// Compiled as C (.c extension) so fenster_audio.h's implicit
+// `lpData = int16_t*` conversion is legal. audio.cpp pulls in
+// declarations only via FENSTER_HEADER + extern "C".
 
-// <stdint.h> is needed for int16_t in the struct definition. C++ mode
-// pulls it in transitively via <windows.h>, but C mode (this TU) does
-// not, so without this include the struct's int16_t buf[][] field
-// fails to parse and every subsequent reference to fenster_audio
-// reads as "undefined struct/union".
+// C mode doesn't transitively pull stdint via windows.h like C++; without
+// it the struct's int16_t buf[][] fails to parse.
 #include <stdint.h>
 
 #ifdef _WIN32

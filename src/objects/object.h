@@ -25,15 +25,9 @@ struct Object {
                                          // the legacy name this is the DATA
                                          // byte, not an offset.
     uint8_t    state      = 0;        // &0976: type-dependent (NPC mood, etc.)
-    // Tertiary bookkeeping: index into the Landscape's tertiary entry
-    // table that this primary was spawned from. Needed so
-    // return_to_tertiary can set the spawn gate and write back any
-    // switch-toggled state. Not present in the 6502 — there it's
-    // rederived from the tile position each time demotion happens.
-    // Zero means "not from a tertiary slot"; valid indices start at 1
-    // (entry 0 is reserved as a permanent unused sentinel by the
-    // bake). Widened to uint16_t for Option B's per-cell entries
-    // (count can exceed 254).
+    // Tertiary entry index this primary spawned from. Port-only — the
+    // 6502 rederives from tile position at demotion. 0 = none; entry 0
+    // is a reserved sentinel. uint16_t for Option B per-cell entries.
     uint16_t   tertiary_slot = 0;
     // Transient collision flags, written by object-update physics at step 15
     // and read by the next frame's type-specific updater. Mirrors the 6502

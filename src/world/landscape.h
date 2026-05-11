@@ -8,82 +8,43 @@ static constexpr uint8_t feature_tiles_table[9] = {
     0x1b, 0x5a, 0x19, 0x19, 0x1e, 0x13, 0x24, 0x2c, 0x19,
 };
 
-// Per-cell tertiary state. Each (x, y) cell whose tile_type is a
-// CHECK_TERTIARY_OBJECT_RANGE_N marker (0x00..0x08) gets its OWN entry;
-// the bake duplicates source-table state when multiple cells used to
-// share an entry under the 6502's x-only-in-range lookup. That makes
-// stacked / shared-key doors / switches independently mutable, which
-// the editor needs.
-//
-// Fields mirror the three pieces of state the 6502 stored in three
-// parallel arrays (tertiary_objects_tile_and_flip_data,
-// tertiary_objects_data_bytes, tertiary_objects_type_data):
-//   tile_and_flip — the resolved tile to render at this cell (e.g.
-//                   METAL_DOOR with flip bits). Was at &06ee.
-//   data          — mutable runtime state byte (door open / locked /
-//                   colour, switch effect-id + state, creature count,
-//                   etc.) and bit 7 = "needs primary spawn". Was at
-//                   &0986.
-//   type          — object spawn type for FROM_DATA / FROM_TYPE
-//                   tiles. Zero for entries that don't use it. Was
-//                   at &0a71.
+// Per-cell tertiary state — diverges from 6502 shared-entry lookup so
+// stacked/shared-key doors mutate independently. Fields mirror the
+// 6502's three parallel arrays at &06ee (tile_and_flip),
+// &0986 (data, bit 7 = needs primary spawn), &0a71 (type for FROM_*).
 struct TertiaryEntry {
     uint8_t tile_and_flip = 0;
     uint8_t data          = 0;
     uint8_t type          = 0;
 };
 
-// 256×256 landscape backed by an in-memory tile grid. The grid is
-// pre-populated at init from the procedural algorithm at &178d-&19a6;
-// after that, get_tile() is a pure array read. set_tile() lets a
-// future editor mutate cells without re-running the algorithm.
-//
-// The procedural generator is preserved as a "bake" path:
-//   * pseudo-6502 (landscape.cpp): faithful Alu-emulating port. Tracks
-//     A/C explicitly so each line maps 1:1 to the disassembly.
-//   * native C++ (landscape_cpp.cpp): same algorithm in plain C++.
-// Both run only at bake time; the toggle (`set_use_cpp_impl`) selects
-// which generator to seed the grid from. They MUST produce byte-
-// identical output for every (x, y); the toggle exists so the C++
-// rewrite can be A/B-tested against the reference and so future tweaks
-// to either path have a known-good baseline to diff against.
+// 256x256 grid baked at init from &178d-&19a6; after that get_tile() is
+// a plain array read. Two equivalent bake paths (pseudo-6502 in
+// landscape.cpp, native C++ in landscape_cpp.cpp) selectable via
+// set_use_cpp_impl — MUST produce byte-identical output.
 class Landscape {
 public:
     static constexpr int WORLD_SIZE = 256;
     static constexpr int TILE_COUNT = WORLD_SIZE * WORLD_SIZE;  // 65 536 bytes
 
-    // Capacity for the flat tertiary entry array. Each cell whose tile
-    // type is CHECK_TERTIARY (0x00..0x08) and whose X matches a source
-    // row gets its own copy. The procedural generator emits thousands
-    // of CHECK_TERTIARY cells across the 256×256 grid; matched cells
-    // observed at >5000 in practice. 16384 is a comfortable headroom
-    // and still leaves plenty of room below the NO_TERTIARY sentinel
-    // (0xffff) for editor-added entries.
+    // Per-cell tertiary copies; >5000 matched cells observed in
+    // practice. 16384 leaves room below NO_TERTIARY (0xffff).
     static constexpr int TERTIARY_CAPACITY = 16384;
 
     // Sentinel for "this cell has no tertiary". 0xffff because the
     // entry index is uint16_t — capacity is up to TERTIARY_CAPACITY.
     static constexpr uint16_t NO_TERTIARY = 0xffff;
 
-    // Run the procedural algorithm over every (x, y) and store the
-    // result in the in-memory grid. Must be called once at init before
-    // any get_tile() call. Subsequent calls re-bake (e.g. after
-    // toggling use_cpp_impl). Also rebuilds the tertiary lookup cache
-    // since it derives from the tile grid.
+    // Procedural fill of the grid. Must be called once before get_tile;
+    // also rebuilds the tertiary lookup since it derives from tiles.
     void bake();
 
-    // Walk the 256×256 grid and resolve which entry in the static
-    // tertiary tables (if any) each cell maps to under the 6502's x-
-    // only-in-range lookup. Stored per-cell so the editor can later
-    // override individual cells, and so resolve_tile_with_tertiary is
-    // a cheap O(1) read instead of a per-frame range scan.
+    // Resolve each cell's tertiary entry under 6502 x-in-range lookup.
+    // Stored per-cell so the editor can override and resolve is O(1).
     void bake_tertiary_lookup();
 
-    // Persist / restore the in-memory grid to/from a binary file. The
-    // format is a 16-byte header (magic "EXILEMAP", version, world
-    // dimensions) followed by the raw 65 536 tile bytes — no
-    // compression. Returns true on success; on load failure the grid
-    // is left untouched so the caller can fall back to bake().
+    // Persist / restore the grid (16-byte header + 64K tile bytes).
+    // Load failure leaves grid untouched so caller can fall back to bake().
     bool save_to_file(const char* path) const;
     bool load_from_file(const char* path);
 
@@ -93,11 +54,8 @@ public:
         return tiles_[(static_cast<int>(tile_y) << 8) | tile_x];
     }
 
-    // Set tile at world coordinates. For the upcoming editor and any
-    // gameplay event that needs to permanently alter the world. Also
-    // refreshes the tertiary lookup for this cell, since the cell's
-    // tile type drives whether (and which) tertiary entry it points
-    // at.
+    // Permanent set + refresh attached tertiary (tile type drives which
+    // entry the cell points at).
     void set_tile(uint8_t tile_x, uint8_t tile_y, uint8_t tile);
 
     // Per-cell tertiary entry index. NO_TERTIARY (0xffff) means no
@@ -111,41 +69,30 @@ public:
         tertiary_idx_[(static_cast<int>(tile_y) << 8) | tile_x] = idx;
     }
 
-    // Was this cell sourced from the hand-authored map_overlay_data at
-    // bake time? Port of the 6502's `tile_was_from_map_data` flag at
-    // &00, set by `get_tile_from_map_data` at &17d6 and consumed by the
-    // star-field spawn gate at &26df. The two mainline uses of this
-    // signal are both about "is this cell inside the player's spaceship
-    // wreck or Triax's lab?" — those interiors are placed by map data,
-    // the procedural generator never produces them.
+    // Port of 6502 &00 `tile_was_from_map_data`. Set by &17d6
+    // get_tile_from_map_data; consumed by star-field spawn gate at &26df
+    // ("is this cell inside spaceship/lab?").
     bool tile_from_map_data(uint8_t tile_x, uint8_t tile_y) const {
         return from_map_data_[(static_cast<int>(tile_y) << 8) | tile_x] != 0;
     }
 
-    // Index into map_overlay_data[0..1023] that the cell was read from.
-    // Only meaningful when tile_from_map_data() returns true; returns 0
-    // for procedural cells. Used by the grid debug overlay to label
-    // each authored cell with its slot in the 1 KB ROM table.
+    // map_overlay_data[0..1023] index (only when tile_from_map_data).
+    // Used by grid overlay to label each authored cell with its ROM slot.
     uint16_t map_data_offset(uint8_t tile_x, uint8_t tile_y) const {
         return map_data_offset_[(static_cast<int>(tile_y) << 8) | tile_x];
     }
 
-    // True when the cell is from map data AND another from-map-data cell
-    // shares the same map_data_offset. Drives the grid overlay's red
-    // (alias) vs cyan (unique) colour split so authors can spot two
-    // world tiles backed by the same ROM slot at a glance.
+    // From-map cell shares its map_data_offset with another from-map
+    // cell. Grid overlay paints red (alias) vs cyan (unique).
     bool map_data_offset_aliased(uint8_t tile_x, uint8_t tile_y) const {
         int idx = (static_cast<int>(tile_y) << 8) | tile_x;
         if (!from_map_data_[idx]) return false;
         return map_data_offset_count_[map_data_offset_[idx]] > 1;
     }
 
-    // True when this cell is a CHECK_TERTIARY tile that resolved to a
-    // source-table entry shared with at least one other cell (the 6502's
-    // x-only-in-range scan would have returned the same `found` index).
-    // The bake gives each cell its own TertiaryEntry copy, but the
-    // shared source means edits to "the door at slot N" historically
-    // affected every cell aliasing that slot — worth surfacing.
+    // CHECK_TERTIARY cell sharing its source-table entry with another
+    // cell (6502 x-in-range would alias). Bake gives each its own copy,
+    // but the shared source historically aliased edits — worth flagging.
     bool tertiary_source_aliased(uint8_t tile_x, uint8_t tile_y) const {
         int idx = (static_cast<int>(tile_y) << 8) | tile_x;
         uint16_t src = tertiary_source_idx_[idx];
@@ -153,12 +100,8 @@ public:
         return tertiary_source_count_[src] > 1;
     }
 
-    // True when this cell is a SWITCH (tile_type 0x08) AND another
-    // SWITCH lives in the same world X column. Surfaces the simpler,
-    // type-only flavour of switch aliasing — independent of whether the
-    // tertiary x-only-in-range scan actually finds a source entry —
-    // because two switches sharing an X share state at runtime even when
-    // they have no tertiary attached.
+    // SWITCH cell sharing X column — runtime state aliases regardless
+    // of whether the tertiary x-scan finds a source entry.
     bool switch_x_aliased(uint8_t tile_x, uint8_t tile_y) const {
         int idx = (static_cast<int>(tile_y) << 8) | tile_x;
         if (!from_map_data_[idx]) return false;
@@ -205,11 +148,8 @@ public:
     void set_use_cpp_impl(bool b) { use_cpp_impl_ = b; }
     bool use_cpp_impl() const { return use_cpp_impl_; }
 
-    // Returns what the procedural generator WOULD produce for (x, y)
-    // unconditionally — bypasses the region check that normally routes
-    // map-overlay cells to the authored ROM table. Used by the "Algo
-    // only" debug overlay so authored interiors get replaced with the
-    // cavern that would have been there underneath.
+    // Procedural output ignoring the map-overlay gate. "Algo only"
+    // overlay uses this to show the cavern under authored interiors.
     uint8_t compute_algo_tile(uint8_t tile_x, uint8_t tile_y) const;
 
 private:
@@ -228,31 +168,21 @@ private:
     // end of bake() / load_from_file(); count > 1 marks an alias for the
     // grid overlay's red highlight.
     uint16_t map_data_offset_count_[1024] = {};
-    // Per-cell source-tertiary index — the `found` slot in the static
-    // tertiary_objects_x_data table. NO_TERTIARY for cells with no
-    // tertiary attached. Source indices fit in [0, 255] but we use
-    // uint16_t so NO_TERTIARY (0xffff) doubles as the absent marker.
-    // Initialised to 0 by the brace-init; bake_tertiary_lookup /
-    // load_from_file overwrite every cell before any reader runs.
+    // Per-cell source-tertiary index (`found` in tertiary_objects_x_data).
+    // uint16_t lets NO_TERTIARY (0xffff) double as absent marker.
     uint16_t tertiary_source_idx_[TILE_COUNT] = {};
     // Count of cells per source index — count > 1 means two map cells
     // emit the same tertiary marker.
     uint16_t tertiary_source_count_[256] = {};
-    // Count of SWITCH (tile_type 0x08) cells per X column. > 1 means two
-    // switches share that X — they share runtime state regardless of
-    // whether the x-only-in-range scan finds a tertiary entry. Rebuilt
-    // from the tile grid in bake() / load_from_file(); kept consistent
-    // by set_tile().
+    // SWITCH count per X column. >1 means switches share runtime state
+    // regardless of the tertiary scan. Rebuilt at bake / load.
     uint16_t switch_x_count_[256] = {};
-    // Output channels for the bake helpers. They set the flag to true
-    // and write the offset on the single map-data return path; bake()
-    // reads them after each cell and copies into the per-cell arrays
-    // above. Mutable so the helpers can stay const-qualified.
+    // Output channels for the bake helpers (one map-data return path);
+    // bake reads after each cell. Mutable to keep helpers const.
     mutable bool last_bake_was_map_data_ = false;
     mutable uint16_t last_bake_map_data_offset_ = 0;
-    // Flat list of tertiary entries. The bake sizes this from the
-    // existing static ROM tables (one entry per CHECK_TERTIARY cell);
-    // the editor will grow / shrink it within TERTIARY_CAPACITY.
+    // Flat tertiary entries (one per CHECK_TERTIARY cell after bake;
+    // editor may grow/shrink within TERTIARY_CAPACITY).
     TertiaryEntry tertiary_entries_[TERTIARY_CAPACITY] = {};
     int           n_tertiary_entries_ = 0;
     bool use_cpp_impl_ = false;

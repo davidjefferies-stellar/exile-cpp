@@ -37,21 +37,10 @@ void ObjectManager::init() {
         obj.y.whole = 0; // Mark as inactive
     }
 
-    // Secondary slots — load the 19 ROM-initialised entries from &0af2-&0b73.
-    // These are the starting world items (grenades in bushes, the cannon,
-    // the destinator, fluffy, etc.) that the player's activation radius
-    // promotes to primary when they come close enough. Without this the
-    // secondary list starts empty and those items never appear.
-    //
-    // Only iterate up to the source-array size (32 — the 6502's hard
-    // capacity). Our std::array backing is sized to
-    // GameConstants::SECONDARY_OBJECT_SLOTS (128) via exile.ini, and reading
-    // initial_secondary_*[] past index 31 was undefined behaviour — the
-    // slots beyond the 19 ROM entries were being populated with whatever
-    // bytes happened to follow the tables in static memory, spawning
-    // phantom UNKNOWN / ALIEN_WEAPON secondaries far from the player.
-    // Slots 32..127 start inactive via SecondaryObject's default y=0,
-    // which is exactly what we want.
+    // Load 19 ROM-initialised secondary entries from &0af2-&0b73 (cannon,
+    // destinator, fluffy, etc). Iterate only the source-array size (32) —
+    // our backing array is larger than the 6502's, so reading past 31
+    // would pull garbage and spawn phantom secondaries.
     constexpr int kInitialSecondaries =
         sizeof(initial_secondary_type) / sizeof(initial_secondary_type[0]);
     static_assert(
@@ -253,18 +242,10 @@ void ObjectManager::demote_to_secondary(int primary_slot) {
     if (!obj.is_active()) return;
     debug_demotes_++;
 
-    // Anti-duplicate guard: the 6502 implicitly avoids saving the same
-    // tertiary entry to secondary twice because tertiary spawn cleared
-    // bit 7 of the data byte after the first spawn — no respawn = no
-    // chance to demote again. Our wider viewport plus eager re-spawn
-    // checks can occasionally bypass that, leaving the secondary pool
-    // with multiple copies of the same item (e.g. 10× PROTECTION_SUIT
-    // showing up over time as the player wanders the map).
-    //
-    // Skip the demotion if a secondary at the same world-tile already
-    // holds an object of this type — physically the "same" pickup. This
-    // is a deviation from the 6502 (which has no such check) but matches
-    // its observable behaviour given a working spawn gate.
+    // Port-only anti-dup guard. 6502 relied on the spawn-gate bit to avoid
+    // re-saving the same tertiary; our wider viewport + eager respawn can
+    // bypass that. Skip demotion if a matching secondary already exists
+    // at this world-tile.
     for (int i = 0; i < GameConstants::SECONDARY_OBJECT_SLOTS; i++) {
         const SecondaryObject& s = secondary_[i];
         if (s.y == 0) continue;
@@ -509,20 +490,10 @@ bool ObjectManager::check_demotion(int primary_slot, uint8_t frame_counter) {
         if (slow && supported) x = 0x03;
     }
 
-    // &1bdb: distances_to_remove_objects_table[X-1]. 6502 ROM was
-    // {1, 12, 4}; our port exposes these as demote_distances_ so
-    // exile.ini's [distances] section can tune each independently — see
-    // StartupConfig::demote_tertiary / demote_moving / demote_settled.
-    //
-    // Port hazard: in the 6502, tertiary objects only spawned while a
-    // tile was being plotted — i.e. inside the ~4-tile visible window —
-    // so the 1-tile demote radius for KEEP_AS_TERTIARY statics (doors,
-    // switches) bordered the spawn edge and churn was rare. Our port's
-    // viewport can be much larger, so spawn_tertiary_object gates on a
-    // larger radius. A small demote distance inside the spawn radius
-    // would cause 1-in-4-frame churn: the object demotes, next render
-    // tick re-spawns it. Keep demote_distances_[0] ≥ the spawn radius
-    // so the two boundaries coincide.
+    // &1bdb distances_to_remove_objects_table[X-1] — 6502 ROM {1,12,4}.
+    // Exposed via exile.ini. Port hazard: our wider viewport means
+    // spawn_tertiary_object's radius can exceed demote_distances_[0],
+    // causing 1-in-4-frame demote/respawn churn. Keep [0] >= spawn radius.
     uint8_t check_distance = demote_distances_[x - 1];
 
     // &1bde-&1be4: gate on (per-object frame counter & 3) == 3. We don't

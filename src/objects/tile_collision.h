@@ -5,18 +5,10 @@ class Landscape;
 class ObjectManager;
 struct Object;
 
-// Faithful port of the 6502 tile-collision response chain at
-// &2f8c - &30df.
-//
-// The 6502 walks the AABB section by section, counting obstruction
-// depths on all four edges, builds a vector from the depth differences,
-// converts that to an angle, pushes the object out of obstruction along
-// the most-obstructed axis, and reflects velocity around the surface
-// normal. Slopes / walls / floors / ceilings all fall out of the same
-// pipeline.
-//
-// Used by both the player (Game::integrate_player_motion) and primaries
-// (Game::update_objects step 15), so a single response covers both.
+// Port of the 6502 tile-collision response chain at &2f8c-&30df.
+// Walks the AABB by sections, derives a push vector from edge depths,
+// pushes out and reflects velocity around the surface normal — handles
+// slopes/walls/floors/ceilings uniformly. Used by player and primaries.
 namespace TileCollision {
 
 struct Result {
@@ -44,15 +36,10 @@ struct Result {
     bool landed_on_bottom = false;
 };
 
-// Run the 6502 collision-response chain on `obj`. Position, velocity,
-// and tile_collision are mutated in-place. `prev_*` is the position
-// before this frame's velocity integration (the 6502's
-// &54-&52 this_object_previous_x/y); the surrounded fallback reverts to
-// it.
-//
-// `skip_slot` is the held-object slot to exclude from door substitution
-// look-ups (so a vertical door you're holding doesn't read its own data
-// byte). Pass -1 if none.
+// Run the 6502 collision-response chain on `obj` in-place. `prev_*` is
+// the &54-&52 pre-integration position used by the surrounded fallback.
+// `skip_slot`: held-object slot to exclude from door substitution
+// look-ups (pass -1 if none).
 Result resolve(Object& obj,
                uint8_t prev_x_whole, uint8_t prev_x_frac,
                uint8_t prev_y_whole, uint8_t prev_y_frac,

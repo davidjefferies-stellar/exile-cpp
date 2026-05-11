@@ -17,17 +17,7 @@ void Random::seed(uint8_t s0, uint8_t s1, uint8_t s2, uint8_t s3) {
     carry_ = 0;
 }
 
-// Port of &2587:
-//   ADC &dc (rnd_state+3)    ; A += state[3] + carry
-//   ADC &d9 (rnd_state+0)    ; A += state[0] + carry
-//   STA &d9                  ; state[0] = A
-//   ADC &db (rnd_state+2)    ; A += state[2] + carry
-//   STA &db                  ; state[2] = A
-//   ADC &da (rnd_state+1)    ; A += state[1] + carry
-//   STA &da                  ; state[1] = A
-//   ADC &dc (rnd_state+3)    ; A += state[3] + carry
-//   STA &dc                  ; state[3] = A
-//   RTS                      ; return A
+// &2587 chained ADC across state[3,0,2,1,3]; carry propagates.
 uint8_t Random::next() {
     uint16_t a = carry_; // carry from previous operation
 

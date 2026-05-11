@@ -77,12 +77,8 @@ struct Alu {
     void cmp(uint8_t v) { c = (a >= v) ? 1 : 0; }
 };
 
-// ============================================================================
-// bake - run the procedural algorithm over the full 256×256 grid and
-// store the result in tiles_. Called once at game init; afterwards
-// get_tile() is a plain array read. Re-bakes if called again (e.g.
-// after toggling use_cpp_impl_).
-// ============================================================================
+// bake — fill tiles_ from the procedural algorithm. One-shot at init;
+// re-runs on use_cpp_impl_ toggle.
 
 void Landscape::bake() {
     for (int y = 0; y < WORLD_SIZE; ++y) {
@@ -114,29 +110,12 @@ void Landscape::rebuild_map_data_offset_counts() {
     }
 }
 
-// ============================================================================
-// bake_tertiary_lookup - resolve every CHECK_TERTIARY cell into its OWN
-// TertiaryEntry, copying state from the static ROM tables. Two cells
-// that used to share an entry under the 6502's x-only-in-range scan
-// each get an independent copy here, so stacked / shared-key doors
-// can hold their own state once the editor wires up.
-// ============================================================================
-//
-// For each cell whose tile_type is 0..8 (CHECK_TERTIARY_OBJECT_RANGE_N),
-// run the 6502's x-only-in-range scan to find the source entry index in
-// the parallel static arrays at &05ef / &06ee / &0986 / &0a71. Read
-// the source's tile_and_flip + data byte + type byte (where applicable),
-// allocate a fresh TertiaryEntry, and point the cell at it.
-//
-// Cells that don't match any source entry get NO_TERTIARY; the engine
-// renders them as the feature-tile fallback.
+// Resolve every CHECK_TERTIARY cell into its OWN entry. Diverges from
+// 6502's shared x-scan so stacked/shared-key doors hold independent
+// state. Source arrays: &05ef / &06ee / &0986 / &0a71.
 void Landscape::bake_tertiary_lookup() {
-    // Reserve entry 0 as a permanent unused sentinel so legacy callers
-    // that test "data_offset > 0" still treat 0 as "no tertiary" — we
-    // stash a zero-init entry at slot 0 and start handing out indices
-    // from 1. NO_TERTIARY (0xffff) at the per-cell level still flags
-    // "no tertiary at this cell" too; tertiary_data_byte additionally
-    // gates on idx > 0.
+    // Slot 0 is a sentinel so "data_offset > 0" tests still mean "has
+    // tertiary"; allocate from 1. NO_TERTIARY (0xffff) flags per-cell.
     n_tertiary_entries_ = 1;
     tertiary_entries_[0] = TertiaryEntry{};
     for (int i = 0; i < 256; ++i) tertiary_source_count_[i] = 0;
@@ -159,14 +138,9 @@ void Landscape::bake_tertiary_lookup() {
                     }
                 }
                 if (found >= 0) {
-                    // "This cell renders/spawns as a switch" =
-                    // resolved tile_and_flip type is SWITCH (0x08).
-                    // Catches both direct switches (raw 0x08 cells
-                    // with tertiaries in the SWITCH range) AND
-                    // redirect switches (e.g. raw METAL_DOOR cells
-                    // whose tertiary entry rewrites tile_and_flip to
-                    // SWITCH). Gate on from_map_data so procedural
-                    // marker cells don't inflate the count.
+                    // Counts both direct and redirect switches via
+                    // resolved tile_and_flip == SWITCH. Gated on
+                    // from_map_data so marker cells don't inflate count.
                     uint8_t resolved_type =
                         tertiary_objects_tile_and_flip_data[found]
                         & TileFlip::TYPE_MASK;
@@ -204,12 +178,8 @@ void Landscape::bake_tertiary_lookup() {
 }
 
 // ============================================================================
-// set_tile - mutator. Refreshes the tertiary attached to the cell when
-// the type changes: switching to a CHECK_TERTIARY tile spawns a new
-// entry from the source tables; switching to anything else detaches.
-// Existing entries are NOT garbage-collected — that's an editor
-// responsibility (or a future compact pass).
-// ============================================================================
+// set_tile mutator. Refreshes attached tertiary on type change; existing
+// entries are NOT GC'd — editor's responsibility.
 void Landscape::set_tile(uint8_t tile_x, uint8_t tile_y, uint8_t tile) {
     int idx = (static_cast<int>(tile_y) << 8) | tile_x;
     // Drop the cell's old contribution to the source-index alias count
@@ -277,28 +247,9 @@ void Landscape::set_tile(uint8_t tile_x, uint8_t tile_y, uint8_t tile) {
     tertiary_source_idx_[idx] = source;
 }
 
-// ============================================================================
-// Map file format (binary, little-endian):
-//
-//   offset    size      field
-//   --------  --------  -------------------------------------------------
-//   0         8         magic "EXILEMAP"
-//   8         2         version (currently 1)
-//   10        2         tertiary entry count N
-//   12        2         world width  (must be 256)
-//   14        2         world height (must be 256)
-//   16        65 536    tile bytes, row-major (y * 256 + x)
-//   65 552    131 072   per-cell tertiary index, uint16_t little-endian.
-//                       NO_TERTIARY (0xffff) = no tertiary at this cell.
-//                       Row-major layout same as the tiles.
-//   196 624   N * 3     tertiary entries: { tile_and_flip, data, type }.
-//   -----------------------------------
-//   total     196 624 + N*3 bytes
-//
-// Mismatched magic / version / dimensions / truncation all reject
-// cleanly, leaving the in-memory state untouched so the caller can
-// fall back to bake().
-// ============================================================================
+// Map file: "EXILEMAP" magic, u16 version=1, u16 N entries, u16 w/h (256),
+// 64K tile bytes row-major, 128K u16 tertiary indices, N*3 byte entries.
+// Mismatched magic/version/dimensions reject cleanly; caller falls back.
 
 namespace {
 constexpr char     kMagic[8]   = { 'E','X','I','L','E','M','A','P' };
@@ -376,15 +327,9 @@ bool Landscape::load_from_file(const char* path) {
     for (int i = 0; i < n_entries; ++i) tertiary_entries_[i] = entry_scratch[i];
     n_tertiary_entries_ = n_entries;
 
-    // Recompute from_map_data_ by re-running the bake helpers in
-    // "side-effect only" mode — the helper's tile output is discarded
-    // (we trust the loaded tiles_), but its `last_bake_was_map_data_`
-    // flag is captured per cell. The decision is deterministic given
-    // (x, y), so the loaded tiles agree with the recomputed flag for
-    // any map produced by this engine. Hand-edited cells that diverge
-    // from the procedural decision get the procedural answer here —
-    // good enough for the star-spawn suppression and avoids bumping the
-    // file-format version with a fourth array.
+    // Recompute from_map_data_ by re-running bake (deterministic for
+    // (x,y)). Hand-edited cells get the procedural answer — fine for
+    // star-spawn suppression, avoids bumping format version.
     for (int y = 0; y < WORLD_SIZE; ++y) {
         for (int x = 0; x < WORLD_SIZE; ++x) {
             last_bake_was_map_data_ = false;
@@ -429,12 +374,8 @@ bool Landscape::load_from_file(const char* path) {
     return true;
 }
 
-// ============================================================================
-// compute_algo_tile - "what would the procedural generator output for this
-// cell, ignoring the map-data region gate?" Recomputes f1 the same way
-// bake_tile_pseudo_6502 does, then jumps straight into the algorithm
-// branch. Used by the "Algo only" debug overlay.
-// ============================================================================
+// compute_algo_tile — procedural output ignoring map-data gate. Used by
+// the "Algo only" debug overlay.
 
 uint8_t Landscape::compute_algo_tile(uint8_t tile_x, uint8_t tile_y) const {
     Alu s;
@@ -539,12 +480,8 @@ uint8_t Landscape::bake_tile_pseudo_6502(uint8_t tile_x, uint8_t tile_y) const {
     uint8_t addr_high = m.a;
 
     uint16_t map_offset = static_cast<uint16_t>(addr_high - 0x4f) * 256 + addr_low;
-    // The LDA (&a4),Y with Y=&ec adds 0xEC to the base address.
-    // But the map_data starts at &4fec, so offset 0 in our array = &4fec.
-    // Effective address = addr_high*256 + addr_low + 0xEC
-    // Offset into map_data = effective - 0x4fec = (addr_high-0x4f)*256 + addr_low + 0xEC - 0xEC
-    //                      = (addr_high-0x4f)*256 + addr_low
-    // But wait: addr_low could wrap. Let's compute it properly:
+    // LDA (&a4),Y with Y=&ec; map_data starts at &4fec.
+    // offset = (addr_high * 256 + addr_low + 0xEC) - 0x4FEC.
     uint16_t effective = static_cast<uint16_t>(addr_high) * 256 + addr_low + 0xEC;
     uint16_t offset = effective - 0x4FEC;
     last_bake_map_data_offset_ = offset;
@@ -847,11 +784,9 @@ Landscape::SlopeResult Landscape::calculate_slope_function(uint8_t tile_x, uint8
         bool use_adc = (s.a & 0x80) == 0; // BPL = positive = ADC
         if (use_adc) y_out = 4;
 
-        // &195e: calculate slope bounds. Both branches enter ADC #&16
-        // with carry CLEAR — the 6502's `ASL A; ASL A` at &1953/&1954
-        // always clears it (the byte being shifted is `f1 & 0x20`, so
-        // bit 7 of the pre-shift A is always 0). The SMC opcode at
-        // &1961 (ADC vs SBC) inherits the carry produced by ADC #&16.
+        // &195e slope bounds. Both branches enter ADC #&16 with C clear
+        // (the &1953/&1954 ASLs always clear it). SMC at &1961 inherits
+        // carry from ADC #&16.
         s.lda(tile_y);
         s.clc();
         s.adc(0x16);

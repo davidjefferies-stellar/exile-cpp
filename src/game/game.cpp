@@ -17,18 +17,9 @@
 #include <chrono>
 #include <thread>
 
-// -----------------------------------------------------------------------------
 // Game — lifecycle, top-level loop orchestration, timers, input polling.
-// The big chunks of behaviour live in sibling translation units:
-//
-//   game/tertiary_spawn.cpp   — spawn_tertiary_object
-//   game/player_actions.cpp   — apply_player_input
-//   game/player_motion.cpp    — integrate_player_motion
-//   game/player_sprite.cpp    — update_player_sprite + angle helpers
-//   game/object_update.cpp    — update_objects (18-step primary loop)
-//   game/render.cpp           — render
-//   world/tertiary.cpp        — resolve_tile_with_tertiary + ResolvedTile
-// -----------------------------------------------------------------------------
+// Big chunks live in siblings: tertiary_spawn / player_* / object_update /
+// render / world/tertiary.
 
 Game::Game(std::unique_ptr<IRenderer> renderer)
     : renderer_(std::move(renderer)) {
@@ -142,16 +133,9 @@ bool Game::init() {
     // Seed RNG
     rng_.seed(0x49, 0x52, 0x56, 0x49);
 
-    // Intro sequence: Triax is pre-placed in primary slot 1 at (&99, &3b),
-    // two tiles west of the player's spawn and directly adjacent to the
-    // destinator tertiary at (&99, &3c). This matches the 6502's ROM
-    // initial object table at &0860-&08b4: objects_type[1]=&26 (TRIAX),
-    // objects_x=(&99, &64), objects_y=(&3b, &20), objects_sprite=&04
-    // (SPACESUIT_VERTICAL). On frame 1 update_triax sees Triax touching
-    // the destinator, absorbs it, re-arms the destinator tertiary in
-    // Triax's lab (offset &9d → &80), and teleports away — producing the
-    // visible "Triax teleports in, steals the destinator, teleports out"
-    // beat without any scripted cutscene.
+    // &0860-&08b4 initial object table: Triax pre-placed at (&99, &3b)
+    // adjacent to the destinator tertiary, so frame-1 update_triax fires
+    // the absorb + teleport beat without any scripted cutscene.
     {
         Object& triax = object_mgr_.object(1);
         object_mgr_.init_object_from_type(triax, ObjectType::TRIAX);
@@ -186,35 +170,10 @@ bool Game::init() {
         (void)slot;
     }
 
-    // Test setup: 2 active grenades primed to detonate simultaneously
-    // on the door at (79, 96). Both at point-blank → 76 damage each
-    // on the explosion's first apply_explosion_radius tick (tdo=15
-    // post-decrement, power=60, weight_factor=22 for the door's
-    // weight 7, distance 0). 76 + 76 = 152 in one frame drops the
-    // door's energy from 255 to 103, below the pair-3 threshold of
-    // 128 → SLOW_OR_DESTROYED latches and the next update_door tick
-    // turns it into an EXPLOSION primary.
-    //
-    // Pre-arm the fuse with timer=0x5e so both detonate two frames
-    // later: tick N reads 0x5e (< 0x60), INCs to 0x5f; tick N+1 reads
-    // 0x5f, INCs to 0x60; tick N+2 reads 0x60 → fuse-expired branch
-    // fires explode_object_with_duration(16) on both at the same
-    // frame.
-    //
-    // Stagger x_frac so the two grenades don't AABB-overlap each
-    // other (would mutually damage and explode early via the
-    // bullet-style touch path before the fuse runs).
-    // Test setup: 2 red slime drops dropped onto the door at (80, 96).
-    // Each drop deals 100 damage on contact (&47b1 LDA #&64). With both
-    // hitting on the same frame, total = 200 damage, dropping the door
-    // (255) to 55 < pair-3 threshold 128 → SLOW_OR_DESTROYED latches and
-    // the next update_door tick destroys it.
-    //
-    // The drops fall through tile (80, 95) under gravity (vy ramps from
-    // 0 to 0x40 cap per update_red_drop). Stagger x_frac so their AABBs
-    // don't overlap each other before reaching the door — they need the
-    // tile-collision-into-door redirect (projectile.cpp ~684) to fire
-    // for both on the same frame.
+    // Test setup: 2 red slime drops onto door at (80, 96). Each deals 100
+    // dmg (&47b1 LDA #&64); same-frame total 200 drops door (255→55) below
+    // pair-3 threshold 128 → SLOW_OR_DESTROYED. Stagger x_frac to avoid
+    // mutual AABB overlap before reaching the door.
     {
         constexpr uint8_t kStartTileX = 80;
         constexpr uint8_t kStartTileY = 90;
@@ -578,20 +537,9 @@ bool Game::init() {
     // The main loop re-sets this every frame from the live player position.
     object_mgr_.set_activation_anchor(player.x.whole, player.y.whole);
 
-    // Promote every in-range secondary BEFORE the first tick. The 6502
-    // does this implicitly: the screen redraw at &15ce sets
-    // secondary_object_update_mode bit 7 = "consider all secondaries", and
-    // the first call to consider_promoting_secondary_objects (&0be8) takes
-    // the BMI to the full-scan path at &0c4e, bringing the destinator (and
-    // all the other near-player secondaries) up to primary in time for the
-    // first per-object update tick.
-    //
-    // Our promote_selective only checks one random secondary per frame, so
-    // without this seed call the destinator would still be sitting in
-    // secondary slot 16 when frame-1 update_triax runs, leaving
-    // obj.touching = 0xff (no destinator primary to overlap) — the
-    // absorb-and-teleport beat never fires, and Triax stays pinned inside
-    // the ship-roof tile he was spawned overlapping.
+    // Promote every in-range secondary BEFORE frame 1 — matches the &15ce
+    // full-scan path at &0c4e. Without this seed, our one-per-frame
+    // promote_selective misses the destinator and the Triax intro misfires.
     object_mgr_.promote_distance_check();
     flush_debug_log();
 
@@ -950,33 +898,14 @@ void Game::process_input() {
     load_key_prev_ = load_down;
 }
 
-// Port of update_events (&259a-&2742). Runs every frame to animate the
-// ambient world: stars, Triax summoning, earthquake progression, and
-// clawed-robot respawns. Waterline movement and the Triax-lab maggot
-// machinery live in update_water / WaterlineManager (TODO — not yet
-// ported). The star-field slice lives at the end of the routine
-// (&26c8-&26e6) and is also the first thing the 6502 does after
-// picking a random nearby tile.
-//
-// Each sub-event is gated on its own timer flag so we stay broadly
-// faithful without carrying the 6502's zero-page state layout.
+// Port of update_events (&259a-&2742): stars, Triax summoning, earthquake,
+// clawed-robot respawns. Waterline + Triax-lab maggots TODO.
 void Game::update_events() {
     const Object& player = object_mgr_.player();
 
-    // -----------------------------------------------------------------
-    // Random-tile star-field spawn (&26c8-&26e6)
-    // -----------------------------------------------------------------
-    // The 6502 picks a random tile ±3-4 of the player and, if it's above
-    // the surface line and not inside a spaceship, drops a STAR_OR_
-    // MUSHROOM particle. STAR TTL range is 8..0x23 frames, so one spawn
-    // per frame settles into ~20 stars visible at once on the BBC's
-    // tiny ~7×8 visible area.
-    //
-    // Our viewport is much larger (a 1920×1080 framebuffer at 1× zoom is
-    // ~60×33 tiles), so the BBC's ±4 spawn box only fills a small patch
-    // around the player. Sample across the actual viewport extent
-    // instead, and scale the per-frame spawn count proportionally so
-    // density stays comparable to the original.
+    // Random-tile star-field spawn (&26c8-&26e6). Port-only: sample across
+    // the actual viewport extent (not BBC's ±4 box) and scale spawn count
+    // so star density matches the original on our wider viewport.
     int vp_w = renderer_->viewport_width_tiles();
     int vp_h = renderer_->viewport_height_tiles();
     if (vp_w < 8) vp_w = 8;
@@ -1021,17 +950,9 @@ void Game::update_events() {
         uint8_t tx = static_cast<uint8_t>(player.x.whole + dx_rand - 3);
         uint8_t ty = static_cast<uint8_t>(player.y.whole + dy_rand - 3);
 
-        // &3fd2 update_mushroom_tile's EVENTS branch (&3fde-&3fe9). The
-        // 6502 reaches this via get_random_tile_near_player calling each
-        // tile's update routine with TILE_PROCESSING_FLAG_EVENTS set; our
-        // port inlines the dispatch right here since the random-tile pick
-        // has already been done for the star spawn above.
-        //
-        // Red (not v-flipped) mushroom balls spawn at y_fraction = 0xff
-        // (tile bottom), blue (v-flipped) at 0x00 (tile top). Cap total
-        // at 4 balls per type via the &4028 CPY #&04 check, so mushrooms
-        // can't carpet the world. Random x_fraction inside the tile
-        // matches the &403c rnd_state+1 store.
+    // &3fd2 update_mushroom_tile EVENTS branch (&3fde-&3fe9). Red spawns at
+    // y_frac=0xff (tile bottom), blue v-flipped at 0x00. &4028 CPY #&04
+    // caps at 4 per type. Port inlines the dispatch (tile pick done above).
         uint8_t tile = landscape_.get_tile(tx, ty);
         uint8_t type = tile & TileFlip::TYPE_MASK;
         if (type == static_cast<uint8_t>(TileType::MUSHROOMS)) {
@@ -1053,24 +974,10 @@ void Game::update_events() {
         }
     }
 
-    // -----------------------------------------------------------------
-    // NEST / PIPE creature spawn (port of &3e1b update_nest_or_pipe_
-    // tile's consider_spawning branch at &3e48). Scan the 9x9 tile
-    // window around the player — for each resolved NEST or PIPE tile
-    // with creatures remaining and the active bit clear, roll a per-
-    // frame chance to spawn one creature of the tertiary's type.
-    //
-    // Live scan (rather than a pre-computed list): the 6502 doesn't
-    // store a y per tertiary entry, so there's no canonical "pipe
-    // position" to pre-compute. resolve_tile_with_tertiary walks the
-    // landscape and tells us what each nearby tile actually resolves
-    // to — including any that the procedural terrain lands on.
-    //
-    // 81 landscape lookups per frame is trivial; gating spawning on
-    // player proximity emulates the 6502's collision-triggered behaviour
-    // (consider_spawning only runs when tile_processing_mode has no
-    // plot/events flag, i.e. collision processing).
-    // -----------------------------------------------------------------
+    // &3e1b update_nest_or_pipe_tile's consider_spawning branch (&3e48).
+    // Live 9x9 scan via resolve_tile_with_tertiary (no canonical pipe y in
+    // tertiary storage). Proximity gate emulates the 6502 only running
+    // this on collision-mode tile processing.
     for (int dy = -4; dy <= 4; dy++) {
         for (int dx = -4; dx <= 4; dx++) {
             uint8_t tx = static_cast<uint8_t>(player.x.whole + dx);
@@ -1112,19 +1019,10 @@ void Game::update_events() {
                 sprite_h_byte = static_cast<uint8_t>((h > 0 ? (h - 1) : 0) * 8);
             }
 
-            // &4075-&407e set y_fraction so the spawn sits at the EMPTY
-            // edge of the nest tile, away from the solid region:
-            //   v-flipped tile  -> y_frac = 0       (spawn at top)
-            //   not v-flipped   -> y_frac = ~height (spawn at bottom)
-            // create_object left y_frac at 0x80 (tile centre) which
-            // drops the bird straight into the tile's solid pattern
-            // (for nest-adjacent tiles like leaves / branches) — its
-            // velocity never builds past the bounce-reflect threshold
-            // so the bird sits at the spawn point forever.
-            //
-            // Note: &3e72-&3e74 then overwrite flags back to 0x05 after
-            // create_primary_object_from_tertiary sets flip bits — birds
-            // from nests deliberately do NOT inherit the tile's flip.
+            // &4075-&407e set y_fraction to the EMPTY edge of the nest tile
+            // (top if v-flipped, bottom otherwise) so the spawn doesn't drop
+            // into the tile's solid pattern. &3e72-&3e74 then force flags to
+            // 0x05 — nest birds intentionally don't inherit tile flip.
             bool v_flipped = (res.tile_and_flip & TileFlip::VERTICAL) != 0;
             spawn.y.fraction = v_flipped
                 ? 0x00
@@ -1146,34 +1044,21 @@ void Game::update_events() {
             // This overrides whatever &4072 set.
             spawn.x.fraction = static_cast<uint8_t>((~sprite_w_byte & 0xff) >> 1);
 
-            // &4081-&4083 store this_object_tertiary_data_offset into the
-            // primary so return_to_tertiary can credit the creature back
-            // to the nest. Without this the nest drains permanently —
-            // birds never come back, and after four spawns the tile is
-            // silent forever.
-            // uint16_t — see tertiary_spawn.cpp:253 for why not uint8_t.
+            // &4081-&4083 store tertiary_data_offset so return_to_tertiary
+            // can credit the creature back to the nest (else nest drains
+            // permanently). uint16_t — see tertiary_spawn.cpp:253.
             spawn.tertiary_slot = static_cast<uint16_t>(res.data_offset);
 
-            // &3e6d-&3e6f SBC #&03 with carry clear = subtract four: clears
-            // bit 2 of the data byte (the lowest creature-count bit),
-            // decrementing remaining creatures by one.
+            // &3e6d-&3e6f SBC #&03 with carry clear = subtract 4: decrements
+            // remaining creature count (bit 2 = low count bit).
             object_mgr_.set_tertiary_data_byte(
                 res.data_offset, static_cast<uint8_t>(data - 4));
         }
     }
 
-    // -----------------------------------------------------------------
-    // Earthquake progression (&25e2-&2610)
-    // -----------------------------------------------------------------
-    // earthquake_state_ is negative while an earthquake is running. Each
-    // tick it may increment (worsening) based on the timer AND'd with
-    // rnd, with the effect that it worsens more quickly early and tapers
-    // toward 0x21 (comment at &25f3: "Then decreasingly frequently").
-    //
-    // We skip the screen-shudder hardware register writes (&2604-&260a)
-    // — they poke the BBC video chip's R2 sync position to visibly
-    // wobble the raster. A framebuffer renderer would need an
-    // equivalent offset hook; TODO.
+    // Earthquake progression (&25e2-&2610). negative state = running;
+    // worsens more quickly early, tapers toward 0x21. Skipped: BBC R2
+    // sync register writes (&2604-&260a) for raster shudder — TODO.
     if (earthquake_state_ & 0x80) {
         uint8_t a = static_cast<uint8_t>(earthquake_state_ << 1);
         // CMP rnd: carry set more often as earthquake progresses.
@@ -1184,17 +1069,10 @@ void Game::update_events() {
         }
     }
 
-    // -----------------------------------------------------------------
-    // Triax summoning (&26e6-&2711)
-    // -----------------------------------------------------------------
-    // Conditions for considering a summon:
-    //   * late earthquake OR world flooding OR every-32-frames flag,
-    //     then 1-in-256 chance per frame.
-    //   * Player in the lower world (y >= 0x94) unless flooding — Triax
-    //     doesn't wander up to the surface until endgame.
-    //   * Not already present as a primary.
-    // On success, OBJECT_TRIAX is spawned at y=0xfe (bottom of world) so
-    // it teleports up toward the player on its first update tick.
+    // Triax summoning (&26e6-&2711). Trigger gate: (late earthquake OR
+    // flooding OR every-32-frames) AND 1/256, AND player y>=0x94 unless
+    // flooding, AND not already primary. Spawns at y=0xfe so first tick
+    // teleports him up to the player.
     {
         // &26e6-&26f2 trigger: `(late_earthquake AND flooding_state) OR
         // every_32_frames` at bit 7. late_earthquake on its own never
@@ -1383,21 +1261,10 @@ void Game::drop_held_object(Object& player) {
     HeldObject::drop(held, player, held_object_slot_);
 }
 
-// Port of &4a70-&4a87 blaster discharge tick. While the timer is negative
-// the player acts as a duration-10 explosion source for a frame: damage
-// and push radiate out via apply_explosion_radius (the same accelerate_
-// all_objects routine update_explosion uses). The timer was set to -5 by
-// Weapon::fire so the discharge runs for 5 frames; energy is paid up
-// front, not per tick.
-// Port of &1f97 update_background_flash. Per-frame DEC of the cooldown;
-// while it's still > 0, flicker the sky between black (7-in-8) and
-// white (1-in-8). When the cooldown reaches 0, restore black. The
-// random-byte test (`AND #&20; BEQ`) gives the same 1/8 split as the
-// 6502.
-//
-// The 6502 writes palette register 0 (`STA &11e5`); we don't have BBC
-// palette registers so we route the chosen colour into the renderer's
-// clear_colour, which begin_frame uses for the framebuffer fill.
+// &4a70 blaster discharge: while timer < 0, player acts as a duration-10
+// explosion source for 5 frames (timer set to -5 by Weapon::fire).
+// &1f97 update_background_flash routes the BBC palette-0 swap (1/8 white,
+// 7/8 black via AND #&20; BEQ) into the renderer's clear_colour.
 void Game::update_background_flash() {
     if (background_flash_cooldown_ == 0) return;
     background_flash_cooldown_--;
@@ -1451,17 +1318,10 @@ void Game::tick_blaster() {
                                            ? &damage_events_ : nullptr);
 }
 
-// Port of &4096 consider_teleporting_damaged_player. Runs only when the
-// player's energy would hit zero. INCs energy back to 1 so the rest of
-// the frame doesn't treat the player as dead, then splits on a 1/2 roll:
-//   teleport      drop held + count the death + handle_teleporting.
-//   stay-put      drop held.
-//
-// Deviation from 6502: the original's skip-teleport branch at &40ac-&40b8
-// pulls an item out of the pocket stack (1/4 chance if hands empty) and
-// then unconditionally drops it on the ground as a near-death penalty.
-// We suppress that retrieve step — pocket items stay in the pocket. The
-// held-object drop still fires so your hands are empty either way.
+// Port of &4096 consider_teleporting_damaged_player. INCs energy to 1 then
+// 1/2 roll: teleport (drop held + count death) or stay-put (drop held).
+// Deviation: skip the &40ac-&40b8 pocket-retrieve-and-drop penalty —
+// pocket items stay put, held-drop still fires.
 void Game::consider_teleporting_damaged_player(Object& player) {
     player.energy = 1;  // &409a INC this_object_energy
 
@@ -1513,16 +1373,9 @@ void Game::handle_player_teleporting(Object& player) {
     player.timer = 0x20;   // 32 frames: 16 at old pos, 16 at new.
 }
 
-// Drive the OBJECT_FLAG_TELEPORTING animation for the player. Port of the
-// main-loop teleport section at &1bfd-&1c44 (which the object loop runs
-// for every primary but skips for slot 0).
-//
-// Timeline, counting down from 0x20:
-//   0x11  this_object_y := 0x11 → briefly remove object; mark player
-//         completely dematerialised (&1c10).
-//   0x10  position := (tx, ty), fraction centered (&1c1e), velocities
-//         zeroed, player no longer dematerialised (&1c1b).
-//   0x00  clear TELEPORTING, +1 energy (&1c3e-&1c44).
+// Port of &1bfd-&1c44 teleport animation (main loop runs it for every
+// primary but skips slot 0). Timeline from 0x20: 0x11 dematerialise,
+// 0x10 reposition + zero velocity, 0x00 clear flag + +1 energy.
 bool Game::advance_player_teleport(Object& player) {
     if (!(player.flags & ObjectFlags::TELEPORTING)) return false;
 

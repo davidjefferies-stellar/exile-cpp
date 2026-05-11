@@ -25,30 +25,13 @@ static uint8_t rotate_colour_from_A(Object& obj, uint8_t a) {
     return idx;
 }
 
-// Port of explode_object_with_duration_A at &40db-&40ed.
-//
-//   STA this_object_tertiary_data_offset  ; duration counter
-//   LDA #&44 (OBJECT_EXPLOSION); STA this_object_type
-//   LDA #&ce; STA explosion_timer          ; -50 = active for 50 frames
-//
-// The 6502 mutates ONLY `type` and `tertiary_data_offset` (plus the
-// global explosion_timer). Sprite, palette, energy, position, and
-// every other field stay exactly as the source object had them. From
-// the next tick on, update_explosion runs in this slot instead of the
-// source's update routine, decrementing duration and writing a random
-// palette value (`rng & 0x13`) into obj.palette every frame.
-//
-// The visible effect is the SOURCE'S sprite cycling through random
-// palettes for the duration — a door explodes by flickering its door
-// shape through colours, a grenade flickers its ball shape, etc.
+// &40db-&40ed explode_object_with_duration_A. Mutates ONLY type and
+// tertiary_data_offset; sprite/palette/energy/pos stay. update_explosion
+// then takes over and flickers the source sprite through random palettes.
 void explode_object_with_duration(Object& obj, uint8_t duration) {
     obj.tertiary_data_offset = duration;
     obj.type = ObjectType::EXPLOSION;
-    // sprite, palette, energy, position, timer all left intact — they
-    // belong to the source object and update_explosion will keep
-    // overwriting palette per-frame anyway.
-    // &40e8: global explosion_timer drives the screen flash; not yet
-    // wired into the renderer.
+    // &40e8 global explosion_timer (screen flash) not wired to renderer.
 }
 
 // Port of &4005 add_to_player_mushroom_timer. Adds 0x3f (+optional 1 from
@@ -180,23 +163,17 @@ static void orient_bullet_to_angle(Object& obj, uint8_t angle) {
     }
 }
 
-// Port of &441b / &46bf bullet main body. Explodes if:
-//   - touching a damageable object (damages it first)
-//   - hit a solid tile (tile_collision was flagged during last physics step)
-//   - lifespan timer hit zero
-// Otherwise just face the direction of travel.
+// &441b / &46bf bullet main body. Explodes on damage-target touch,
+// solid-tile collision, or timer==0; otherwise faces velocity.
 static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage) {
     // &1faf: touching a damageable target?
     int tgt = bullet_touching_damageable(obj, ctx.mgr);
     if (tgt >= 0) {
         Object& target = ctx.mgr.object(tgt);
 
-        // Port of &2bb6 apply_collision_to_objects_velocities. The 6502
-        // runs check_for_collisions BEFORE the per-type update, so the
-        // mass-ratio kick has already landed on the target by the time
-        // update_bullet sees the touch and explodes itself. Apply both
-        // axes here, with doubling on whichever has the larger speed
-        // (smallest-overlap axis ≈ direction of approach).
+        // &2bb6 apply_collision_to_objects_velocities. 6502 ran this
+        // BEFORE per-type update; we run it here. Doubling on larger-
+        // speed axis ≈ direction of approach.
         bool x_dominant = std::abs(obj.velocity_x) >= std::abs(obj.velocity_y);
         auto vx = Collision::apply_mass_ratio_velocity(
             obj.velocity_x, target.velocity_x,
@@ -222,11 +199,7 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
             ev.amount = hurt;
             ctx.damage_events->push_back(ev);
         }
-        // &4425-&4428 explode_bullet sound (channel zero, bullet pop).
-        // Distinct from the generic explosion sound played in step 12 —
-        // this is the short "ptack" the SN76489's noise channel plays
-        // when a bullet hits something. The 6502 always plays this
-        // before turning the bullet into a fireball.
+        // &4425-&4428 explode_bullet sound (SN76489 noise channel "ptack").
         static constexpr uint8_t kSoundBulletPop[4] = { 0x17, 0x03, 0x1b, 0x02 };
         Audio::play_at(Audio::CH_PRIORITY, kSoundBulletPop,
                        obj.x.whole, obj.y.whole);
@@ -244,18 +217,9 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
     // &4439: tile collision → explode. The 6502's SBC #&14 / distance check
     // isn't ported yet; we just explode on any solid-tile collision.
     if (obj.tile_collision) {
-        // Port-only: redirect tile_collision-against-a-door-tile into
-        // damage on the door's primary. The substituted door
-        // obstruction (SPACESHIP_WALL_HORIZONTAL_QUARTER thin top
-        // slab, or STONE_SLOPE_78 quarter-solid) sits ABOVE where the
-        // door's primary AABB lives — bullets get caught by the
-        // substituted tile pattern before their AABB reaches the
-        // primary, so object-vs-object touching never fires and
-        // common damage path doesn't run. Walk a few tiles around
-        // the bullet's bottom edge looking for a METAL_DOOR /
-        // STONE_DOOR landscape tile, find the primary owning that
-        // tertiary slot, and damage it the same way a regular touch
-        // would.
+        // Port-only: tile-collision-vs-door-substitute tile → damage door
+        // primary. Substituted obstruction sits above the primary AABB so
+        // object-vs-object touching never fires; we resolve manually.
         int sprite_h = (obj.sprite <= 0x80)
                        ? sprite_atlas[obj.sprite].h : 1;
         int sprite_h_frac = (sprite_h > 0 ? sprite_h - 1 : 0) * 8;
@@ -310,28 +274,9 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
     orient_bullet_to_angle(obj, angle);
 }
 
-// &42F7 update_active_grenade. Port of the full detonation chain.
-//
-//   JSR check_if_object_fired (&0bbf) — if the player just threw this
-//     exact slot, un-activate: timer=0, type = INACTIVE_GRENADE. This
-//     lets the player cancel an accidental arm by re-pocketing the
-//     grenade before the fuse burns down. TODO: requires
-//     player_object_fired tracking; not yet wired.
-//
-//   Destroyed-mid-air path (&4305-&430d): if energy==0 (something
-//     damaged the grenade to death), explode_object_with_duration 10 —
-//     a short, weak explosion.
-//
-//   Fuse-expiry path (&430d-&4311): when timer hits 0x60 (96 frames),
-//     explode_object_with_duration 16 — the full grenade bang.
-//
-//   Otherwise (&4316-&4325): increment timer, rotate palette through the
-//     4-entry table at &4dd4, and play the "tick" sound once per 16
-//     frames when the palette index wraps to 0.
-//
-// We mutate the primary in-place on explosion so chain reactions and
-// bystander damage land on the original slot (see
-// explode_object_with_duration above).
+// &42F7 update_active_grenade. Destroyed (energy==0) → duration 10;
+// fuse expiry (timer==0x60) → duration 16; else tick palette through
+// &4dd4 table and play tick sound. Player-cancel via &0bbf is TODO.
 void update_active_grenade(Object& obj, UpdateContext& ctx) {
     // &4305-&4309: destroyed → quick explosion (duration 10).
     if (obj.energy == 0) {
@@ -374,19 +319,9 @@ void update_active_grenade(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// Port of the trail emission at &46d9-&46e9 inside update_bullet_with_
-// particle_trail. The 6502 flips the bullet's angle by &80 (EOR) so the
-// particle leaves the rear of the bullet, overrides the PARTICLE_
-// PROJECTILE_TRAIL colour from a per-bullet table, and adds one
-// particle. Our particle code doesn't yet honour per-emit colour
-// overrides; we still emit the trail so the bullet has a visible
-// streak, just with the type's default colour.
-//
-// Colour table from &46ec:
-//   OBJECT_ICER_BULLET     (&13) → green or yellow (random 1 of 2)
-//   OBJECT_TRACER_BULLET   (&14) → blue or magenta
-//   OBJECT_CANNONBALL      (&15) → cycle all colours
-//   OBJECT_BLUE_DEATH_BALL (&16) → cycle all colours
+// &46d9-&46e9 trail emission inside update_bullet_with_particle_trail.
+// Port simplification: skips the per-bullet colour override table at
+// &46ec (icer/tracer/cannonball/blue death ball) — uses type default.
 static void emit_projectile_trail(Object& obj, UpdateContext& ctx) {
     if (!ctx.particles) return;
     ctx.particles->emit(ParticleType::PROJECTILE_TRAIL, 1, obj, ctx.rng);
@@ -402,35 +337,18 @@ void update_icer_bullet(Object& obj, UpdateContext& ctx) {
     emit_projectile_trail(obj, ctx);
 }
 
-// &4614: Tracer bullet — never expires, homes on player.
-//
-//   &4614 JSR increase_energy_by_one      ; cancel move_bullet's decrement
-//   &4617 LDA #&08                        ; explosion duration
-//   &4619 LDX #&0f                        ; damage 15
-//   &461b JSR update_bullet_with_particle_trail
-//   &461e JMP consider_moving_towards_player
-//
-// In our port the lifespan counter is obj.timer (not obj.energy), so we
-// pre-increment obj.timer to cancel common_bullet_update's decrement.
-// Net effect: timer stays constant — tracer never times out, matching
-// the 6502.
-//
-// Also re-orient AFTER the homing nudge so the sprite reflects the
-// post-homing velocity (the 6502 has the same one-frame staleness, but
-// our +1/frame homing changes direction more often than the 6502's
-// 1-in-4 magnitude-0x40 cadence, making the staleness more visible).
+// &4614 Tracer bullet. Never expires (pre-increment timer to cancel
+// move_bullet's decrement), homes on player, explodes for 8/damage 15.
+// Re-orient AFTER homing — our +1/frame nudge changes direction often
+// enough that the 6502's one-frame staleness becomes visible.
 void update_tracer_bullet(Object& obj, UpdateContext& ctx) {
     // &4614 increase_energy_by_one — but timer is the equivalent here.
     if (obj.timer < 0xff) obj.timer++;
 
     common_bullet_update(obj, ctx, 15);
 
-    // &4686 DEC acceleration_y — cancel gravity for the tracer. The
-    // 6502 walks tracers as flying enemies (no gravity); without this
-    // gravity's +1/frame velocity_y cancels the homing's -1/frame
-    // when the player is above the bullet, so the tracer can never
-    // rise. X tracking still works (gravity doesn't touch velocity_x),
-    // which is exactly the "homes on X but not Y" failure mode.
+    // &4686 DEC acceleration_y — tracers are flying enemies (no
+    // gravity); without this the tracer can't rise toward a player above.
     NPC::cancel_gravity(obj);
 
     // &467a-&4683 consider_moving_towards_player: homing on player.
@@ -442,13 +360,9 @@ void update_tracer_bullet(Object& obj, UpdateContext& ctx) {
     if (dy > 0 && obj.velocity_y <  0x20) obj.velocity_y++;
     if (dy < 0 && obj.velocity_y > -0x20) obj.velocity_y--;
 
-    // Re-orient the sprite to the post-homing velocity so the bullet
-    // visibly tracks its current motion. The 6502 doesn't do a second
-    // orient call here — the angle from move_bullet's earlier call is
-    // baked in until next frame — but matching the homing changes from
-    // every frame +1 to every-4-frame +8 would require porting
-    // move_towards_target_with_probability and the rng gate; an extra
-    // re-orient is the cheaper way to keep the sprite in sync.
+    // Port-only extra orient: cheaper sprite-sync than porting the
+    // every-4-frame +8 homing and rng gate from
+    // move_towards_target_with_probability.
     uint8_t angle = calculate_angle_from_velocities(obj.velocity_x,
                                                     obj.velocity_y);
     orient_bullet_to_angle(obj, angle);
@@ -507,13 +421,10 @@ void update_pistol_bullet(Object& obj, UpdateContext& ctx) {
     emit_projectile_trail(obj, ctx);
 }
 
-// &4A88: Plasma ball — on object contact, turn it into a short fireball.
-// Otherwise, reduce energy each frame; while underwater, 1-in-4 random
-// removal; when out of energy, explode. Falls under gravity like any
-// weight-4 projectile — the 6502 doesn't touch acceleration_y in this
-// routine, so the main loop's +1-per-frame gravity stands.
-// TODO: particle emission (add_plasma_particles &4aa7), fireball conversion
-// on object-type match (&4a8d-&4a90 needs collides_with_plasma_ball).
+// &4A88 update_plasma_ball. On contact → fireball; underwater 1-in-4
+// removal; energy=0 → explode. Falls under main-loop gravity (6502
+// doesn't touch acceleration_y here). TODO: &4aa7 particles, &4a8d
+// fireball type-match.
 void update_plasma_ball(Object& obj, UpdateContext& ctx) {
     // &4a88: if touching another object, turn that object into a duration-13
     // fireball (the plasma ball "becomes" the fireball in the same slot).
@@ -549,15 +460,9 @@ void update_plasma_ball(Object& obj, UpdateContext& ctx) {
     if (ctx.particles) ctx.particles->emit(ParticleType::PLASMA, 1, obj, ctx.rng);
 }
 
-// &4101-&4154: Lightning size state machine.
-//   state  = signed size, range [-4, +4]. Positive = growing, negative =
-//            shrinking (then removed at 0).
-//   timer  = counts down from 0 into negatives; at -25 turns growth into
-//            shrink (&412b CMP #&e7).
-// Each frame: damages touching non-chatter object for 80; if collided or
-// already shrinking, flip sign of size (or snap to -2 if we'd hit 0);
-// grow/shrink by 1; clamp to [-4,+4]; set sprite from |size|; flip v each
-// frame, flip h every 2; cancel gravity; carry previous velocity forward.
+// &4101-&4154 lightning. state = signed size in [-4,+4] (pos grow, neg
+// shrink → remove at 0); timer counts down, at -25 (&412b CMP #&e7)
+// flips growth to shrink.
 void update_lightning(Object& obj, UpdateContext& ctx) {
     auto s8 = [](uint8_t u) { return static_cast<int8_t>(u); };
 
@@ -639,11 +544,9 @@ void update_lightning(Object& obj, UpdateContext& ctx) {
     // fields are part of Object.
 }
 
-// &4698: Mushroom balls (red and blue) — on contact with a fireball convert
-// to a coronium crystal. Otherwise reduce lifespan each frame; when touched
-// (or at end of life) there is a 1-in-2 chance of exploding. The explosion
-// adds 0x3f to the player's red or blue mushroom timer (selected by the
-// parity of the palette byte) then removes the ball.
+// &4698 mushroom balls. Fireball touch → coronium crystal. Touch or
+// timer-end → 1-in-2 explode and add 0x3f to red/blue mushroom timer
+// (palette parity selects which).
 void update_red_mushroom_ball(Object& obj, UpdateContext& ctx) {
     // &4698-&46a3: touching a fireball → convert to coronium crystal.
     bool touching = (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS);
@@ -725,14 +628,9 @@ void update_red_drop(Object& obj, UpdateContext& ctx) {
             should_explode = true;
         }
     } else if (obj.tile_collision) {
-        // Port-only: same door-tile redirect as common_bullet_update.
-        // The substituted door obstruction (SPACESHIP_WALL_HORIZONTAL_
-        // QUARTER thin top slab) catches the drop above the door
-        // primary's AABB, so object-vs-object touching never fires
-        // and the drop's 100-damage payload is wasted on the empty
-        // tile. Walk a tile or two around the drop's bottom edge for
-        // a METAL_DOOR / STONE_DOOR landscape tile and apply the
-        // 100-damage hit to the door's primary directly.
+        // Port-only door-tile redirect (same as common_bullet_update).
+        // Substituted obstruction catches drop above the primary AABB
+        // → resolve the 100-damage hit manually.
         int sprite_h = (obj.sprite <= 0x80)
                        ? sprite_atlas[obj.sprite].h : 1;
         int sprite_h_frac = (sprite_h > 0 ? sprite_h - 1 : 0) * 8;
@@ -777,11 +675,8 @@ void update_red_drop(Object& obj, UpdateContext& ctx) {
         }
         should_explode = true;
     }
-    // 6502 &47b6-&47bb: explode_red_drop calls explode_object_with_
-    // duration_A_but_no_sound with A=0. Going via energy=0 instead
-    // would route through the generic (init_energy/32)+3 fallback in
-    // object_update.cpp step 12, giving duration 4 — ~4× the particles
-    // and a non-zero acceleration radius pushing nearby objects.
+    // &47b6-&47bb explode_red_drop uses duration_A_but_no_sound A=0.
+    // Energy=0 path would fall through to duration 4 in step 12.
     if (should_explode) {
         // &47b6 JSR play_high_beep — high-pitched chirp on red drop
         // popping. The "_but_no_sound" explosion path means this is
@@ -795,13 +690,8 @@ void update_red_drop(Object& obj, UpdateContext& ctx) {
     if (obj.velocity_y < 0x40) obj.velocity_y++;
 }
 
-// &4AD6: Fireball — stationary fire. Port of update_fireball.
-//
-// The 6502 also animates the palette by cycling through a small table,
-// flips the sprite randomly each frame, and — importantly — emits one
-// PARTICLE_FIREBALL per frame with angle=0xc0 (upward). Without the
-// particles the fire looks flat; our palette cycle was already in
-// place but the rising-ember effect was missing.
+// &4AD6 update_fireball. Stationary fire: palette cycle, random flip,
+// one upward PARTICLE_FIREBALL/frame (angle=0xc0) for the ember effect.
 void update_fireball(Object& obj, UpdateContext& ctx) {
     NPC::damage_player_if_touching(obj, ctx.mgr.player(), 8, ctx.damage_events);
 
@@ -862,21 +752,9 @@ void update_explosion(Object& obj, UpdateContext& ctx) {
                            obj.tertiary_data_offset, ctx.damage_events);
 }
 
-// Port of &4fd8-&4fe2 + accelerate_all_objects (&343a-&34b0).
-//
-//   LDA duration; CMP #&08; ROR &28    — damages targets when
-//     duration >= 8 (long explosions only).
-//   LDA duration; ASL; ASL; STA &35    — acceleration_power =
-//     duration * 4. 1 duration → 4 sub-tile units = 0.5 tile radius.
-//
-// For each target slot (skipping source_slot, or the by-pointer source
-// if source_slot is negative):
-//   weight_factor = weight * 2 + 8          (heavier = less pushable)
-//   remaining     = power − weight_factor − distance
-//   if remaining < 0            → skip
-//   if damages && remaining >=4 → damage_object(remaining * 2)
-//   if weight == 7              → skip push (static)
-//   push magnitude = remaining / 2, direction = source → target
+// &4fd8-&4fe2 + accelerate_all_objects (&343a-&34b0). power = duration*4,
+// damages only when duration>=8. Per target: remaining =
+// power - (weight*2+8) - distance; skip if <0; weight==7 means no push.
 void apply_explosion_radius(ObjectManager& mgr, const Object& source,
                             int source_slot, uint8_t duration,
                             std::vector<DamageVisual>* damage_events) {

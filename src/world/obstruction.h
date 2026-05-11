@@ -2,19 +2,9 @@
 #include <cstdint>
 #include <array>
 
-// Obstruction patterns from &0100-&01a0. Each pattern is 8 bytes.
-// Indexed by x-section (sub_x >> 5, i.e. 0-7 eighths of a tile horizontally).
-// Each byte is a Y threshold in 0..255 tile-fraction units describing the
-// surface line of the obstruction at that x-section. Point (x_frac, y_frac) is
-// obstructed when threshold < y_frac (for a non-v-flipped tile), i.e. the
-// point lies below the surface line.
-//
-// Values:
-//   - All zeros (pattern 0): surface at top of tile → solid throughout
-//     (everything below y=0 is solid, so entire tile is solid for y>0).
-//   - All 0xff: produces "whole tile clear" for non-flipped (or all solid
-//     for v-flipped). The original also triggers this via y_offset overflow.
-//   - Slopes: rising/falling threshold across the 8 x-sections.
+// &0100-&01a0 obstruction patterns: 8 Y-thresholds per pattern, indexed
+// by x-section (sub_x >> 5). Point obstructed when threshold < y_frac
+// for non-flipped. All-0xff → whole tile clear; also via y_offset overflow.
 namespace Obstruction {
 
 static constexpr std::array<std::array<uint8_t, 8>, 21> patterns = {{

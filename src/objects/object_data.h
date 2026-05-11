@@ -91,26 +91,10 @@ static constexpr uint8_t object_types_palette_and_pickup[] = {
     0x32, 0x35,
 };
 
-// Per-type high byte from the 6502's object_types_update_routine_addresses
-// _high_table at &0446-&04aa. Step 12 of update_objects (port of &1ce3-&1cf3)
-// reads `(byte & 0xc0)` to dispatch the energy=0 explosion routine:
-//
-//   0x00 indestructible       — consider_teleporting_damaged_player (no-op
-//                                for non-player, i.e. the object stays at
-//                                energy 0 but is NOT removed / mutated)
-//   0x40 explode loud squeal
-//   0x80 explode no squeal     — turn into fireball
-//   0xc0 explode with squeal
-//
-// We only consult bit 6 and 7 in the port; the other bits are the routine
-// address bits, irrelevant once we dispatch on object type directly. Keep
-// the byte intact so future ports of the &xx-encoded effects don't have
-// to reverse-engineer the table.
-//
-// EMPTY_FLASK (&4c) = 0x05, FULL_FLASK (&4d) = 0x05, both indestructible —
-// without consulting this table, a flask near a grenade explosion has its
-// energy hit 0 and step 12 transmutes it into an EXPLOSION sprite. The
-// 6502 leaves the flask sitting there at energy 0.
+// Per-type high byte from &0446-&04aa object_types_update_routine_
+// addresses_high_table. Step 12 (&1ce3-&1cf3) reads bits 6-7 for the
+// energy=0 dispatch: 0x00 indestructible, 0x40 explode loud, 0x80
+// fireball, 0xc0 explode + squeal. Flasks are 0x05 → indestructible.
 static constexpr uint8_t object_types_update_routine_addresses_high[] = {
     // &00-&0f
     0x0b, 0x0a, 0x88, 0x84, 0xcd, 0xcd, 0x86, 0x86,

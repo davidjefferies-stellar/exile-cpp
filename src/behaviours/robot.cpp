@@ -9,14 +9,9 @@
 
 namespace Behaviors {
 
-// Record a flip event in the lifecycle log whenever obj's h-flip bit
-// actually changed between `before_flip` and obj.flags. Skips the log if
-// the flag is unchanged so the output only shows real direction flips.
-// `before_flip` is the masked FLIP_HORIZONTAL bit captured *before* the
-// flip-candidate call (consider_face_movement_direction, the turret's
-// pivot xor, or any other site that might toggle facing). Encodes
-// velocity_x into the event's x slot (for "why did it flip") and new
-// facing into y (0 = right, 1 = left).
+// Debug log helper: record actual flip transitions only. before_flip is
+// the FLIP_HORIZONTAL bit captured before a flip-candidate call. Encodes
+// velocity_x in event.x ("why"), new facing in event.y.
 static void log_flip_if_changed(Object& obj, UpdateContext& ctx,
                                  uint8_t before_flip) {
     uint8_t after = obj.flags & ObjectFlags::FLIP_HORIZONTAL;
@@ -48,20 +43,13 @@ void update_turret(Object& obj, UpdateContext& ctx) {
     // turret is "recharging" and silently does nothing.
     if (obj.energy < 0x80) return;
 
-    // &276a-&2773 find_a_target_and_fire_at_it's RNG gate. The turret
-    // fires with probability ((energy >> 3) + 2) / 256 per frame —
-    // ~13% at full energy, dropping off as it takes damage. This is
-    // what gives 6502 turrets their sporadic "pop … pop" cadence
-    // rather than a fixed 8-frame rhythm. At 50 fps expect ~6.5
-    // shots/second when fresh.
+    // &276a-&2773 RNG gate: prob ((energy>>3)+2)/256 per frame. Gives
+    // turrets their sporadic "pop … pop" cadence vs a fixed 8-frame rhythm.
     uint8_t threshold = static_cast<uint8_t>((obj.energy >> 3) + 2);
     if (ctx.rng.next() >= threshold) return;
 
-    // Line-of-sight gate. Turrets fire via `find_a_target_and_fire_at_it`
-    // at &4f0d → `find_object` at &3c2a, which applies the randomised
-    // &3cb5 cap — the same LOS path the rolling / hovering / clawed
-    // robots use. has_line_of_sight_randomized reproduces that cap, not
-    // the fixed 16-tile `_80` variant.
+    // LOS via &4f0d → &3c2a randomised cap (&3cb5), not the fixed
+    // 16-tile _80 variant — same path the other robots use.
     if (!NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
         return;
     }
@@ -74,11 +62,8 @@ void update_turret(Object& obj, UpdateContext& ctx) {
         return; // out of range / would exceed speed cap
     }
 
-    // &27a3-&27af: if the shot would go behind the turret, don't fire —
-    // flip to face the target instead and wait for next frame. This is
-    // the 6502's "rotate to face player" behaviour: turrets pivot one
-    // frame, shoot the next. `vector_x == 0` is treated as right-facing
-    // (matches the 6502's BMI/BPL split).
+    // &27a3-&27af pivot-to-face: shot behind turret → flip and wait a
+    // frame. vector_x==0 treated as right-facing (6502 BMI/BPL split).
     bool facing_left = obj.is_flipped_h();
     bool want_left   = (aim_vx < 0);
     if (facing_left != want_left) {
@@ -89,13 +74,8 @@ void update_turret(Object& obj, UpdateContext& ctx) {
         return;
     }
 
-    // &4ed8-&4edb: bullet type lives in the tertiary data byte itself.
-    //   LSR A                ; carry = .......1 (inactive flag)
-    //   BCS leave            ; (handled at top of routine)
-    //   TAX                  ; X = data >> 1 = bullet object type
-    // So data = (bullet_type << 1) | inactive_bit. Standard turret data
-    // bytes are 0x26 (ICER), 0x28 (TRACER), 0x30 (PISTOL); the low bit
-    // marks inactive.
+    // &4ed8-&4edb data = (bullet_type<<1) | inactive_bit. Standard
+    // turret data: 0x26 ICER, 0x28 TRACER, 0x30 PISTOL.
     ObjectType bullet = ObjectType::PISTOL_BULLET;
     {
         uint8_t data = obj.tertiary_data_offset;
@@ -127,14 +107,8 @@ void update_rolling_robot(Object& obj, UpdateContext& ctx) {
     // Only move if energy >= 0x80
     if (obj.energy < 0x80) return;
 
-    // Roll along ground: when velocity_x has decayed to 0 (either from
-    // collision bounce_reflect damping or inertia decay), resume in the
-    // direction the robot is currently FACING. face_movement_direction
-    // updates is_flipped_h from velocity_x sign on the frame the robot
-    // was last actually moving, so the facing reliably records "which
-    // way was I going last". Continuing in that direction keeps a
-    // stationary-post-bounce robot moving AWAY from whatever it just
-    // hit, rather than immediately rolling back into it.
+    // On vx==0, resume in facing direction so a post-bounce robot rolls
+    // AWAY from what it hit (facing tracks last-moving direction).
 
     if (obj.is_supported() && obj.velocity_x == 0) {
         obj.velocity_x = obj.is_flipped_h() ? -4 : 4;
@@ -148,12 +122,8 @@ void update_rolling_robot(Object& obj, UpdateContext& ctx) {
         log_flip_if_changed(obj, ctx, before_flip);
     }
 
-    // Fire at player. LOS-gated — 6502 routes through find_a_target_and_
-    // fire_at_it → find_object (&3c2a, carry clear) which runs LOS per
-    // fire attempt with a randomised cap (&3cb5 AND #&4f / EOR NOD).
-    // has_line_of_sight_randomized reproduces that cap faithfully; NOD
-    // defaults to 0xff to match find_object's initial state for a
-    // single-candidate (player-only) target pool.
+    // LOS-gated fire via &3c2a randomised cap (&3cb5). NOD=0xff matches
+    // find_object's initial state for the player-only target pool.
     if (ctx.every_sixteen_frames && obj.energy >= 0x80 &&
         NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
         const Object& player = ctx.mgr.player();
@@ -173,23 +143,9 @@ void update_rolling_robot(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4EE2: Blue rolling robot - faithful 6502 port.
-//
-//   &4ee2  LDX #&05                ; npc stimuli type
-//   &4ee4  JSR check_for_npc_stimuli
-//   &4ee7  JSR consider_updating_npc_path
-//   &4eea  LDX #&04                ; npc walking type 4
-//   &4eec  LDA #&18                ; speed = 24
-//   &4eee  JSR update_walking_npc_and_check_for_obstacles_with_speed_A
-//   &4ef1  JSR consider_flipping_object_to_match_velocity_x
-//   &4ef4  fall through to consider_firing
-//
-// Walking type 4's tables (&3962-&397e):
-//   max_angle = 0x20 (45°)   max_accel = 4   weight = 1
-//   turn_prob = 0            jump_prob = 0
-// → blue rolling robot is GROUND-WALKING only. It never jumps and never
-// reverses on obstacles; gravity owns velocity_y. Only set velocity_x;
-// let physics integrate gravity for vertical motion.
+// &4EE2 update_blue_rolling_robot. Walking type 4 (max_angle=0x20,
+// max_accel=4, weight=1, turn_prob/jump_prob=0) → ground-walking only;
+// gravity owns velocity_y. Only set velocity_x.
 void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
     // &4ee4: check_for_npc_stimuli (mood / phobia / interest reactions).
     Mood::update_mood(obj, ctx);
@@ -198,41 +154,19 @@ void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
     // the LOS-gated directness chain.
     NPC::update_npc_path(obj, ctx);
 
-    // &4eea-&4eee: update_walking_npc_and_check_for_obstacles, X=4,
-    // speed=0x18. The 6502 routine writes ACCELERATION (capped at
-    // max_accel=4 from table[4], split through cos/sin into _x/_y by
-    // the surface angle) and lets apply_acceleration_to_velocities
-    // integrate. The asymptote is velocity 0x18, with friction /
-    // walking-state damping holding it well below that in practice.
-    //
-    // Reduced port: ramp velocity_x by 1/frame toward a ±4 cap when
-    // supported. Speed lowered from the 6502's 0x18 setpoint to 4 to
-    // match the magenta/red rolling robot speed in our port — at 0x18
-    // the blue ran roughly 6× faster than its red/magenta siblings,
-    // reading as cartoonish. Supported gate mirrors the 6502 walker's
-    // "leave if not on walkable surface" path at &3b10, so the robot
-    // doesn't keep accelerating horizontally while in the air.
+    // &4eea-&4eee update_walking_npc reduced port. Speed lowered from
+    // 0x18 to 4 (port-only) so the blue isn't ~6x faster than red/magenta
+    // siblings. Supported gate matches the 6502 walker's &3b10 exit.
     constexpr int8_t kSpeed = 4;
-    // Per-frame velocity correction. The 6502 uses
-    // apply_weight_and_limit_to_acceleration at &3201 with
-    // max_accel = npc_walking_types_maximum_acceleration_table[4] = 4
-    // — that's the cap, not 1. With a ±1/frame ramp the robot took ~25
-    // frames to recover from a single bullet hit (mass-ratio transfer
-    // typically gives a weight-6 target a vx kick around 21 frac/frame
-    // from a weight-3 bullet at vx=30); ±4/frame brings it back in line
-    // with the 6502's ~6-frame recovery, so the robot reads as heavy.
+    // &3201 apply_weight_and_limit_to_acceleration. max_accel=4 is the
+    // CAP, not 1 — at 1 a heavy hit takes ~25f to recover vs the 6502's
+    // ~6f, making the robot read light.
     constexpr int8_t kMaxAccel = 4;
     if (obj.is_supported()) {
-        // Read the path target from obj.tx, NOT target.x.whole. The 6502's
-        // update_walking_npc at &3b08 calls set_this_object_relative_tx_ty
-        // which reads obj.tx/obj.ty as the destination — those are the
-        // OUTPUT of update_npc_path, not the live target's position.
-        // When LOS is blocked (door closed), update_target_directness
-        // decays directness to 0 and update_npc_path's `default:` branch
-        // (use_relaxed_path) sets tx/ty to a wander offset around the
-        // NPC's OWN position. Reading target.x directly here bypassed
-        // the wander and let the robot home in on the player even
-        // through a sealed door — sealed-room robot "activated early".
+        // Read obj.tx (output of update_npc_path), NOT target.x. When LOS
+        // is blocked, directness decays to 0 and use_relaxed_path puts
+        // tx/ty at a wander offset around the NPC — reading target.x
+        // bypassed that and let sealed-room robots home through doors.
         bool avoid = (obj.target_and_flags & TargetFlags::AVOID) != 0;
         int8_t dx  = static_cast<int8_t>(obj.tx - obj.x.whole);
         if (avoid) dx = static_cast<int8_t>(-dx);
@@ -361,11 +295,8 @@ void update_clawed_robot(Object& obj, UpdateContext& ctx) {
         }
     }
 
-    // LOS-aware targeting. Once every 16 frames update_target_directness
-    // raycasts to the player and updates obj.target_and_flags + obj.tx/ty.
-    // Clawed robots now only pursue / fire when the player is in sight
-    // (directness >= 2); otherwise they wander — port of the &4714
-    // `can_see_or_has_seen_player` gate.
+    // &4714 can_see_or_has_seen_player gate. Pursue/fire only at
+    // directness>=2; otherwise wander.
     NPC::update_npc_path(obj, ctx);
     NPC::seek_player(obj, ctx.mgr.player(), 6);
     // &4877: 1-in-4 gated flip (clawed robots also share move_hovering_npc).
@@ -377,16 +308,10 @@ void update_clawed_robot(Object& obj, UpdateContext& ctx) {
 
     uint8_t lvl = NPC::directness_level(obj);
 
-    // Attack: fire icer bullets. Directness level gates path choice but
-    // NOT firing — in the 6502, firing goes through find_a_target_and_
-    // fire_at_it (&4868) which calls find_object (&3c2a) with carry
-    // clear, so every fire attempt runs its own LOS raycast. Relying on
-    // directness alone bakes in a stale LOS: is_unable_to_see_target
-    // (&3d1d) only drops 3→2 and then latches, so the robot would keep
-    // firing through a door that closed after it first saw the player.
-    // Match the 6502 by LOS-gating the fire with the randomised-cap
-    // variant (&3cb5 AND #&4f / EOR NOD), not the turret's fixed
-    // 16-tile direct-call variant at &359a.
+    // Fire LOS-gated via &3cb5 randomised-cap variant. Directness alone
+    // latches (3→2 only via &3d1d), letting robots shoot through a door
+    // that closed after first sighting — fire path needs its own raycast
+    // (matches 6502 find_a_target_and_fire_at_it at &4868).
     if (ctx.every_eight_frames && lvl >= 2 &&
         NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
         const Object& player = ctx.mgr.player();
@@ -409,28 +334,9 @@ void update_clawed_robot(Object& obj, UpdateContext& ctx) {
 }
 
 // &43E7 update_hovering_ball / &43EB update_invisible_hovering_ball.
-//
-// Structure:
-//   1. rotate_colour_from_frame_counter (&4dd2) — cycle palette by the
-//      global counter. Visible ball only; invisible skips this and
-//      enters at &43EB directly.
-//   2. If touching a primary that isn't another hovering ball, deal
-//      3 damage (&43f4-&43f6) and play the "zap" sound.
-//   3. `energy = energy & 4` (&4400-&4404). Bit 2 is the "alive"
-//      marker. Any damage that clears bit 2 kills the ball next frame
-//      via the main loop's energy-zero path. Keeping the AND on its
-//      own means that healing paths have to explicitly set bit 2.
-//   4. `DEC timer` (&4406). When the timer reaches zero, the ball
-//      teleports away via set_object_as_far_away + teleport sound
-//      (~256 frames lifespan).
-//   5. Otherwise: move_hovering_npc (path update + 1-in-8 flip) then
-//      thrust_towards_target (magnitude 0x1c, max-accel 4, 1-in-2
-//      probability). Gravity cancelled, hovering-over-ground clamp
-//      applied, one PARTICLE_JETPACK emitted.
-//
-// We port most of this faithfully; the set_object_as_far_away path
-// becomes a simple "flag PENDING_REMOVAL" for now since we don't have
-// the teleport-to-nest mechanism wired up yet (TODO).
+// energy &= 4 keeps bit 2 as alive-marker; timer 0 means teleport-home.
+// Port-only: set_object_as_far_away → PENDING_REMOVAL (no nest teleport
+// wired yet).
 void update_hovering_ball(Object& obj, UpdateContext& ctx) {
     // &43e7: rotate colour by frame counter. The 6502's routine uses
     // a 4-colour table indexed by `frame_counter >> 2 & 0x03`; we
@@ -456,15 +362,9 @@ void update_hovering_ball(Object& obj, UpdateContext& ctx) {
     // energy zero, so the main loop's step 12 explodes it next frame.
     obj.energy = static_cast<uint8_t>(obj.energy & 0x04);
 
-    // &4406-&4408: ttl countdown. The 6502 does `DEC timer; BNE move`
-    // unconditionally — so the first decrement of a freshly-spawned ball
-    // with timer=0 wraps to 0xff (non-zero, BNE branches, ball moves) and
-    // the ball lives for a full 256 frames before the timer returns to 0
-    // and the teleport-to-nest path fires. We can't fully reproduce
-    // set_object_as_far_away yet, so tag the object PENDING_REMOVAL
-    // instead (&2516 set_object_for_removal); SPAWNED_FROM_NEST on type
-    // 0x1a means return_to_tertiary would bump the nest's creature count
-    // back up if we had the full path.
+    // &4406-&4408: DEC timer; BNE move (unconditional). First decrement
+    // wraps 0→0xff, giving a ~256 frame lifespan. Port-only: replace
+    // set_object_as_far_away with PENDING_REMOVAL (no nest return path).
     obj.timer--;
     if (obj.timer == 0) {
         obj.flags |= ObjectFlags::PENDING_REMOVAL;
@@ -493,11 +393,8 @@ void update_hovering_ball(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &43EB. The invisible variant enters update_hovering_ball's body
-// AFTER the palette cycle (the 6502 JMPs past the rotate at &43ea),
-// so it shares behaviour but never gets visibly animated. We implement
-// the visibility suppression by clearing the palette bit 7 — the
-// object is still there, still solid, just drawn as SPRITE_NONE.
+// &43EB invisible variant. 6502 JMPs past &43ea rotate; we suppress
+// visibility by clearing palette bit 7 — still solid, drawn as SPRITE_NONE.
 void update_invisible_hovering_ball(Object& obj, UpdateContext& ctx) {
     update_hovering_ball(obj, ctx);
     // Skip the palette cycle that the visible variant does — keep the

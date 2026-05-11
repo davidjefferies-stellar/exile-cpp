@@ -15,16 +15,10 @@
 #include "world/water.h"
 #include <array>
 
-// Single-tile section sweep: returns the most-grounded (or most-ceiling'd)
-// threshold across the AABB width WITHIN one already-resolved tile. Used
-// by the feet-row grounding check at the bottom of integrate_player_motion,
-// where we need a specific landing Y to snap to, not just a yes/no block.
-// For partial-solid tiles like STONE_SLOPE_78 (door substitute, solid only
-// in the left quarter) a single probe at player.x.fraction misses the
-// surface when the player's left edge is past the solid band; this helper
-// picks the LOWEST threshold (most grounded) for ground-like tiles or the
-// HIGHEST (most ceiling'd) for v-flipped tiles. Port of &2fb8's per-
-// section loop, constrained to one tile's width.
+// Sweep one tile's sections, return most-grounded threshold across the
+// AABB width. Picks LOWEST for ground-like, HIGHEST for ceiling-like —
+// needed for partial-solid tiles (STONE_SLOPE_78) where a single probe
+// at player.x.fraction misses the solid band. Port of &2fb8's loop.
 static uint8_t single_tile_effective_threshold(uint8_t tile_type, bool flip_h,
                                                  bool flip_v, uint8_t x_start,
                                                  int sprite_w_frac,
@@ -40,15 +34,10 @@ static uint8_t single_tile_effective_threshold(uint8_t tile_type, bool flip_h,
     return best;
 }
 
-// Slope-tracking snap threshold. Probes the supporting tile's threshold
-// at the player's centre x and uses it directly when that section is
-// obstructing — so as the player walks across a slope tile the snap
-// target follows the slope surface beneath their feet. Falls back to
-// single_tile_effective_threshold (MIN/MAX over sprite width) when the
-// centre section is non-obstructing, which preserves landing on
-// partial-solid tiles like STONE_SLOPE_78 (door substitute, solid only
-// in the left quarter) where the player's centre may not sit over the
-// solid section.
+// Probe supporting tile at player centre x; use directly when obstructing
+// so snap follows the slope surface. Fall back to MIN/MAX-over-width for
+// partial-solid tiles (STONE_SLOPE_78) where the centre doesn't sit over
+// the solid band.
 static uint8_t slope_tracking_threshold(uint8_t tile_type, bool flip_h,
                                          bool flip_v, uint8_t x_at,
                                          int sprite_w_frac,
@@ -81,23 +70,10 @@ static bool probe_point_with_door_subst(
     return Collision::tile_and_flip_obstructs_point(tile, x_frac, y_frac);
 }
 
-// Horizontal-motion blocking with per-row old/new diff. Walks every
-// 0x20-fraction row down the sprite height and asks "is this row
-// obstructed at the new column but NOT at the old column?" — i.e. did
-// the move introduce a NEW wall overlap at this row.
-//
-// Pre-existing obstructions (head already in a ceiling, feet already
-// touching floor, sprite straddling a section that's always solid) are
-// skipped because the move didn't create them and blocking on them
-// freezes the player forever. This is the key to the 6502-like
-// behaviour: left/right motion is gated solely by walls that would
-// actually be *encountered* by the edge, not by vertical overlaps that
-// top/bottom obstructions should handle separately.
-//
-// Port analogue: the 6502 computes obstruction DEPTHS per-edge (&2e8a)
-// and resolves them via a direction vector at &306c. Our diff-based
-// check captures the same "block only on new obstruction in this axis"
-// spirit without the full angle-vector math.
+// Horizontal blocking via per-row old/new diff: block only when the move
+// introduces a NEW obstruction at that row. Pre-existing overlaps
+// (head-in-ceiling, feet-on-floor) are skipped or the player freezes.
+// Port-analogue of &2e8a depth + &306c direction-vector resolution.
 static bool column_move_blocked(
     const Landscape& landscape, ObjectManager& mgr,
     uint8_t old_tx, uint8_t old_xf,
@@ -106,16 +82,10 @@ static bool column_move_blocked(
 {
     int top_abs = static_cast<int>(y_whole) * 256 + static_cast<int>(y_frac);
     int bot_abs = top_abs + sprite_h_frac;
-    // Slope step-up tolerance: only check obstruction in the TOP HALF of
-    // the sprite. Anything obstructing the lower half is treated as a
-    // slope or step-up and allowed (the Y-axis collision/snap will lift
-    // the player to the new surface). Walls have to extend into the
-    // upper half to block X motion, which catches anything ≥ ~1/2 tile
-    // tall. This is the port-equivalent of the 6502's
-    // apply_tile_collision_to_position_and_velocity (&306c) which uses
-    // obstruction-depth ratios to distinguish slopes (push UP) from
-    // walls (push BACK) — we don't compute the ratios, but skipping the
-    // lower body achieves the same "slopes don't block, walls do" rule.
+    // Step-up tolerance: probe only the TOP HALF of the sprite. Lower-
+    // half obstructions are treated as slopes/steps (Y-snap will lift the
+    // player). Walls must extend into the upper half to block X motion.
+    // Port shortcut for &306c's depth-ratio slope-vs-wall classification.
     int gate_bot = top_abs + (bot_abs - top_abs) / 2;
     if (gate_bot < top_abs) gate_bot = top_abs;
     for (int sy = top_abs; sy <= gate_bot; sy += 0x20) {
@@ -138,20 +108,10 @@ static bool column_move_blocked(
     return new_solid && !old_solid;
 }
 
-// Port of &2fb8 check_for_tile_collisions_on_top_and_bottom_edges_tile_loop.
-//
-// Walks every 32-fraction x-section the player's AABB overlaps, crossing
-// to the neighbouring tile (via &2fed INC tile_x / &2fef
-// set_obstruction_data_variables_for_bottom_tile) when a section rolls
-// past x_frac 0x08. For each section it asks "is the point (section_x,
-// player_y_frac) inside the resolved tile's obstruction pattern?" and
-// returns true on the first hit.
-//
-// Used to gate VERTICAL motion. This is the 6502's top_obstruction /
-// bottom_obstruction analogue: the caller passes the y_frac of whichever
-// edge it cares about — player.y.fraction for upward motion (head-row
-// probe → catches ceilings), feet_y_frac for downward motion (feet-row
-// probe → catches floors).
+// Port of &2fb8 check_for_tile_collisions_on_top_and_bottom_edges_tile_
+// loop. Walks each 32-frac x-section across the AABB, crossing tiles at
+// &2fed; first obstructed section wins. Gates VERTICAL motion — caller
+// passes head y_frac for up-probe, feet y_frac for down-probe.
 static bool player_aabb_obstructed(
     const Landscape& landscape, ObjectManager& mgr,
     uint8_t tile_y, uint8_t x_whole, uint8_t x_frac, int sprite_w_frac,
@@ -258,12 +218,9 @@ void Game::integrate_player_motion(Object& player,
     // Apply physics
     Physics::apply_acceleration(player, accel_x, accel_y, every_sixteen_frames_);
 
-    // Ground friction — while supported with no horizontal input, damp
-    // velocity_x toward 0 via the 6502's calculate_seven_eighths
-    // (&3235): new_vx = vx - sign(vx) * (|vx| + 7) / 8. The +7 round
-    // guarantees |vx| strictly decreases, so small tails fall to 0
-    // instead of lingering. Emulates the effect of the walking code
-    // pulling velocity toward the input target (which is 0 here).
+    // Ground friction via &3235 calculate_seven_eighths:
+    //   new_vx = vx - sign(vx) * (|vx| + 7) / 8
+    // +7 round guarantees |vx| strictly decreases so tails reach 0.
     if ((player.flags & ObjectFlags::SUPPORTED) && accel_x == 0 &&
         player.velocity_x != 0) {
         int v = player.velocity_x;
@@ -283,15 +240,9 @@ void Game::integrate_player_motion(Object& player,
                    ? sprite_atlas[player.sprite].w : 5;
     int sprite_w_frac = (sprite_w > 0 ? sprite_w - 1 : 0) * 16;
 
-    // Tile collision — port of the 6502's &2f8c-&30df chain via
-    // TileCollision::resolve. The single resolve call walks AABB edges,
-    // counts obstruction depths, builds a vector, pushes the player
-    // perpendicular to the surface, and reflects velocity at reduced
-    // angle — the 6502's slope/wall/floor/ceiling pipeline.
-    //
-    // Object-object collision runs as a separate axis-aware pass below
-    // (port of &2a64 + &2bb6); we don't yet model the 6502's centre-to-
-    // centre vector approach for object-vs-object pushes.
+    // Tile collision — &2f8c-&30df via TileCollision::resolve (walks AABB
+    // edges → depth-vector → push + velocity reflect). Object-object
+    // collision is a separate axis-aware pass below (&2a64 + &2bb6).
     Fixed8_8 old_x = player.x;
     Fixed8_8 old_y = player.y;
     player.x.add_velocity(player.velocity_x);
@@ -332,13 +283,10 @@ void Game::integrate_player_motion(Object& player,
 
     bool object_supported = false;
 
-    // Object-object collision — port of &2a64 check_for_collisions +
-    // &2bb6 apply_collision_to_objects_velocities. The 6502 bundles
-    // mass-ratio velocity transfer here without a position revert; we
-    // additionally revert position when blocked by a strictly heavier
-    // object, since our port doesn't model the 6502's "lighter side
-    // can't move into a heavier collider" behaviour as a side-effect of
-    // the velocity ratio alone. Held primary is excluded.
+    // Object-object — &2a64 check_for_collisions + &2bb6 mass-ratio
+    // transfer. Port deviation: also revert position when blocked by a
+    // strictly heavier collider (the velocity ratio alone doesn't pin
+    // the lighter side in our port). Held primary excluded.
     {
         auto& all = reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
             object_mgr_.object(0));
@@ -403,24 +351,10 @@ void Game::integrate_player_motion(Object& player,
         }
     }
 
-    // SUPPORTED flag — port of &1b86-&1b96. Cleared each frame, then set
-    // when (no top collision) AND (bottom collision). Bottom-collision
-    // input here mirrors &19 any_bottom_collision = tile_y_flags |
-    // object_y_flags. We don't yet track the object_collision_y_flags
-    // separately; tcr.landed_on_bottom plus object_supported together
-    // approximate the same disjunction.
-    //
-    // Port deviation: latch the prior frame's SUPPORTED through "no
-    // collision this frame but the player isn't moving up either." The
-    // 6502 collision push at &308a defaults to -8 frac when there's no
-    // perpendicular obstruction, leaving a sub-pixel gap above the
-    // surface. On the BBC that's invisible (32 frac/pixel); at our
-    // 8 frac/pixel the next frame finds no bottom collision, clears
-    // SUPPORTED, gravity resumes, and the player oscillates 1px until
-    // damping kills the cycle. Latching keeps the deviation in
-    // physics.cpp (clamp downward vy to 0 when SUPPORTED) effective
-    // across the gap. The player jumps off normally because jetpack
-    // input drives velocity_y < 0, which clears the latch.
+    // SUPPORTED — port of &1b86-&1b96: set when (!top && bottom). Port
+    // deviation: at our 8 frac/pixel the &308a default -8 frac gap clears
+    // SUPPORTED next frame and causes a 1px bounce — latch through "no
+    // collision but vy>=0" via a probe so physics's vy-clamp stays valid.
     bool any_bottom_collision = tcr.landed_on_bottom || object_supported;
     bool any_top_collision    = tcr.top_or_bottom_collision && !tcr.landed_on_bottom;
     bool was_supported = (player.flags & ObjectFlags::SUPPORTED) != 0;
@@ -428,14 +362,9 @@ void Game::integrate_player_motion(Object& player,
     if (!any_top_collision && any_bottom_collision) {
         player.flags |= ObjectFlags::SUPPORTED;
     } else if (was_supported && player.velocity_y >= 0 && !any_top_collision) {
-        // No fresh bottom collision, but we were supported last frame
-        // and aren't rising. Probe for solid ground within ~1 pixel
-        // below the player's feet — if there's nothing there, the
-        // player has walked off a ledge and SUPPORTED must release.
-        // The probe samples the tile at the player's x and the tile_y
-        // just below the feet, applying the same door substitution
-        // collision uses, then asks if the bottom-edge x section sits
-        // inside the obstruction pattern.
+        // No fresh bottom collision but were supported last frame and
+        // not rising. Probe ~1px below the feet with door substitution;
+        // empty → ledge walk-off, release SUPPORTED.
         int feet_abs_y = static_cast<int>(player.y.whole) * 256 +
                          static_cast<int>(player.y.fraction) + sprite_h_frac;
         // Probe 8 frac below the feet — well within the bounce gap
@@ -464,17 +393,10 @@ void Game::integrate_player_motion(Object& player,
         }
     }
 
-    // Landing damping — port of &37e6-&37f5 (inside update_player_angle_
-    // facing_and_sprite). When a player who has been airborne (state low
-    // nibble ≥ 0x0a) lands with accel_y == 0, the 6502 runs vy through
-    // calculate_seven_eighths THREE times: vy *= (7/8)³ ≈ 0.67. The
-    // tile collision bounce at &30e1-&30ef already reduces magnitude
-    // (clamp to 0x1e + seven_eighths once), but without this extra
-    // triple-pass the player keeps bouncing 6+ times instead of settling
-    // in 2-3 hops the original game shows. The check uses the OLD
-    // counter (pre-update) — the 6502 calls check_if_player_or_npc_
-    // jumping_or_flying BEFORE consider_updating_walking_player at
-    // &38b9, so &11's low nibble still holds the last frame's value.
+    // Landing damping — &37e6-&37f5: when an airborne player (state low
+    // nibble >= 0x0a) lands with accel_y == 0, vy passes through
+    // calculate_seven_eighths thrice (vy *= ~0.67). Without it the player
+    // bounces 6+ times. Uses pre-update counter (6502 order at &38b9).
     {
         uint8_t old_counter = player.state & 0x0f;
         bool jumping_or_flying = (old_counter >= 0x0a);
@@ -550,19 +472,10 @@ void Game::integrate_player_motion(Object& player,
         Fixed8_8 old_x = player.x;
         player.x.add_velocity(player.velocity_x);
 
-        // Port of the 6502's left/right_obstruction model (&2fa4 / &3033
-        // check_for_top_and_bottom_tile_collisions with X = leading section):
-        // blocking horizontal motion depends on whether the LEADING
-        // vertical edge of the AABB — the right column when moving right,
-        // the left column when moving left — crosses into solid geometry
-        // across the sprite's height. Static probes (velocity_x == 0)
-        // don't block; walking away from the wall shouldn't either.
-        //
-        // This replaces the previous head-row-only probe, which
-        // conflated "head is in a ceiling" with "left/right edge hit a
-        // wall" and made any head-in-ceiling state freeze sideways
-        // motion. The 6502 avoids that by keeping top/bottom and
-        // left/right obstructions on independent axes.
+        // Port of &2fa4 / &3033 left/right_obstruction: block only on the
+        // LEADING vertical edge. Static probes (velocity_x == 0) don't
+        // block. Keeps top/bottom and left/right obstructions on
+        // independent axes per the 6502.
         bool blocked = false;
         if (player.velocity_x != 0) {
             // Leading vertical edge at OLD and NEW positions: right edge
@@ -582,20 +495,10 @@ void Game::integrate_player_motion(Object& player,
                 old_tx, old_xf, new_tx, new_xf,
                 player.y.whole, player.y.fraction, sprite_h_frac);
         }
-        // Object AABB backstop — port of &2a64 check_for_collisions +
-        // &2bb6 apply_collision_to_objects_velocities. Tile obstruction
-        // alone (STONE_SLOPE_78 pattern) only covers the left quarter of
-        // a door tile; the pixel-precise AABB catches the rest of the
-        // door sprite where the pattern says "empty" but the player is
-        // physically overlapping the door primary.
-        //
-        // On an object-AABB block we also apply the 6502's mass-ratio
-        // velocity transfer (calculate_transfer_velocities at &2bee)
-        // instead of simply zeroing velocity. Hitting a heavier object
-        // bounces the player back; hitting an equal-weight object just
-        // halts; hitting a lighter one would push it but we already
-        // short-circuit above since a lighter collider doesn't trigger
-        // overlaps_solid_object's block.
+        // Object AABB backstop — &2a64 + &2bb6. Tile obstruction misses
+        // the right 3/4 of door tiles (STONE_SLOPE_78 pattern only covers
+        // the left quarter); pixel-AABB catches the rest. Heavier hit →
+        // mass-ratio velocity transfer (&2bee), not naive vx=0.
         int obj_blocker = -1;
         if (!blocked) {
             auto& all = reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
@@ -648,13 +551,9 @@ void Game::integrate_player_motion(Object& player,
                 player.velocity_x = 0;    // tile block — hard stop
             }
         } else {
-            // Heavier-hits-lighter half of &2bb6
-            // apply_collision_to_objects_velocities. The block path above
-            // only fires for HEAVIER overlaps; without this branch the
-            // player walks straight through a flask/RCD without giving
-            // it a kick. Revert position so we don't pass through, and
-            // apply mass-ratio transfer to push the lighter primary.
-            // Skip held<->player (port of &2afd-&2b0e).
+            // Heavier-hits-lighter half of &2bb6. Block path above only
+            // fires on HEAVIER overlap; without this the player walks
+            // through flasks/RCD. Skip held<->player (&2afd-&2b0e).
             int pushee = find_lighter_overlap(player, object_mgr_,
                                                held_object_slot_,
                                                sprite_w_frac, sprite_h_frac);
@@ -672,27 +571,16 @@ void Game::integrate_player_motion(Object& player,
         }
     }
 
-    // Y movement — obstruction-aware. Ground surface within a tile is at
-    // tiles_obstruction_y_offsets[type]'s upper nibble * 16, rounded up
-    // with ORA #&0f (&245f-&246f in the disassembly). For EARTH, STONE,
-    // etc., that surface is partway down the tile, so the player must be
-    // able to enter the tile as long as his sprite-top stays above the
-    // obstruction line.
+    // Y movement — obstruction-aware. Ground surface within a tile sits
+    // at tiles_obstruction_y_offsets[type] upper-nibble * 16, ORA #&0f
+    // (&245f-&246f). Sprite-top above the obstruction line = passable.
     {
         Fixed8_8 old_y = player.y;
         player.y.add_velocity(player.velocity_y);
 
-        // Port of the 6502's top/bottom_obstruction model (&2fb8-&300d).
-        // Blocking vertical motion depends on whether the LEADING
-        // horizontal edge of the AABB — the bottom row when moving down,
-        // the top row when moving up — crosses into solid geometry
-        // across the sprite's width. Static probes (velocity_y == 0)
-        // don't block.
-        //
-        // Door tiles are substituted to STONE_SLOPE_78 (closed) / SPACE
-        // (open) inside player_aabb_obstructed's tile-by-tile walk so
-        // closed doors block and open doors don't, matching the 6502's
-        // door_tiles_table swap at obstruction time.
+        // &2fb8-&300d top/bottom_obstruction: block on the LEADING
+        // horizontal edge only; static probes (vy==0) don't block. Door
+        // substitution applies inside player_aabb_obstructed.
         bool y_blocked = false;
         bool y_blocked_by_tile = false;
         uint8_t lead_ty_for_snap = 0;
@@ -750,25 +638,10 @@ void Game::integrate_player_motion(Object& player,
         }
         bool object_supported = false;
         if (y_blocked) {
-            // Tile-based downward block: SNAP feet to the obstructing
-            // tile's surface instead of reverting to old_y. The pre-frame
-            // y is often 8-16 frac ABOVE the floor (the player's height
-            // doesn't quite reach the floor tile boundary), so a plain
-            // revert leaves the player suspended in air. Gravity then
-            // accumulates over several frames before the leading edge
-            // penetrates the floor again — making SUPPORTED toggle every
-            // ~5 frames and breaking the walking-speed branch in
-            // apply_player_input which requires SUPPORTED set on entry.
-            //
-            // The 6502 sidesteps this because its `&3046 halve_object_
-            // velocities_and_clear_obstructions` / &306c collision-vector
-            // path always pushes the object out of obstruction by enough
-            // to land at the surface (see &308a LDA #&fe). Match that by
-            // computing the surface y from lead_ty's threshold and
-            // positioning feet exactly there. Result: gravity bumps feet
-            // 1 frac into the floor every subsequent frame, the leading-
-            // edge probe always fires, SUPPORTED stays set, and walking
-            // engages continuously.
+            // Downward tile block: SNAP feet to the surface (don't revert
+            // to old_y, which leaves the player ~8-16 frac above the
+            // floor and makes SUPPORTED toggle every ~5 frames). 6502 at
+            // &308a pushes out by -2 frac giving the same flush landing.
             if (y_blocked_by_tile && player.velocity_y > 0 && y_obj_blocker < 0) {
                 ResolvedTile lres = resolve_tile_with_tertiary(
                     landscape_, player.x.whole, lead_ty_for_snap);
@@ -791,15 +664,10 @@ void Game::integrate_player_motion(Object& player,
                     int target_top_abs  = target_feet_abs - sprite_h_frac;
                     int current_top_abs = static_cast<int>(old_y.whole) * 256 +
                                           static_cast<int>(old_y.fraction);
-                    // Reject snaps that would lift the player upward —
-                    // gravity should never warp him onto something above
-                    // his current position. STONE_SLOPE_78 used as a
-                    // closed-vertical-door substitute has threshold 0 in
-                    // its left quarter, so a player walking into the door
-                    // from the side at floor height would otherwise be
-                    // teleported onto the door's "ceiling" pattern,
-                    // landing him in the tile above. Falls through to the
-                    // plain old_y revert below.
+                    // Reject upward snaps: STONE_SLOPE_78 (closed vertical
+                    // door) has threshold 0 in the left quarter and would
+                    // teleport a side-approaching player onto the door's
+                    // "ceiling". Fall through to old_y revert.
                     if (target_top_abs < current_top_abs) {
                         player.y = old_y;
                         player.flags |= ObjectFlags::SUPPORTED;
@@ -823,11 +691,9 @@ void Game::integrate_player_motion(Object& player,
                 player.y = old_y;
                 if (player.velocity_y > 0) {
                     player.flags |= ObjectFlags::SUPPORTED;
-                    // When the Y revert was due to AABB overlap with a
-                    // heavier static, the tile-based grounded check below
-                    // will read SPACE under the player and clear SUPPORTED.
-                    // Preserve it so the flag survives to the friction /
-                    // animation code.
+                    // AABB-overlap Y revert: latch SUPPORTED so the
+                    // tile-based grounded check below (which reads SPACE
+                    // under the player) doesn't clear it.
                     object_supported = true;
                 }
                 if (y_obj_blocker >= 0) {
@@ -868,17 +734,10 @@ void Game::integrate_player_motion(Object& player,
             }
         }
 
-        // Ground clamp + support check. The player only stands on tiles
-        // whose effective collision flip is 0 (ground at the bottom of the
-        // cell). Tiles with collision flip 1 are ceilings/overhangs — they
-        // block upward motion via the top-obstruction revert above but
-        // don't support the player from below.
-        //
-        // Door-tile substitution applies here too: a closed door below
-        // the feet reads as STONE_SLOPE_78 so the player stands on it,
-        // while an open door reads as SPACE so the player falls through
-        // — faithful to the 6502, which has no object-AABB support and
-        // drives everything off tile obstruction.
+        // Ground clamp + support. Stand only on collision-flip-0 tiles;
+        // flip-1 tiles (ceilings/overhangs) block from above but don't
+        // support. Door substitution: closed → STONE_SLOPE_78 stands on,
+        // open → SPACE falls through. Drives off tile obstruction only.
         int feet_abs = static_cast<int>(player.y.whole) * 256 +
                        static_cast<int>(player.y.fraction) + sprite_h_frac;
         uint8_t feet_tile_y = static_cast<uint8_t>((feet_abs >> 8) & 0xff);
@@ -917,16 +776,10 @@ void Game::integrate_player_motion(Object& player,
             bool feet_in_obstr = fcoll_fv
                 ? (feet_frac <= fthresh_min)
                 : (feet_frac >= fthresh_min);
-            // Reject "ceiling-like" floor patterns: tiles where the
-            // ground-like surface lives at the very top of the cell
-            // (threshold < 0x40 ≈ 1/4 tile from top). These come up in
-            // closed-vertical-door substitution (STONE_SLOPE_78 has
-            // threshold 0 in its left quarter), and snapping feet to a
-            // y_frac of 0 puts the player's body in the tile above. The
-            // 6502's vector-based response (TileCollision::resolve)
-            // handles the geometry correctly; until we fully migrate to
-            // it, treat these patterns as non-grounding and let the
-            // per-frame Y-collision keep the player out by walls.
+            // Reject ceiling-like floor patterns (thresh<0x40): closed-
+            // vertical-door substitute STONE_SLOPE_78 has thresh 0 in its
+            // left quarter; snapping there puts the player in the tile
+            // above. Let per-frame Y-collision handle these as walls.
             bool ceiling_pattern_floor = !fcoll_fv && fthresh_at < 0x40;
             if (feet_in_obstr && !ceiling_pattern_floor) {
                 grounded = true;
@@ -935,17 +788,10 @@ void Game::integrate_player_motion(Object& player,
             }
         }
 
-        // Sprite-height-change fallback: when the spacesuit cycles through
-        // standing (h=22) → walking (h=21) → angled (h=17/19/20) sprites,
-        // sprite_h_frac shrinks by up to ~40 frac. Feet computed from the
-        // current sprite then sit ABOVE the floor surface, which leaves
-        // feet_tile_y in non-solid SPACE and breaks the grounded probe
-        // even though the player is visually still on the floor. Probe
-        // feet_tile_y+1 within a 1/4-tile tolerance to catch this — port
-        // deviation from the 6502, whose check_for_top_and_bottom_tile_
-        // collisions has the same theoretical issue but the original
-        // game's flat tiles happen to position the player such that
-        // single-row sprite swaps don't fully clear obstruction.
+        // Sprite-height fallback (port deviation): standing→walking sprite
+        // swaps shrink height by ~40 frac and lift feet above feet_tile_y.
+        // Probe feet_tile_y+1 within a 1/4-tile tolerance so the grounded
+        // probe survives the swap. 6502 just gets lucky with flat tiles.
         if (!grounded) {
             uint8_t below_ty = static_cast<uint8_t>(feet_tile_y + 1);
             ResolvedTile bres = resolve_tile_with_tertiary(
@@ -996,16 +842,10 @@ void Game::integrate_player_motion(Object& player,
             int current_top = static_cast<int>(player.y.whole) * 256 +
                               static_cast<int>(player.y.fraction);
             int upward = current_top - target_top;
-            // Cap upward snap to ~1/4 of a tile (0x40 frac, ~8 px). Slope
-            // step-up only ever moves the player a few frac per frame; a
-            // larger jump means the "surface" is the top of a partial-
-            // solid tile (e.g. STONE_SLOPE_78 used as a closed-vertical-
-            // door substitute, threshold 0 in the left quarter). Snapping
-            // there teleports the player onto the door's "ceiling" and
-            // up into the tile above. The 6502 sidesteps this entirely
-            // with its angle-from-obstruction-vector response (&306c) —
-            // this cap is the smallest workable port-side guard until
-            // that's done. Downward snaps and small step-ups still apply.
+            // Cap upward snap to ~0x40 frac. Larger jumps mean the
+            // "surface" is the top of a partial-solid tile (STONE_SLOPE_78
+            // as door substitute, thresh 0 in the left quarter) and would
+            // teleport onto the door's ceiling. 6502 avoids via &306c.
             if (upward <= 0x40) {
                 player.y.whole    = static_cast<uint8_t>((target_top >> 8) & 0xff);
                 player.y.fraction = static_cast<uint8_t>(target_top & 0xff);
@@ -1013,21 +853,10 @@ void Game::integrate_player_motion(Object& player,
             }
         }
 
-        // Refresh tile_collision_angle (port of &1c) from the slope of the
-        // supporting tile. Sample its threshold at left and right of the
-        // player's x.fraction, take the delta, and run angle_from_deltas
-        // — the same conversion the 6502 applies at &306c after building
-        // an obstruction-depth vector. For flat ground the delta is zero
-        // and tcA stays 0x00 ("right" / collision directly beneath); for
-        // a 45° rising-right slope the delta gives a vector pointing
-        // up-right and tcA lands around 0xe0. The walking branch in
-        // apply_player_input adds 0x10 (or 0x6f) and converts back to
-        // (vx, vy) via vector_from_magnitude_and_angle, producing accel
-        // along the slope direction.
-        //
-        // Skip the refresh while airborne so the last grounded value
-        // persists into a jump — matches the 6502, which only updates
-        // &1c when collision response actually fires.
+        // Refresh tile_collision_angle (&1c) from supporting tile slope:
+        // sample threshold left/right of player.x.fraction, delta →
+        // angle_from_deltas. Same conversion as &306c. Skip while airborne
+        // so the last grounded value persists into jumps (6502 behaviour).
         if (grounded) {
             ResolvedTile sres = resolve_tile_with_tertiary(
                 landscape_, player.x.whole, snap_ty);
@@ -1066,22 +895,10 @@ void Game::integrate_player_motion(Object& player,
     }
 #endif
 
-    // Port of &3fea-&4002 update_mushroom_tile's collision branch. When
-    // the player overlaps a MUSHROOMS tile, the 6502:
-    //   * picks red or blue based on tile flip_v (&40 bit at &09),
-    //   * adds to player_mushroom_timers[red=0 / blue=1] (&4005),
-    //   * emits one PARTICLE_STAR_OR_MUSHROOM (&4000-&4002).
-    //
-    // The "event" branch that spawns mushroom ball primaries (&3fde-&3fe9)
-    // is gated on TILE_PROCESSING_FLAG_EVENTS — a separate code path our
-    // port hasn't wired; hooking it up is the update_events job.
-    //
-    // Probe every tile row the player's AABB overlaps, not just the head
-    // tile: red mushrooms sit on the floor (the player's feet tile, which
-    // is player.y.whole + 1 when the player is standing) and blue
-    // mushrooms on the ceiling (player.y.whole when jumping up). Checking
-    // only player.y.whole would silently miss red mushrooms entirely — the
-    // head tile is the tile ABOVE the floor.
+    // Port of &3fea-&4002 update_mushroom_tile collision branch: pick
+    // red/blue from flip_v, add to player_mushroom_timers[], emit one
+    // PARTICLE_STAR_OR_MUSHROOM. Probe every tile row the AABB overlaps —
+    // red mushrooms sit on the feet tile, head-only would miss them.
     {
         int head_abs = static_cast<int>(player.y.whole) * 256 +
                        static_cast<int>(player.y.fraction);
@@ -1117,12 +934,9 @@ void Game::integrate_player_motion(Object& player,
         }
     }
 
-    // &3ef2 update_invisible_switch_tile — collision branch. For each
-    // tile row the player AABB overlaps, fire any INVISIBLE_SWITCH
-    // tertiary's effects. Without this, switches that key off the player
-    // walking through them (e.g. entry &89 at (&87,&77) which sets the
-    // OPENING bit on the doors at (&80,&77) and (&83,&77)) never trigger
-    // and the doors stay in their bake state forever.
+    // &3ef2 update_invisible_switch_tile — collision branch. Fires
+    // INVISIBLE_SWITCH effects for each tile row the AABB overlaps; door
+    // pairs (e.g. entry &89) only get their OPENING bit set this way.
     {
         int head_abs = static_cast<int>(player.y.whole) * 256 +
                        static_cast<int>(player.y.fraction);

@@ -1,26 +1,7 @@
-// Native C++ rewrite of the procedural landscape generator at &178d-&19a6.
-// Functionally identical to the pseudo-6502 reference in landscape.cpp;
-// the two paths are selectable via Landscape::set_use_cpp_impl. Running
-// the game with the switch flipped should produce a byte-identical map.
-//
-// The original threads the 6502 carry flag through chains of LSR / ASL /
-// ADC / SBC ops. The reference port mirrors that with a stateful Alu
-// struct. This rewrite drops both the Alu and the 6502-mnemonic helpers
-// (adc/sbc/lsr/...) entirely; everything is plain C++ arithmetic.
-//
-// The trick: where the 6502 chains two ADCs and the carry from the
-// first feeds the second, we accumulate into an `unsigned` and keep the
-// 9-bit running value in bits 0-8. Truncating to uint8_t when the value
-// is consumed gives the 6502's mod-256 wrap; `>> 8` recovers the carry
-// bit when the next chained add needs it.
-//
-// AND, EOR, ASL, LSR, ROR don't propagate carry across to a downstream
-// op except through the very next LSR/ROL — which always overwrites it.
-// So most expressions collapse to plain bitwise math without any
-// per-step bookkeeping.
-//
-// References cited as `&XXXX` point at the disassembly; see landscape.cpp
-// for the matching Alu-stepping line.
+// Native C++ rewrite of &178d-&19a6 landscape generator. MUST stay
+// byte-identical to landscape.cpp's pseudo-6502 reference (toggleable
+// via Landscape::set_use_cpp_impl). 9-bit `unsigned` accumulator carries
+// the 6502 carry inline; AND/EOR/shifts don't need carry bookkeeping.
 
 #include "world/landscape.h"
 #include "map_overlay.h"
@@ -49,17 +30,9 @@ constexpr uint8_t kTilesTable[] = {
 constexpr uint8_t kTileSpace = 0x19;
 constexpr uint8_t kTileEarth = 0x2d;
 
-// ============================================================================
-// Per-tile pseudorandom hash. f1 picks cavern variants downstream
-// (vertical-shaft pattern, passage feature, surface H-flip, ...).
-// Port of &178d-&179d.
-//
-// 6502 chain: y/2 ^ x, mask low bits, halve, +x, halve, +y. The two
-// LSRs both clear their carry when consumed (the first because AND
-// #&f8 cleared the low bits before the LSR; the second because its
-// output feeds straight into the next ADC, which captures the carry
-// inline below).
-// ============================================================================
+// &178d-&179d f1 hash — picks cavern variants downstream. 6502 chain:
+// y/2 ^ x, mask, halve, +x, halve, +y. Both LSR carries are safely
+// clobbered before they could propagate.
 static uint8_t calc_f1(uint8_t x, uint8_t y) {
     const uint8_t step = uint8_t(((((y >> 1) ^ x) & 0xf8) >> 1) + x);
     return uint8_t((step >> 1) + (step & 1) + y);
@@ -82,12 +55,8 @@ static uint8_t earth_or_stone(uint8_t f1) {
     return kTilesTable[(idx > 8) ? 8 : idx];
 }
 
-// ============================================================================
-// Slope detection. Port of &1946-&19a6.
-//   y == 0       — middle of a passage (clear)
-//   y in [2, 5]  — edge (slope orientation index)
-// is_passage == false means "solid tile, fill normally".
-// ============================================================================
+// &1946-&19a6 slope detection. y=0 passage centre; y in [2,5] = slope
+// edge index. is_passage=false → solid tile.
 struct SlopeResult { bool is_passage; uint8_t y; };
 
 static SlopeResult slope_function(uint8_t tile_x, uint8_t tile_y) {
@@ -140,11 +109,8 @@ static SlopeResult slope_function(uint8_t tile_x, uint8_t tile_y) {
     return { false, 0 };
 }
 
-// ============================================================================
-// y == 0x4e: upper-world surface row. Either a recognisable feature
-// (tree / bush / lake) or, in clear stretches, SPACE that may be H-flipped
-// by f1 bit 0. Port of &1937-&1945.
-// ============================================================================
+// &1937-&1945 y=0x4e surface row. Features (tree/bush/lake) or
+// H-flipped SPACE in clear stretches.
 static uint8_t tile_for_surface(uint8_t tile_x, uint8_t f1) {
     // First hash: ⌈x/2⌉ + x masked to 0x17. The "LSR x ; ADC x" pattern
     // is exactly ceiling-divide-by-2 plus x, since (x>>1)+(x&1) = ⌈x/2⌉.
@@ -156,13 +122,9 @@ static uint8_t tile_for_surface(uint8_t tile_x, uint8_t f1) {
         return uint8_t(kTilesTable[0x19] | ((f1 & 1) ? 0x80 : 0));
     }
 
-    // Surface-feature variant. The 6502 chains another ADC tile_x, then
-    // ROL × 3, then AND #&02, then ADC #&19. Three left-rotates of an
-    // 8-bit value with a carry chain just shuffle bits around at fixed
-    // positions; tracing them shows that AND #&02 ends up keeping bit 7
-    // of the pre-rotate value, and the carry into the final ADC ends up
-    // being bit 5 of that same value. So the whole rotate-and-mask
-    // collapses to two bit picks.
+    // Surface-feature variant. 6502 ADC + ROL*3 + AND #&02 + ADC #&19
+    // collapses to two bit picks: AND #&02 keeps bit 7, carry into the
+    // final ADC is bit 5 of the pre-rotate value.
     const uint8_t step = uint8_t(unsigned(hash_a) + tile_x + (phase1 >> 8));
     const uint8_t bit1 = (step >> 6) & 0x02;             // (step >> 7) << 1
     const uint8_t c3   = (step >> 5) & 1;
@@ -230,13 +192,8 @@ static uint8_t get_tile_from_algorithm_cpp(uint8_t tile_x, uint8_t tile_y, uint8
     // &1827: the bottom fill cap.
     if ((f1 & 0xe8) < tile_y) return earth_or_stone(f1);
 
-    // ---- &1830: square caverns ----
-    //
-    // 6502: ASL y ; ADC y ; LSR ; ADC y ; AND 0xe0 ; ADC x ; AND 0xe8.
-    // Each ADC chains carry from the previous. The first pair (ASL y +
-    // ADC y) forms 3y + (y >> 7) — same as the 9-bit sum 2y + y + carry.
-    // Then LSR + ADC y is ⌈step/2⌉ + y. Then AND + ADC x preserves the
-    // carry from the second ADC.
+    // &1830 square caverns: ASL y; ADC y; LSR; ADC y; AND #&e0; ADC x;
+    // AND #&e8. Carry chain matters across the three ADCs.
     {
         const unsigned step1 = 3u * tile_y + (tile_y >> 7);
         const unsigned step2 = (unsigned(uint8_t(step1)) + 1) / 2 + tile_y;
@@ -276,11 +233,8 @@ static uint8_t get_tile_from_algorithm_cpp(uint8_t tile_x, uint8_t tile_y, uint8
     // ---- &1878: gate the rest on y >= 0x52 ----
     if (tile_y < 0x52) return earth_or_stone(f1);
 
-    // ---- &187f: passage hash f7 ----
-    //
-    // SEC ; LDA f1 ; AND #&68 ; ADC y ; LSR ; ADC y ; LSR ; ADC y.
-    // Each LSR's carry is captured for the next ADC; we keep the
-    // running 9-bit sum in `unsigned` so it stays available.
+    // &187f passage hash f7. SEC; LDA f1; AND #&68; ADC y; LSR; ADC y;
+    // LSR; ADC y. LSR carries feed next ADCs — 9-bit `unsigned` keeps them.
     const unsigned f7_step1 = unsigned(f1 & 0x68) + tile_y + 1u;
     const unsigned f7_step2 = (unsigned(uint8_t(f7_step1)) + 1) / 2 + tile_y;
     const unsigned f7_step3 = (unsigned(uint8_t(f7_step2)) + 1) / 2 + tile_y;
@@ -298,11 +252,8 @@ static uint8_t get_tile_from_algorithm_cpp(uint8_t tile_x, uint8_t tile_y, uint8
     const uint8_t gate = hp & 0x50;
     if (gate == 0) return kTileSpace;
 
-    // ---- &1899: feature index inside a passage ----
-    //
-    // Two LSRs of (gate & x), then ADC y, then two more LSRs. Carry
-    // matters only at the ADC y step: that picks up the carry from the
-    // second LSR.
+    // &1899 feature index inside a passage. Carry of the second LSR
+    // is the only one that survives into ADC y.
     const uint8_t s0 = gate & tile_x;
     const uint8_t s1 = s0 >> 1;                          // carry = s0 & 1
     const uint8_t s2 = s1 >> 1;                          // carry = s1 & 1
@@ -338,11 +289,8 @@ static uint8_t get_tile_from_algorithm_cpp(uint8_t tile_x, uint8_t tile_y, uint8
 uint8_t Landscape::bake_tile_cpp(uint8_t tile_x, uint8_t tile_y) const {
     const uint8_t f1 = calc_f1(tile_x, tile_y);
 
-    // ---- &179d: region selection ----
-    //
-    // Two slices of y feed the 1024-byte map_overlay; the rest runs the
-    // procedural algorithm. The y range [0xbf, 0xff] gets folded down
-    // by 0x46 onto the same overlay address space as [0x79, 0xb8].
+    // &179d region select. Two y-slices feed map_overlay; rest is
+    // procedural. y in [0xbf, 0xff] folds down by 0x46 onto [0x79, 0xb8].
     if (tile_y >= 0x79 && tile_y < 0xbf) {
         return get_tile_from_algorithm_cpp(tile_x, tile_y, f1);
     }
@@ -358,11 +306,8 @@ uint8_t Landscape::bake_tile_cpp(uint8_t tile_x, uint8_t tile_y) const {
         f2 = uint8_t(y_in_map + 0x0a);                   // ADC #&0a, carry-in 0
     }
 
-    // ---- &17b2: f3 / updated f2 / f4 ----
-    //
-    // Each chained ADC's carry-out feeds the next ADC's carry-in. The
-    // running 9-bit value sits in an `unsigned`; uint8_t(...) extracts
-    // the byte, (... >> 8) extracts the carry.
+    // &17b2 f3 / f2' / f4. Chained ADCs propagate carry; 9-bit
+    // `unsigned` holds byte at uint8_t(...), carry at (... >> 8).
     const uint8_t pre = uint8_t((f2 & 0xa8) ^ 0x6f);
     const unsigned a1 = unsigned(pre >> 1) + tile_x + (pre & 1);
     const unsigned a2 = unsigned(uint8_t(uint8_t(a1) ^ 0x60)) + 0x28 + (a1 >> 8);
@@ -383,17 +328,9 @@ uint8_t Landscape::bake_tile_cpp(uint8_t tile_x, uint8_t tile_y) const {
         return get_tile_from_algorithm_cpp(tile_x, tile_y, f1);
     }
 
-    // ---- &17d6: map-overlay address ----
-    //
-    // Three ASLs of f4 land bit 5 of f4 into the carry. Then EOR new_f2
-    // forms the low byte; (f4 & 0x03) + 0x4f + (carry) forms the high
-    // byte. The 6502 indexes via LDA (&a4),Y with Y = 0xec, which lands
-    // on 0x4fec — exactly the start of map_overlay_data[].
-    //
-    // Mark the cell as map-data-sourced. The 6502 sets &00 unconditionally
-    // on this branch — same here, regardless of whether the offset ends
-    // up valid (the fallback to kTileSpace below is a port-only safety;
-    // the 6502 trusts the address arithmetic).
+    // &17d6 map-overlay address. Three ASLs of f4 lift bit 5 to carry;
+    // EOR new_f2 = low byte, (f4 & 3) + 0x4f + carry = high byte. The
+    // 6502 LDA (&a4),Y with Y=0xec lands on 0x4fec = map_overlay_data.
     last_bake_was_map_data_ = true;
     const uint8_t addr_low  = uint8_t((f4 << 3) ^ new_f2);
     const uint8_t carry5    = (f4 >> 5) & 1;

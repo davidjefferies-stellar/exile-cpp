@@ -202,17 +202,10 @@ static uint8_t check_top_bot_section(const Ctx& ctx, uint8_t y_section) {
         (void)bottom_subtract;
     }
 
-    // Top-tile flipped/unflipped tweak — mirrors &2ec9-&2ed5.
-    //
-    // CRITICAL: A entering this block depends on which path got us here.
-    //   Crossing-Y path (bot probe ran, &2ec9-&2ecd):  A = 0 - top_y_rounded
-    //   Not-crossing path (&2eab BPL → &2ece direct):  A = height
-    // The non-crossing path leaves A holding `this_object_height` from
-    // the &2ea6 LDA #height instruction; only the crossing path
-    // recomputes A through the &2ec9 sequence. Using the wrong value
-    // gives the player a multi-pixel upward push every frame on flat
-    // ground (top_obstr_unflipped = -top_y - height instead of 0), which
-    // manifests as severe bounce.
+    // Top-tile flipped/unflipped tweak (&2ec9-&2ed5). CRITICAL: entering
+    // A depends on path — crossing-Y uses 0-top_y_rounded (&2ec9-&2ecd),
+    // not-crossing keeps `height` from &2ea6. Wrong value → multi-pixel
+    // upward push every frame on flat ground.
     {
         uint8_t A = ctx.crosses_y
             ? static_cast<uint8_t>(0u - ctx.top_y_rounded)
@@ -284,15 +277,8 @@ static void count_top_and_bottom(Ctx& ctx) {
     sections_remaining = static_cast<int>(ctx.width) >> 5;
 
     while (true) {
-        // Top tile probe at section.
-        // &2fce LDA (top_data),Y; CMP top_rel; ROR; EOR sprite_y_flip; BMI skip.
-        // i.e. obstructed iff (threshold - top_rel) sign XOR sprite_y_flip yields BPL.
-        // CMP A,B sets carry C = A >= B. ROR puts C into bit 7. EOR with sprite_y_flip
-        // bit 7. Result bit 7 set → BMI → not obstructed.
-        // Equivalent: not_obstructed = (A_geq_top_rel) XOR sprite_y_flip.
-        //   A_geq_top_rel = (top.pattern[section] >= top_rel)
-        //   not_obstr     = A_geq_top_rel XOR top_flip
-        //   obstructed    = !not_obstr.
+        // Top tile probe at section — &2fce LDA/CMP/ROR/EOR/BMI.
+        // obstructed = !((pattern[section] >= top_rel) XOR sprite_y_flip).
         {
             uint8_t pat = ctx.top_data.pattern[section];
             bool ge = pat >= top_rel;
@@ -328,16 +314,10 @@ static void count_top_and_bottom(Ctx& ctx) {
         ctx.tile_x = static_cast<uint8_t>(ctx.tile_x + 1);
         section = 0;
 
-        // Refresh tile data for the new column. The 6502 keeps tile_y
-        // pointing at the BOTTOM tile when AABB crosses Y (it INC'd tile_y
-        // during the &2f1e setup), and at the TOP tile when not. We
-        // mirror that by computing the bottom-tile y here based on
-        // crosses_y rather than always assuming tile_y + 1 — without
-        // this, a sprite whose AABB sits inside one tile row (player
-        // standing on a floor with sprite_h < tile_h, etc.) probes
-        // the tile BELOW its actual row and reads obstruction that
-        // doesn't apply to its AABB. That manifests as the player
-        // being unable to walk left/right on flat ground.
+        // Refresh tile data for next column. 6502 keeps tile_y on the
+        // BOTTOM tile when AABB crosses Y (INC'd at &2f1e), TOP otherwise.
+        // Wrong choice probes the wrong row → player can't walk on flat
+        // ground when sprite_h < tile_h.
         uint8_t bot_ty = ctx.crosses_y
             ? static_cast<uint8_t>(ctx.tile_y + 1)
             : ctx.tile_y;
@@ -470,22 +450,10 @@ static void apply_tile_collision(Ctx& ctx) {
         }
     }
 
-    // &30a0-&30a5: CPY #&02; BCC not_top_or_left; INY. The CPY's carry
-    // captures the original direction:
-    //   Y=0 (top)    → carry set
-    //   Y=1 (right)  → carry clear
-    //   Y=2 (bottom) → carry clear
-    //   Y=3 (left)   → carry set
-    // The 6502 PHPs this carry, runs invert_if_positive, then PLPs it
-    // before add_A_to_position. invert_if_positive always produces a
-    // negative byte (positive→negate, negative→unchanged), so the raw
-    // add_A_to_position would always move in the negative direction —
-    // correct for bottom/right but wrong for top/left, which need a
-    // positive push to escape the obstruction. The PLP'd carry is meant
-    // to restore the sign for top/left, but the 6502's add_A_to_position
-    // overrides the carry with an internal CLC, so the original
-    // sequence appears to leave a sign bug. Flip the sign explicitly
-    // for top/left to land where the geometry needs us to.
+    // &30a0-&30a5 CPY #&02; BCC; INY. Y=0/3 (top/left) need positive
+    // push out; Y=1/2 (right/bottom) need negative. The 6502's PLP'd
+    // carry is overridden by add_A_to_position's internal CLC — apparent
+    // sign bug; flip explicitly for top/left.
     bool top_or_left = (Y == 0 || Y == 3);
     uint8_t signed_move = invert_if_positive(move_amt);
     int delta = static_cast<int8_t>(signed_move);

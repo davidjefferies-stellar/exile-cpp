@@ -18,11 +18,8 @@ namespace Behaviors {
 static constexpr uint8_t doors_speed_table[4]  = { 0x20, 0x10, 0x08, 0x20 };
 // energy threshold below which the door is "being destroyed".
 static constexpr uint8_t doors_energy_table[4] = { 0x80, 0x74, 0xc0, 0x80 };
-// palette table (low 4 bits AND'd if unlocked, hiding colour-3 = lock).
-// Port of &4d79-&4d80. Earlier copy mistakenly duplicated entries 0-3
-// into 4-7, turning every stone door (which uses colour index 4 = rmB)
-// into a cyG metal-door palette — concrete fallout: the stone door at
-// (184, 197) drew green/yellow/cyan instead of red/magenta/blue.
+// &4d79-&4d80 door palette table (low 4 bits AND'd if unlocked).
+// Entries 0-3 must NOT duplicate into 4-7 — stone doors use colour 4 (rmB).
 static constexpr uint8_t doors_palette_table[8] = {
     0x2b, // 0: cyG (metal)
     0x2d, // 1: ryG (metal)
@@ -41,38 +38,10 @@ namespace DoorFlag {
     constexpr uint8_t SLOW_OR_DESTROYED = 0x08;
 }
 
-// &4C83-&4D71: Door state machine. Full port of the 6502 routine. Notes:
-//  - obj.tertiary_data_offset holds the `data` byte (locked/opening/moving/
-//    destroyed/colour bits).
-//  - obj.tx is the open fraction (0=closed, 0xff=fully open).
-//  - obj.state is a per-object "auto-close timer" (the original shares one
-//    global `door_timer`; per-object is a safe approximation).
-//  - obj.ty (bit 1) is orientation: 0=horizontal, 2=vertical.
-// TODOs not yet wired: remote-control toggle of lock, the switch-effects
-// integration (&4c9e / &31ac), and door destruction via energy.
-// Faithful port of &4c83-&4d71 update_door.
-//
-// Per-frame door lifecycle:
-//   - tx          = "open fraction" (0x00 open → 0xff closed)
-//   - state       = tile x (horizontal door) or tile y (vertical door), the
-//                   fixed axis coord the door slides past
-//   - ty (bit 1)  = orientation, 0=horizontal (slides along x), 2=vertical
-//   - data byte   = LOCKED / OPENING / MOVING / SLOW_OR_DESTROYED + colour
-//
-// Each frame the routine:
-//   1. Masks touching back to "none" if the toucher is too light/wrong type.
-//   2. Refills energy if above a colour-dependent threshold, else marks the
-//      door being destroyed or sets energy=0 for the explosion.
-//   3. Picks a signed "door speed" — positive when opening, negative (via
-//      EOR #&ff) when closing, halved when closing, clamped to -1 if
-//      something is in the way.
-//   4. Runs signed SBC on (tx EOR 0x80) to get the new open fraction. The
-//      6502's V flag catches crossings of the 0x80 boundary (i.e. the door
-//      hitting an endpoint); at that point we clamp, and decide whether to
-//      stop, toggle direction, or start the global &0819 door_timer.
-//   5. Writes tx, writes axis_fraction = tx + 0x10 (carry to axis_whole),
-//      sets a per-frame velocity from (new_tx - old_tx)/2, and commits the
-//      data byte + palette.
+// &4C83-&4D71 update_door. tx=open fraction (0=closed, 0xff=open),
+// state=per-object auto-close timer (6502 shares one global &0819),
+// ty bit 1 = orientation, tertiary_data_offset = data byte
+// (LOCKED/OPENING/MOVING/SLOW_OR_DESTROYED + colour).
 void update_door(Object& obj, UpdateContext& ctx) {
     // &4c83-&4c8b: mask "touched but untriggerable" back to none. Very
     // light objects, invisible debris, clawed robots and Triax don't
@@ -111,23 +80,9 @@ void update_door(Object& obj, UpdateContext& ctx) {
     // &4cab-&4cad: always re-set MOVING while the door is being ticked.
     uint8_t data = obj.tertiary_data_offset | DoorFlag::MOVING;
 
-    // &4c9e check_if_object_hit_by_remote_control + &31ac consider_
-    // toggling_lock. Port of the RCD door-unlock path.
-    //
-    // The 6502 hit test at &0bc5 is three-part: (a) the fired object's
-    // type is REMOTE_CONTROL_DEVICE (&4e), (b) the fired object is
-    // within ~3 tiles of this door with clear LOS, (c) the player's
-    // aiming-angle vector points within a narrow cone at the door.
-    // Our simplified check drops the angle cone and uses Chebyshev
-    // distance; good enough for gameplay until the full aim-vector
-    // geometry is ported. The fired object's position is the player's
-    // position (RCD is held), so distance is effectively "is the
-    // player within 3 tiles of the door".
-    //
-    // When hit, toggle DOOR_FLAG_LOCKED iff the matching key has been
-    // collected, matching &31c2-&31cd exactly: clear MOVING if now
-    // locked, set OPENING if now unlocked so the door starts moving
-    // on the next tick.
+    // &4c9e/&31ac RCD door-unlock. Port-only: drops the aim-cone test from
+    // &0bc5, uses Chebyshev distance only. Toggle LOCKED iff matching key
+    // collected (&31c2-&31cd), clearing MOVING or setting OPENING.
     if (ctx.player_object_fired < GameConstants::PRIMARY_OBJECT_SLOTS &&
         ctx.player_keys_collected) {
         const Object& fired = ctx.mgr.object(ctx.player_object_fired);
@@ -161,18 +116,8 @@ void update_door(Object& obj, UpdateContext& ctx) {
     uint8_t colour      = (data >> 4) & 0x07;
     uint8_t colour_pair = colour & 0x03;
 
-    // &4cbe-&4cd5: energy / destruction ladder. Faithful to the 6502:
-    //   if energy >= threshold       → refill to 0xff (door regenerates)
-    //   else if SLOW_OR_DESTROYED    → energy = 0 (next tick destroys)
-    //   else                          → set SLOW_OR_DESTROYED
-    // The refill makes doors indestructible by light gunfire — only
-    // single hits big enough to drop energy below the colour threshold
-    // start the slow-then-explode chain. Two simultaneous grenades at
-    // point-blank are the cheapest reliable destroy (76+76=152 in one
-    // frame > 128 threshold for pair 3).
-    //
-    // Once the explosion's slot is reaped, the door's tertiary entry
-    // re-spawns it at full energy.
+    // &4cbe-&4cd5: energy refill above colour threshold, else slow→destroy
+    // ladder. Door re-spawns from tertiary entry once explosion slot is reaped.
     uint8_t energy_pre  = obj.energy;
     uint8_t threshold   = doors_energy_table[colour_pair];
     const char* branch;
@@ -196,11 +141,8 @@ void update_door(Object& obj, UpdateContext& ctx) {
         branch,
         static_cast<unsigned>(obj.energy));
 
-    // &4cd7-&4cec: door speed.
-    //   slow → 1
-    //   opening → table[colour_pair]
-    //   closing → halved-and-negated (EOR #&ff) table value
-    //   closing + touching → -1 (0xff)
+    // &4cd7-&4cec: door speed. slow=1, opening=table, closing=halved &
+    // negated, closing+touching=-1.
     uint8_t speed = slow ? 1 : doors_speed_table[colour_pair];
     if (!opening) {
         speed >>= 1;
@@ -305,13 +247,9 @@ void update_door(Object& obj, UpdateContext& ctx) {
     if (obj.energy == 0) data |= DoorFlag::MOVING;
     obj.tertiary_data_offset = data;
 
-    // Mirror the live data to tertiary storage so a later switch effect
-    // reads (and XORs into) the current state rather than the original
-    // initial value. Bit 7 MUST stay clear here: it's the spawn gate, and
-    // setting it while the door is still primary would cause the tile-plot
-    // loop to spawn duplicate primaries every render tick. The 6502 does
-    // the same (&4d5f-&4d61 writes A = data without bit 7 set);
-    // return_to_tertiary re-applies bit 7 only on demote.
+    // Mirror live data to tertiary store; bit 7 (spawn gate) MUST stay
+    // clear while primary owns the slot. &4d5f-&4d61 writes without bit 7;
+    // return_to_tertiary re-applies it on demote.
     if (obj.tertiary_slot > 0) {
         ctx.mgr.set_tertiary_data_byte(obj.tertiary_slot,
                                         static_cast<uint8_t>(data & 0x7f));
@@ -356,18 +294,9 @@ static constexpr uint8_t switch_effects_table[] = {
     0x00,                                // end sentinel
 };
 
-// Decode a 6502-style data_offset (a position in the static
-// tertiary_objects_data_bytes array) back to the (tile_type, X) pair
-// that points at it, then find every world cell with that raw type at
-// that column and return their per-cell tertiary entry indices.
-//
-// In 6502 / Option-A semantics, a single byte at a given data_offset
-// is shared by every cell whose (tile_type, X) maps to that source
-// row — toggling the byte affects all of them. Option B's bake gives
-// each cell its own entry, so to preserve the "shared switch state"
-// behaviour we have to fan the toggle out across every sibling cell.
-//
-// Writes up to `max_out` indices into `out` and returns the count.
+// Find every cell sharing a 6502 data_offset so toggles fan out across
+// siblings. Option B bake gives each cell its own entry; the 6502 shared
+// one byte per (tile_type, X). Writes up to max_out indices.
 static int find_shared_entries_for_data_offset(const Landscape& landscape,
                                                 uint8_t data_offset,
                                                 uint16_t* out, int max_out) {
@@ -397,23 +326,10 @@ static int find_shared_entries_for_data_offset(const Landscape& landscape,
     return written;
 }
 
-// Port of &49db process_switch_effects. Decodes (effect_id, toggle, mask)
-// from the switch's data byte and applies the toggle to every tertiary
-// target listed in the matching switch_effects_table group.
-//
-// Each target byte is a 6502 data_offset. In the original game, the
-// data_offset addressed a single byte in the static data table that
-// every cell sharing the same source row read/wrote. Option B gave
-// each cell its own entry; we fan the toggle out across every cell
-// that maps to the same source row so shared-state switches still
-// behave like the 6502 (e.g. the two switches at (227,156) and
-// (227,188) both toggle the same pair of doors when either is pressed).
-//
-// Primaries hold a live copy of the data byte (bit 7 stripped) and only
-// write back to the tertiary entry on demote, so the entry's copy is
-// stale while an object is onscreen. To avoid toggling a stale bit,
-// read the authoritative value from the primary when one owns the
-// slot, and write through to both stores when toggling.
+// &49db process_switch_effects. Fans toggles across cells sharing a
+// data_offset (Option B vs 6502 shared bytes). Reads through to the
+// primary's live data byte when one owns the slot; tertiary entry is
+// stale until demote.
 static void process_switch_effects(ObjectManager& mgr,
                                     const Landscape& landscape,
                                     uint8_t effect_id,
@@ -439,11 +355,8 @@ static void process_switch_effects(ObjectManager& mgr,
             landscape, b, entries, 16);
         if (n_entries == 0) continue;
 
-        // Compute the new value once. The live source value comes from
-        // any primary that owns ANY of the sibling entries (they should
-        // all share state, but in practice live-vs-stale can drift, so
-        // prefer a primary's live byte; fall back to the first entry's
-        // stored byte).
+        // Prefer a primary's live byte from any sibling entry (siblings
+        // should share state, but live-vs-stale can drift).
         int sample_owner = -1;
         for (int e = 0; e < n_entries && sample_owner < 0; ++e) {
             uint16_t slot = entries[e];
@@ -475,18 +388,9 @@ static void process_switch_effects(ObjectManager& mgr,
             if (live) {
                 mgr.set_tertiary_data_byte(slot, newv);
             } else {
-                // Port-only: force bit 7 so the next tile-plot spawns
-                // the primary. The 6502 doesn't need this — it always
-                // re-plots the tertiary tile_and_flip graphic (e.g. a
-                // closed-door tile) regardless of bit 7, and bit 7 only
-                // gates the primary's existence. Our renderer ties the
-                // door's visual state to its primary (open/close
-                // animation, palette) so without bit 7 the door at
-                // (156, 61), etc., never animates after the switch
-                // press. Setting the gate here is harmless even when
-                // bit 7 was already clear in ROM, because the next
-                // demote round-trip (&1d20-&1d24 ORA #&80) re-arms it
-                // anyway.
+                // Port-only: force bit 7 so the next tile-plot spawns the
+                // primary. Our renderer ties door visual state to its primary;
+                // demote (&1d20-&1d24 ORA #&80) re-arms it anyway.
                 mgr.set_tertiary_data_byte(slot,
                     static_cast<uint8_t>(newv | 0x80));
             }
@@ -516,13 +420,10 @@ void trigger_invisible_switch_at(Object& toucher,
                                  ObjectManager& mgr,
                                  const Landscape& landscape) {
     ResolvedTile r = resolve_tile_with_tertiary(landscape, tile_x, tile_y);
-    // Dispatch on the RESOLVED tile type, not the raw landscape byte —
-    // the 6502 stores the resolved tile_type into &08 at &1761/&1772 and
-    // indexes update_routine_addresses with it (&177c). The opener switch
-    // at (&87, &77) is entry &89, which sits in the STONE_DOOR (4) range
-    // but has tile_and_flip = &00 (INVISIBLE_SWITCH) — i.e. a redirect.
-    // Without using the resolved type these redirect-shaped switches
-    // never trigger, and any door wired to them stays in its bake state.
+    // Dispatch on RESOLVED tile type, not raw landscape byte (6502
+    // &1761/&1772 stores resolved into &08, &177c indexes routines).
+    // Redirect switches (e.g. opener &89 in STONE_DOOR range with
+    // tile_and_flip=&00) only fire via the resolved path.
     uint8_t resolved_type = r.tile_and_flip & TileFlip::TYPE_MASK;
     if (resolved_type != static_cast<uint8_t>(TileType::INVISIBLE_SWITCH))
         return;
@@ -539,15 +440,8 @@ void trigger_invisible_switch_at(Object& toucher,
     // &3eff-&3f02 check_if_object_can_trigger_switches.
     if (!object_can_trigger_switches(toucher)) return;
 
-    // &3f06-&3f15 decode the switch's data byte. The bit-7 spawn gate is
-    // part of the packed switch-effects id for INVISIBLE_SWITCH tiles, so
-    // do NOT strip it before computing the mask (matches the comment at
-    // tertiary_spawn.cpp:36-46 — switch_redirect tertiaries keep bit 7).
-    //   mask        = ((data >> 1) | 0xfc) ^ 0x03   (clears the toggle bits)
-    //   set path    (data bit 0 = 1): effect_byte = data
-    //   clear path  (data bit 0 = 0): effect_byte = data & 0xf8
-    //   toggle      = (effect_byte >> 1) & 0x03
-    //   effect_id   = effect_byte >> 3
+    // &3f06-&3f15 decode switch data byte. Keep bit 7 — it's part of the
+    // packed effect id for INVISIBLE_SWITCH (see tertiary_spawn.cpp:36-46).
     uint8_t data = mgr.tertiary_data_byte(r.data_offset);
     uint8_t mask = static_cast<uint8_t>(((data >> 1) | 0xfc) ^ 0x03);
     bool set_path = (data & 0x01) != 0;
@@ -560,14 +454,9 @@ void trigger_invisible_switch_at(Object& toucher,
     process_switch_effects(mgr, landscape, effect_id, mask, toggle);
 }
 
-// &499D-&49C2: Switch. `tx` is a rolling 8-frame press-history register:
-// each frame we ROR the "triggered this frame" carry into its bit 7. We
-// fire the toggle only when bit 7 is set AND bits 0-6 are all clear —
-// i.e. the first frame of a fresh press, suppressing auto-repeat for 7
-// frames afterwards. On the leading edge we toggle bit 0 of the switch's
-// data byte (switch state) and call process_switch_effects, which XORs
-// bits 1-2 (the toggle mask) into every target listed in the switch's
-// effect-id group.
+// &499D-&49C2 update_switch. tx is an 8-frame ROR press-history; fire
+// only on bit-7-set / bits-0-6-clear (leading edge, 7-frame auto-repeat
+// suppression). Toggles bit 0 of data and runs process_switch_effects.
 void update_switch(Object& obj, UpdateContext& ctx) {
     // Carry-in = "triggered this frame". Touching with a trigger-capable
     // object sets it; check_if_object_can_trigger_switches filters out
@@ -638,16 +527,9 @@ static constexpr uint8_t transporter_palette_table[] = {
     0x52, 0x63, 0x35, 0x21, // rmM, rcC, gyB, rgG
 };
 
-// &4D86-&4DDE: Transporter beam. Faithful port of the control flow.
-//   data (low bit 0): 1 = stationary beam, 0 = sweeping
-//   data (bits 1-4):  destination index into transporter_destinations_[xy]
-//   state:            current beam y-fraction (sweeps 0x00..0xb0 in steps
-//                     of 0x20 then wraps when it would reach 0xb1).
-// On contact with a non-teleporting object, latch its tx/ty to the
-// destination, set the teleporting flag, copy this object's velocity into
-// the touched object so it follows the beam briefly, and play the sound.
-// The palette cycles through transporter_palette_table using the global
-// frame counter via rotate_colour_from_A.
+// &4D86-&4DDE update_transporter_beam. data bit 0 = stationary, bits 1-4 =
+// destination index; state = beam y-fraction sweeping 0x00..0xb0 step 0x20.
+// On contact, latch tx/ty to destination and copy our velocity into target.
 void update_transporter_beam(Object& obj, UpdateContext& ctx) {
     // &4d86-&4d89: split data into (stationary, destination).
     uint8_t data = obj.tertiary_data_offset;
@@ -673,22 +555,15 @@ void update_transporter_beam(Object& obj, UpdateContext& ctx) {
                 // play_sound, params 29 c2 37 f3).
                 static constexpr uint8_t kSoundTeleport[4] = { 0x29, 0xc2, 0x37, 0xf3 };
                 Audio::play_at(Audio::CH_ANY, kSoundTeleport, obj.x.whole, obj.y.whole);
-                // Clear touching now so the rest of this frame's update
-                // can't re-fire on the just-launched target. The end-of-
-                // update OR #&80 in the slot loop would clear it shortly
-                // anyway, but doing so here avoids any same-frame reads
-                // seeing the stale slot.
+                // Clear touching so this frame can't re-fire on the
+                // just-launched target before the slot-loop OR #&80.
                 obj.touching = 0x80;
             }
         }
 
-        // &4dad-&4dbb: unless NEWLY_CREATED, advance the beam y-fraction.
-        // The original adds 0x20 and wraps at 0xb1 which produces two
-        // interlaced sweeps (0x20,0x40,…,0xa0,0x10,0x30,…,0xb0); BBC CRT
-        // persistence + the 2-px sprite blend these into one pulse, but on
-        // a progressive LCD it reads as a flick every half-cycle. Step by
-        // 0x10 and wrap at 0xb0 so the beam visits all 11 positions in
-        // monotonic order — same range, same 11-frame cycle, smooth visual.
+        // &4dad-&4dbb advance beam y-fraction. Port-only: step 0x10
+        // (not 6502's interlaced 0x20-wrap-at-0xb1) so non-CRT LCDs see
+        // a monotonic sweep instead of half-cycle flicker.
         if (!(obj.flags & ObjectFlags::NEWLY_CREATED)) {
             uint8_t next = static_cast<uint8_t>(obj.state + 0x10);
             if (next > 0xb0) next = 0x00;
@@ -697,12 +572,9 @@ void update_transporter_beam(Object& obj, UpdateContext& ctx) {
     }
     // Stationary or newly-created: state keeps its current value.
 
-    // &4dbd-&4dc6: the rendered y_fraction is either the state itself
-    // (ceiling-mounted base — beam extends downward) or its negation
-    // (floor-mounted base — beam extends upward), minus one. The 6502's
-    // `BIT y_flip / invert_if_positive` pair negates when y_flip's bit 7 is
-    // CLEAR (not flipped), so the sign condition is the opposite of a
-    // naive is_flipped_v() test.
+    // &4dbd-&4dc6 rendered y_fraction. 6502 BIT y_flip / invert_if_positive
+    // negates when y_flip bit 7 is CLEAR — sign condition is reversed
+    // vs a naive is_flipped_v() test.
     uint8_t beam = obj.state;
     uint8_t y_frac = obj.is_flipped_v() ? beam : static_cast<uint8_t>(-beam);
     obj.y.fraction = static_cast<uint8_t>(y_frac - 1);
@@ -719,10 +591,8 @@ void update_transporter_beam(Object& obj, UpdateContext& ctx) {
 // &4BAF: Hive update (small and large). Port of update_hive.
 //
 void update_hive(Object& obj, UpdateContext& ctx) {
-    // &4baf-&4bb1: extract bits 6-2 of the data byte as spawn type, cache
-    // in obj.state. The 6502 caches it as this_object_state (hive spawn
-    // type) so later logic and the spawned creature's target setup can
-    // read it cheaply.
+    // &4baf-&4bb1 cache spawn type in obj.state (this_object_state) so
+    // child target setup can read it cheaply.
     uint8_t spawn_type_id = (obj.tertiary_data_offset >> 2) & 0x1f;
     obj.state = spawn_type_id;
 
@@ -739,11 +609,7 @@ void update_hive(Object& obj, UpdateContext& ctx) {
     // the hive shouldn't spawn.
     if ((obj.tertiary_data_offset & 0x03) != 0) return;
 
-    // &4bc5-&4bd5: probability depends on how many of this spawn type
-    // already exist in primaries — more alive → less likely to spawn.
-    //   rnd & rnd & rnd & 7  gives a value biased toward 0.
-    //   BCC leave if value < existing_count.
-    // We approximate existing_count with a linear scan over primaries.
+    // &4bc5-&4bd5 spawn prob ∝ 1/existing_count via (rnd&rnd&rnd&7) gate.
     int count = 0;
     for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
         const Object& p = ctx.mgr.object(i);
@@ -762,9 +628,8 @@ void update_hive(Object& obj, UpdateContext& ctx) {
     // Range-check the spawn type before we commit.
     if (spawn_type_id >= static_cast<uint8_t>(ObjectType::COUNT)) return;
 
-    // &4be0-&4bf4: create the spawn, emit it left/right depending on
-    // the hive's x_flip. In the 6502 this calls create_child_object which
-    // also copies the hive's position; create_object_at mirrors that.
+    // &4be0-&4bf4: create child via &33b8 create_child_object (mirrored
+    // by create_object_at), emit L/R per hive x_flip.
     int slot = ctx.mgr.create_object_at(
         static_cast<ObjectType>(spawn_type_id), 4, obj);
     if (slot < 0) return;
@@ -782,15 +647,8 @@ void update_hive(Object& obj, UpdateContext& ctx) {
     spawn.velocity_x = obj.is_flipped_h() ? -0x20 : 0x20;
     spawn.velocity_y = 0;
 
-    // Shift the wasp out of the hive's AABB, on the side matching its
-    // emerge velocity. create_object_at spawned the child at the hive's
-    // exact origin, and the hive is weight-7 — overlaps_solid_object
-    // fires on every subsequent X-integration and bounces the wasp's
-    // velocity back, so before this call each wasp sat stuck on top of
-    // the hive (velocity decaying to near zero via bounce_reflect)
-    // until the hive itself demoted. Same pre-compensation the 6502's
-    // create_child_object at &33e5-&342d does for bullets; wasps
-    // should use it too.
+    // Shift wasp out of hive AABB (hive is weight-7, would bounce-stick
+    // the child otherwise). Mirrors &33e5-&342d create_child_object.
     NPC::offset_child_from_parent(spawn, obj);
 
     // &4bf9-&4c06: aggressiveness lives in the spawn's state. Flipped
@@ -869,28 +727,10 @@ static constexpr uint8_t sucking_nests_direction[9] = {
     0x5f, 0xac, 0xbf, 0x3d, 0xf9, 0x58, 0xa2, 0xd8, 0x4b,
 };
 
-// &4DED update_sucking_nest — port of &4ded-&4e34.
-//
-// Every 16 frames, `find_object` (6502 &3c2a) scans for an object of
-// the nest's trigger type; if one is found (or trigger == 0xff = "all")
-// the nest enters "active" state. While active, `accelerate_all_objects`
-// applies variant-dependent suction — each candidate is LOS-raycast out
-// to `power` &20-fractions, and the effective acceleration is
-// `power - (weight*2 + 8 + distance)`, so heavy or far objects are
-// skipped automatically.
-//
-// Simplifications vs the 6502:
-//   * The coronium-boulder → secondary-type-yellow-slime special case at
-//     &4dfd-&4e01 isn't wired up. Variants 3 and 6 still activate on
-//     coronium boulders directly; they just don't also activate on
-//     yellow slime.
-//   * `find_object`'s random per-attempt probability gate at &3c99
-//     isn't ported — we accept any matching candidate. In practice
-//     activation is still correct because the 6502 also accepts any
-//     matching candidate eventually; we just converge on frame 1 rather
-//     than over ~dozen 16-frame ticks.
-//   * The random-flip (&4e1f STA this_object_x_flip) and 1/256 high-
-//     damage roll (&4e23 CMP #&50) are preserved faithfully.
+// &4DED-&4E34 update_sucking_nest. Port-only simplifications: drops the
+// &4dfd-&4e01 coronium-boulder → yellow-slime alias, and the &3c99 random
+// per-attempt probability gate (we accept any matching candidate).
+// Random-flip (&4e1f) and 1/256 high-damage roll (&4e23) preserved.
 void update_sucking_nest(Object& obj, UpdateContext& ctx) {
     NPC::enforce_minimum_energy(obj, 0x7f);
 
@@ -1007,15 +847,9 @@ void update_sucking_nest(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4ba9 update_bush. The 6502 routine is the shared "freeze" helper
-// set_this_object_velocities_to_zero_and_position_from_previous_position:
-//   JSR &28a3 ; set_this_object_velocities_to_zero
-//   JMP &28aa ; set_this_object_position_from_previous_position
-// We don't store previous_position per-frame; instead object_update.cpp
-// pins BUSH in the same path as weight-7 statics (search for `pin_bush`),
-// which both zeroes velocity and skips the integrator. That makes this
-// per-type stub a no-op. Bushes are indestructible per the object table
-// at &040d, so there's no energy regen logic in the original either.
+// &4ba9 update_bush. 6502 calls the freeze helper at &28a3/&28aa; we pin
+// BUSH like a weight-7 static in object_update.cpp (search `pin_bush`),
+// so this stub is a no-op. Bushes are indestructible per &040d.
 void update_bush(Object& obj, UpdateContext& ctx) {
     (void)obj; (void)ctx;
 }
@@ -1025,11 +859,9 @@ void update_bush(Object& obj, UpdateContext& ctx) {
 // range and pointed at it (check_if_object_hit_by_other_control at &0bc7,
 // invoked with A=&4f). Without that gate the cannon never fires.
 void update_cannon(Object& obj, UpdateContext& ctx) {
-    // &40ee-&40f3 check_if_object_hit_by_other_control(CANNON_CONTROL_DEVICE).
-    // The full 6502 test is three-part: (a) fired object is type 0x4f,
-    // (b) within ~3 tiles with clear LOS, (c) player aim angle points
-    // within a narrow cone at the cannon. We approximate (b) with
-    // Chebyshev distance and drop (c), matching the door RCD path above.
+    // &40ee-&40f3 check_if_object_hit_by_other_control(CANNON_CONTROL).
+    // Port-only: drops the &0bc7 aim-cone test, uses Chebyshev distance
+    // (same simplification as the door RCD path above).
     bool triggered = false;
     if (ctx.player_object_fired < GameConstants::PRIMARY_OBJECT_SLOTS) {
         const Object& fired = ctx.mgr.object(ctx.player_object_fired);
@@ -1045,8 +877,7 @@ void update_cannon(Object& obj, UpdateContext& ctx) {
 
     if (triggered) {
         // &40f5-&40f9 create_projectile_with_zero_velocity_y(CANNONBALL,
-        // x velocity = 0x40). The fire_projectile helper inverts vx for a
-        // left-facing parent via this_object_x_flip, matching &33ad.
+        // vx=0x40). fire_projectile inverts vx via x_flip (matches &33ad).
         int slot = NPC::fire_projectile(obj, ObjectType::CANNONBALL, ctx);
         if (slot >= 0) {
             Object& ball = ctx.mgr.object(slot);
@@ -1073,15 +904,9 @@ void update_maggot_machine(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4C15-&4C82: Engine fire.
-//   state   = 8-bit timer (free-runs while burning; once it hits 0x80 we set
-//             the "inactive" bit in data and stop burning).
-//   tertiary_data_offset bit 0/1 = "engine inactive" (we approximate the
-//   original's full tertiary-data field with just a bool flag).
-// Each live frame: random flip, heat-push the touching object (INC velocity_x),
-// emit a particle, 1-in-4 accelerate nearby objects with damage, then set
-// palette rwY (0x34) and a random x_fraction 0x90..0xcf. While inactive the
-// fire is hidden (palette 0, x_fraction 0x40) and the timer is reset to 0.
+// &4C15-&4C82 update_engine_fire. state = burn timer (hits 0x80 → inactive);
+// tertiary_data_offset bits 0/1 = engine-inactive flag (port simplification
+// of the 6502's full data field).
 void update_engine_fire(Object& obj, UpdateContext& ctx) {
     // &4c15: if engine is off, go straight to reset-and-hide.
     bool inactive = (obj.tertiary_data_offset & 0x03) != 0;
@@ -1160,17 +985,9 @@ void update_engine_fire(Object& obj, UpdateContext& ctx) {
     obj.x.fraction = static_cast<uint8_t>(xf + 0x90);
 }
 
-// &4B64: Placeholder — invisible proxy for tertiary objects spawned from
-// TILE_SPACE_WITH_OBJECT_FROM_DATA (tile type 0x02). The data byte's low 7
-// bits hold the ACTUAL object type (rolling robot, inactive chatter, boulder,
-// collectable, …). The placeholder sits still (INTANGIBLE flag blocks
-// gravity, update zeroes any velocity that snuck in) until the player gets
-// a clear line of sight or physically touches it — at which point the
-// placeholder's type is overwritten with the real type and it takes over.
-//
-// Port of &4B64 update_placeholder_object + &4B7F convert_placeholder_object.
-// The "obstruction-free line of sight within 0x80 range" check is approximated
-// with a simple Chebyshev-distance test for now (no raycast through tiles).
+// &4B64 update_placeholder_object + &4B7F convert_placeholder_object.
+// data byte low 7 bits = real object type; placeholder converts on LOS or
+// touch. Port-only: LOS approximated as Chebyshev distance (no raycast).
 void update_placeholder(Object& obj, UpdateContext& ctx) {
     // Keep the placeholder pinned — zero velocity every frame so an errant
     // stream from physics / wind / water can't drift it off its tile.
@@ -1180,12 +997,8 @@ void update_placeholder(Object& obj, UpdateContext& ctx) {
     // Convert on physical contact (touching != 0x80 means something's there).
     bool touched = obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS;
 
-    // Or when the anchor (normally the player, optionally the camera in
-    // map-scroll mode) is close enough. The 6502 at &359a uses
-    // `A = &80 (128 &20 fractions = 16 tiles)` for this exact test, so
-    // the box needs to be ~16 tiles wide — the viewport is ~20 wide, so
-    // anything less leaves the edges of the screen uncovered and
-    // placeholders sitting in plain sight refuse to convert.
+    // &359a anchor-proximity gate. 6502 uses A=&80 (16 tiles); viewport
+    // is ~20 wide so anything tighter leaves placeholders visible.
     uint8_t anchor_x = ctx.mgr.activation_anchor_x();
     uint8_t anchor_y = ctx.mgr.activation_anchor_y();
     int8_t dx = static_cast<int8_t>(anchor_x - obj.x.whole);
@@ -1210,9 +1023,8 @@ void update_placeholder(Object& obj, UpdateContext& ctx) {
     obj.energy = 0xff;  // matches &4b83 LDA #&ff / STA energy
 }
 
-// Debug-only exports for the "Wiring" overlay. Re-walks the same
-// switch_effects_table group scan process_switch_effects does, but only
-// records the tertiary_data_offset targets without mutating state.
+// Debug-only "Wiring" overlay. Re-walks switch_effects_table without
+// mutating state.
 int switch_effect_targets(uint8_t effect_id, uint8_t* out, int max_out) {
     const int N = static_cast<int>(sizeof(switch_effects_table));
     int zeros_seen = 0;

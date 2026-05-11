@@ -99,15 +99,9 @@ public:
     // Check if an object is far from the activation anchor (see below).
     bool is_far_from_anchor(uint8_t obj_x, uint8_t obj_y, uint8_t distance) const;
 
-    // ========================================================================
-    // Activation anchor
-    // ========================================================================
-    // The anchor is the world point distance-based lifecycle checks (demotion,
-    // promotion, placeholder conversion) measure against. By default the 6502
-    // uses the player; Game::run updates this each frame so it can optionally
-    // follow the camera centre when the user has scrolled the viewport off
-    // the player ("map mode"). When left at the player's position the
-    // behaviour matches the original exactly.
+    // Activation anchor: world point lifecycle checks measure against.
+    // 6502 uses the player; Game::run optionally follows the camera in
+    // map mode. Defaults to player → matches the original.
     void set_activation_anchor(uint8_t x, uint8_t y) {
         activation_anchor_x_ = x;
         activation_anchor_y_ = y;
@@ -115,15 +109,8 @@ public:
     uint8_t activation_anchor_x() const { return activation_anchor_x_; }
     uint8_t activation_anchor_y() const { return activation_anchor_y_; }
 
-    // ========================================================================
-    // Cache-range radii (settable from exile.ini — see StartupConfig).
-    // ========================================================================
-    // check_demotion reads demote_distances_[x-1] (x in {1,2,3}); mapping:
-    //   [0] KEEP_AS_TERTIARY (statics — doors, switches)
-    //   [1] KEEP_AS_PRIMARY_FOR_LONGER, moving/airborne
-    //   [2] KEEP_AS_PRIMARY_FOR_LONGER, slow + supported
-    // promote_distance_ is used by promote_selective / promote_distance_check
-    // to decide whether a secondary is close enough to repromote.
+    // demote_distances_[x-1]: [0]=tertiary statics, [1]=moving/airborne,
+    // [2]=slow+supported. promote_distance_ drives promote_selective.
     void set_demote_distances(uint8_t tertiary, uint8_t moving,
                                uint8_t settled) {
         demote_distances_[0] = tertiary;
@@ -133,16 +120,9 @@ public:
     void set_promote_distance(uint8_t d) { promote_distance_ = d; }
     uint8_t promote_distance() const { return promote_distance_; }
 
-    // ========================================================================
-    // Cache sizes (settable from exile.ini — see StartupConfig).
-    // ========================================================================
-    // The backing arrays are sized at compile time to the generous upper
-    // bounds in GameConstants; these setters dial down the effective
-    // "active size" used by create_object's slot search and promote_
-    // selective's shuffle. Iteration in collision and update loops still
-    // walks the whole backing array but skips inactive slots, so raising
-    // the active size above the 6502's 16 / 32 just makes more simultaneous
-    // primaries / secondaries possible without code changes.
+    // Effective active size dialed down from compile-time upper bounds.
+    // Used by create_object's slot search and promote_selective's shuffle;
+    // iteration still walks the full backing array.
     void set_active_primary_slots(int n) {
         if (n < 1) n = 1;  // need at least slot 0 (the player)
         if (n > GameConstants::PRIMARY_OBJECT_SLOTS)
@@ -158,20 +138,9 @@ public:
     int active_primary_slots()   const { return active_primary_slots_; }
     int active_secondary_slots() const { return active_secondary_slots_; }
 
-    // ========================================================================
-    // Tertiary data byte access (used by the tile update routines).
-    // ========================================================================
-    //
-    // Reads and writes go through the live tertiary entries owned by
-    // Landscape. The "offset" parameter is now a tertiary entry index
-    // (0..n_tertiary_entries-1); legacy callers using the old
-    // data_offset/type_offset semantics get the same one int handle
-    // because resolve_tile_with_tertiary fills both fields with the
-    // same entry index after the Option-B refactor.
-    //
-    // A nullptr landscape (init not yet run) makes every read return 0
-    // and every write a no-op so any premature access fails safely
-    // rather than crashing.
+    // Tertiary data byte access. The "offset" parameter is a tertiary
+    // entry index (0..n_tertiary_entries-1) post Option-B. Null landscape
+    // → read=0, write=no-op for safe pre-init access.
     void set_landscape(class Landscape& l) { landscape_ = &l; }
 
     uint8_t tertiary_data_byte(int idx) const;

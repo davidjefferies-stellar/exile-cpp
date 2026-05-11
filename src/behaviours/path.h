@@ -3,103 +3,43 @@
 
 namespace NPC {
 
-// ============================================================================
-// Line-of-sight + pathfinding — port of &359a-&35e4, &3cf6-&3da5.
-// ============================================================================
-//
-// The 6502 runs a three-layer behaviour for NPCs that target the player
-// (or any other object):
-//
-//   1. Once every 16 frames, `consider_if_npc_can_see_target` (&3cf6) runs
-//      a tile-by-tile raycast between the NPC and its target. If a solid
-//      tile obstruction blocks the line of sight, the NPC's directness
-//      level decays; if the line is clear, it's restored to level 3.
-//   2. Each frame, `consider_updating_npc_path` (&3d26) dispatches on the
-//      directness bits of `target_object_and_flags` (&3e):
-//        level 2 or 3 (bit 7 set) → head straight for the target (tx, ty).
-//        level 1       (bit 6 set) → head roughly at target, randomised.
-//        level 0                   → wander until the target is re-sighted.
-//   3. The chosen (tx, ty) is fed to `move_towards_target` / the per-type
-//      walking routine, which builds the per-axis velocity nudge.
-//
-// This port covers layer 1 + layer 2 (LOS raycast + directness state
-// machine) and the tx/ty selection. Layer 3's full per-NPC-type walking
-// state machine (slope checks, jumping, etc.) remains simplified — see
-// `move_towards_target_with_probability` for the reduced form callers use.
+// &359a-&35e4 + &3cf6-&3da5 LOS + pathfinding. Layer 1: 16-frame LOS
+// raycast (&3cf6); layer 2: directness dispatch on &3e (&3d26); layer 3
+// per-type walking remains simplified — see
+// move_towards_target_with_probability for the reduced form.
 
-// Directness bits on `target_and_flags`. Identical mapping to the 6502's
-// `TARGET_FLAG_DIRECTNESS_TWO/ONE/AVOIDING`.
-//   bit 7 : DIRECTNESS_TWO — target is currently visible
-//   bit 6 : DIRECTNESS_ONE — target was visible recently
-//   bit 5 : AVOIDING       — head AWAY from target, not toward
-//   bits 0-4 : target object slot (0 = player)
-//
-// Combined directness level: bits 7,6 → 00=0, 01=1, 10=2, 11=3.
+// target_and_flags layout (matches 6502 TARGET_FLAG_*): bit 7 DIRECTNESS_TWO
+// (visible now), bit 6 DIRECTNESS_ONE (recent), bit 5 AVOIDING, bits 0-4
+// slot. Combined level (bits 7,6): 00=0, 01=1, 10=2, 11=3.
 inline uint8_t directness_level(const Object& obj) {
     return static_cast<uint8_t>((obj.target_and_flags >> 6) & 0x03);
 }
 
-// Tile-by-tile line-of-sight raycast between `obj` and the object in
-// `target_slot`. `max_tiles` caps the search distance in whole tiles
-// (the 6502 parameter is in 1/8-tile fractions; we convert internally).
-// Returns true if no solid tile obstructs the ray.
-//
-// Port of `check_for_obstruction_between_objects` (&359c). Simplifications
-// vs the 6502:
-//   * Doesn't special-case door tiles at the target's position (the 6502
-//     suppresses `door_to_suppress`; ours checks the whole grid plainly).
-//   * Waterline-crossing-counts-as-obstruction flag isn't wired — the
-//     6502 uses it for piranha / wasp targeting of out-of-element NPCs;
-//     `update_big_fish` currently approximates that separately.
+// &359c check_for_obstruction_between_objects. Port-only: drops
+// door_to_suppress and the waterline-crossing flag (update_big_fish
+// approximates that separately). max_tiles is whole tiles, not &20-fracs.
 bool has_line_of_sight(const Object& obj,
                        uint8_t target_slot,
                        uint8_t max_tiles,
                        const UpdateContext& ctx);
 
-// 6502 find_object-style LOS check: the raycast cap is randomised per
-// call, matching &3cb5-&3cba:
-//
-//   max_distance = (rnd & 0x4f) XOR nearest_object_distance
-//
-// where `nearest_object_distance` is the length of the closest candidate
-// found so far this iteration, initialised to 0xff before any candidate.
-// For our simplified single-target callers (firing at the player with no
-// alternate target pool), nearest_object_distance is always 0xff, so the
-// cap ranges over 0xb0..0xff &20-fractions ≈ 22..32 tiles, selected at
-// random each call. Multi-candidate callers (a future faithful port of
-// find_object with OBJECT_ACTIVE_CHATTER alternate targeting) would pass
-// the running nearest_object_distance so later candidates get the
-// "within ~10 tiles of the current nearest" cap described at &3cb5.
-//
-// The 6502's `AND #&4f` mask sits behind the comment "Use random
-// distance up to 10 tiles" — i.e. the randomisation amount (bits 0-3
-// and bit 6), not the absolute cap. After XOR with an initial 0xff the
-// effective cap is larger than 10 tiles; the comment only becomes a
-// tight cap once nearest_object_distance is small.
+// &3cb5-&3cba find_object LOS cap = (rnd & 0x4f) XOR nearest_object_distance.
+// Single-target callers pass 0xff so the cap is 22..32 tiles random;
+// multi-candidate callers (future find_object port) pass the running
+// nearest so later candidates get a tighter cap.
 bool has_line_of_sight_randomized(
     const Object& obj,
     uint8_t target_slot,
     const UpdateContext& ctx,
     uint8_t nearest_object_distance = 0xff);
 
-// 16-frame-cadence directness update. Port of `consider_if_npc_can_see_target`
-// (&3cf6). When LOS is clear, snaps both directness bits on; when blocked,
-// decays the level by one per 16-frame tick. Also nudges `obj.tx / obj.ty`
-// toward the target when the target is visible.
-//
-// Safe to call from any NPC's update; respects `obj.frame_counter_sixteen`
-// so it's O(1) most frames.
+// &3cf6 consider_if_npc_can_see_target. 16-frame cadence: LOS clear →
+// directness=3; blocked → -1 level. Updates tx/ty when target visible.
 void update_target_directness(Object& obj, UpdateContext& ctx);
 
-// Per-frame path (tx, ty) update. Port of `consider_updating_npc_path`
-// (&3d26). Dispatches on the current directness level:
-//   3/2 → tx, ty = target.x, target.y                 (direct chase)
-//   1   → tx, ty = target.x ± random, target.y ± rand (slight jitter)
-//   0   → tx, ty drifts with RNG                      (wander)
-//
-// Callers combine this with `move_towards_target_with_probability` (which
-// already reads obj.target_and_flags to find the target slot) to get
-// velocity toward the chosen (tx, ty).
+// &3d26 consider_updating_npc_path. Dispatches on directness level: 3/2
+// → exact target, 1 → jittered, 0 → wander. Combined with
+// move_towards_target_with_probability to produce per-axis velocity.
 void update_npc_path(Object& obj, UpdateContext& ctx);
 
 } // namespace NPC
