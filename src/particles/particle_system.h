@@ -81,7 +81,24 @@ public:
 
     // Emit `count` particles of the given type, spawning from `src`'s
     // position. Port of &218c / &218e (add_particle / add_particles).
-    void emit(ParticleType type, int count, const Object& src, Random& rng);
+    //
+    // `angle` is the 6502's `&b5 angle` zp byte the caller sets before
+    // JSR add_particles (e.g. flask sets 0xc0 = upward at &43d5; water
+    // splash sets 0xc0 at &2f6f). For particle types whose flags
+    // request `use_src_vel` (bit 7) or `use_src_accel` (bit 7|6), the
+    // angle is overridden from the source object's velocity vector
+    // (with EOR #&80 reversal — particles fly OPPOSITE to motion); for
+    // all other types the caller-passed angle is used as-is. Either
+    // way, magnitude is drawn from the type's spd_rand/spd_base table
+    // entries and (magnitude, angle) is converted to (vx, vy) via
+    // vector_from_magnitude_and_angle, becoming the per-batch base
+    // velocity. Per-particle ±vx_rand / ±vy_rand jitter is then added
+    // on top — same path as &21d7-&21e1 in the 6502.
+    //
+    // Default 0xc0 (upward) matches the most common call site; many
+    // emits ignore angle anyway because their flags enable use_src_vel.
+    void emit(ParticleType type, int count, const Object& src, Random& rng,
+              uint8_t angle = 0xc0);
 
     // Emit a single particle at an explicit world tile (whole coords only,
     // fractions = 0). Used by the star-field at &26ce-&26e3 which fills

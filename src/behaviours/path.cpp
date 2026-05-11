@@ -72,8 +72,8 @@ static bool has_line_of_sight_fracs(const Object& obj,
         // ORA #&04 at &3630) before comparing against the threshold. Same
         // trick here so slope tiles match byte-for-byte.
         uint8_t y_frac = static_cast<uint8_t>((py & 0xf8) | 0x04);
-        if (Collision::point_in_tile_solid(ctx.landscape, tile_x, tile_y,
-                                           x_frac, y_frac)) {
+        if (Collision::point_in_tile_solid_with_doors(
+                ctx.landscape, ctx.mgr, tile_x, tile_y, x_frac, y_frac)) {
             return false;
         }
     }

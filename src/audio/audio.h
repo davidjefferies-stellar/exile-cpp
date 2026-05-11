@@ -74,4 +74,12 @@ void tick();
 // selection logic. Off by default.
 void set_debug_tone(bool on);
 
+// Master enable. When false, play / play_at become no-ops and any
+// envelopes still ringing are silenced immediately. The device stays
+// open so this is cheap to toggle. Settable from exile.ini's
+// [audio] enabled key; defaults to true so configs without that key
+// continue to make sound.
+void set_enabled(bool on);
+bool is_enabled();
+
 }  // namespace Audio

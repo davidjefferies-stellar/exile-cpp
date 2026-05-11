@@ -1,4 +1,5 @@
 #include "behaviours/mood.h"
+#include "behaviours/path.h"
 #include "core/types.h"
 #include <algorithm>
 #include <cstdlib>
@@ -100,7 +101,7 @@ int category_for_type(uint8_t t) {
 // type_A; we skip those (returns -1 for type checks). Outputs whether
 // the chosen match was via the phobia table (or player), so the caller
 // can decide which stim bits to set. Returns slot or -1.
-int find_target(const Object& npc, ObjectManager& mgr, int self_slot,
+int find_target(const Object& npc, UpdateContext& ctx, int self_slot,
                 uint8_t phobia_byte, uint8_t target_byte, int range_tiles,
                 bool& matched_player_out, bool& matched_primary_out) {
     uint8_t phobia_type = phobia_byte & 0x7f;
@@ -113,7 +114,7 @@ int find_target(const Object& npc, ObjectManager& mgr, int self_slot,
     bool best_primary = false, best_player = false;
     for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
         if (i == self_slot) continue;
-        const Object& other = mgr.object(i);
+        const Object& other = ctx.mgr.object(i);
         if (!other.is_active()) continue;
         uint8_t t = static_cast<uint8_t>(other.type);
         bool is_player = (t == 0);
@@ -127,6 +128,19 @@ int find_target(const Object& npc, ObjectManager& mgr, int self_slot,
         int ady = dy < 0 ? -dy : dy;
         if (adx > range_tiles || ady > range_tiles) continue;
         int d = adx > ady ? adx : ady;
+        // Port of &3cb2-&3cbd in find_object: each candidate must pass
+        // an LOS probe (check_for_obstruction_between_objects with a
+        // randomised cap). With the door-aware point_in_tile_solid_with_
+        // doors swapped into has_line_of_sight_fracs, a closed door
+        // between the NPC and the candidate makes that candidate
+        // invisible to the stimuli scan — which is what gates rolling
+        // robots / fluffy / chatter from "activating" until the door
+        // unlocking them actually opens. Skipped earlier; that let a
+        // blue rolling robot at (a0, 6b) target the player while still
+        // sealed behind the door at (9e, 6b).
+        if (!NPC::has_line_of_sight_randomized(npc, static_cast<uint8_t>(i), ctx)) {
+            continue;
+        }
         if (d < best_dist) {
             best_dist = d;
             best_slot = i;
@@ -191,7 +205,7 @@ void update_mood(Object& npc, UpdateContext& ctx) {
     // home" behaviour.
     if ((per_obj_fc & 0x3f) == 0) {
         bool was_player = false, was_primary = false;
-        int hit = find_target(npc, ctx.mgr, ctx.this_slot,
+        int hit = find_target(npc, ctx, ctx.this_slot,
                               kPhobia[cat], kTarget[cat], 16,
                               was_player, was_primary);
         if (hit >= 0) {
@@ -219,7 +233,7 @@ void update_mood(Object& npc, UpdateContext& ctx) {
             }
             if (!skip_home) {
                 bool _player = false, _primary = false;
-                int home_slot = find_target(npc, ctx.mgr, ctx.this_slot,
+                int home_slot = find_target(npc, ctx, ctx.this_slot,
                                             kHome[cat], 0xff, 16,
                                             _player, _primary);
                 if (home_slot >= 0) {

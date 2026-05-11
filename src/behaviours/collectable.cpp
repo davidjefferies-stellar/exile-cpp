@@ -161,21 +161,41 @@ void update_inactive_grenade(Object& obj, UpdateContext& ctx) {
 // (6502 explosion type for OBJECT_POWER_POD is "turn into fireball",
 // from the &0491 &85 entry at line 619 of the disassembly).
 //
-// Port of &4360-&4373:
+// Port of &4360-&4373 with one port-only addition: the
+// "consider_disturbing_object" pin from update_collectable. Power pods
+// occupy the 0x4a..0x64 collectables range, so init_object_from_type
+// sets the energy bit-7 undisturbed pin (object_manager.cpp:105), but
+// the 6502's update_power_pod doesn't honour it — pods immediately
+// tick down regardless of whether the player has touched them. World-
+// placed pods (e.g. tertiary entry at (159, 107)) therefore disappear
+// after ~5 seconds of game time even if the player never approaches.
+//
+// We re-introduce the pin so a pod is dormant on its tile until
+// nudged: zero velocity + skip the energy decrement / pulse while
+// undisturbed; on touch the bit clears and the routine falls through
+// into the standard 6502 reduce_energy_by_one + flash + sound path.
+//
+//   JSR consider_disturbing_object       ; clear pin on touch
+//   if (pinned) zero velocity + return
 //   JSR reduce_energy_by_one
 //   LDA frame_counter_sixteen; CMP #&02
-//   JSR use_damaged_palette_if_carry_clear ; damaged palette when fc16 < 2,
-//                                          ; default palette restored
-//                                          ; otherwise. ALWAYS writes the
-//                                          ; palette — the "flash" is a
-//                                          ; 2-in-16 inverted colour-3.
-//   BCS leave                                ; skip sound otherwise
+//   JSR use_damaged_palette_if_carry_clear
+//   BCS leave
 //   play pulsing sound
-//
-// Deliberately does NOT call update_collectable — the 6502 skips
-// consider_disturbing_object for power pods (they're free-floating /
-// thrown projectiles, not pinned tile objects).
 void update_power_pod(Object& obj, UpdateContext& ctx) {
+    // Port deviation (mirrors &4b9d consider_disturbing_object): any
+    // non-self touch clears bit 7 of energy. Pin velocity to 0 and
+    // bail out while still pinned — no lifespan tick, no flash, no
+    // pulse sound.
+    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
+        obj.energy &= 0x7f;
+    }
+    if (obj.energy & 0x80) {
+        obj.velocity_x = 0;
+        obj.velocity_y = 0;
+        return;
+    }
+
     // &4360 reduce_energy_by_one. Energy==0 hits the main loop's
     // explosion branch after this routine returns.
     if (obj.energy > 0) obj.energy--;
@@ -189,24 +209,16 @@ void update_power_pod(Object& obj, UpdateContext& ctx) {
 
     // &4ddf use_damaged_palette_if_carry_clear: always reset palette to
     // the object type's default, then XOR #&30 when carry was clear.
-    // This is important — the 6502 restores the palette each frame, so
-    // our previous "XOR on toggle" implementation was wrong: it let
-    // adjacent flash frames cancel and left the pod permanently tinted
-    // once fc16 crossed the threshold.
     uint8_t idx = static_cast<uint8_t>(obj.type);
     uint8_t base_palette = object_types_palette_and_pickup[idx] & 0x7f;
     obj.palette = carry_clear ? static_cast<uint8_t>(base_palette ^ 0x30)
                               : base_palette;
-    // &436a-&436f: BCS leave skips both palette and sound when carry
-    // is set; the sound only plays on the 2-in-16 flash frames where
-    // carry came back clear. Without the gate this hammers Audio::play
-    // every frame — the channel never gets to decay and we hear a
-    // sustained tone instead of a pulse.
+    // &436a-&436f: only play the pulse sound during the 2-in-16
+    // damaged-palette window.
     if (carry_clear) {
         static constexpr uint8_t kSoundPowerPodPulse[4] = { 0x05, 0xf2, 0xff, 0xc5 };
         Audio::play_at(Audio::CH_ANY, kSoundPowerPodPulse, obj.x.whole, obj.y.whole);
     }
-    (void)ctx;
 }
 
 // &4374: Destinator - key item for completing the game
@@ -215,6 +227,16 @@ void update_destinator(Object& obj, UpdateContext& ctx) {
     // Flash more vigorously
     if (ctx.every_four_frames) {
         obj.palette ^= 0x04;
+    }
+
+    // &4389-&4397: 1-frame-in-32 pulsing chirp. The 6502 gates with
+    // (frame_counter & 0x1f) == 0x01; we approximate by reusing
+    // every_four_frames AND a 1-in-8 random roll for a similar cadence.
+    if (ctx.every_four_frames && (ctx.rng.next() & 0x07) == 0) {
+        static constexpr uint8_t kSoundDestinatorPulse[4] = {
+            0x33, 0x03, 0x85, 0x12 };
+        Audio::play_at(Audio::CH_ANY, kSoundDestinatorPulse,
+                       obj.x.whole, obj.y.whole);
     }
 }
 
@@ -307,13 +329,22 @@ void update_full_flask(Object& obj, UpdateContext& ctx) {
         }
     }
 
-    // &43d3-&43db: emit 8 PARTICLE_FLASK moving upward. add_particles
-    // handles random spread per type; our particle emitter inherits
-    // the flask's velocity as base, which is close to the 6502's
-    // angle=0xc0 fixed-upward behaviour once FLASK type's y-rand
-    // (&025e) is applied.
+    // &43d3-&43db: emit PARTICLE_FLASK upward.
+    //   LDA #&c0   ; angle = up
+    //   STA &b5    ; (consumed by add_particles' base-vector calc at
+    //                &21e1 — magnitude*spd_base[FLASK]=0x0a..0x11
+    //                yields a base_vy of -10..-17 frac/frame).
+    //   LDA #&08
+    //   JSR add_particles
+    //
+    // Port-only count reduction: 6502 emits 8/frame into a 32-slot pool,
+    // so during the 16-frame splash eviction caps live particles at ~32.
+    // Our pool is 256 (particle_system.h:73, scaled for our wider viewport),
+    // so 8/frame keeps all 128 emits alive — ~4× denser than the 6502.
+    // 2/frame matches the 6502's pool-capped peak (2 × 16 = 32 alive).
     if (ctx.particles) {
-        ctx.particles->emit(ParticleType::FLASK, 8, obj, ctx.rng);
+        ctx.particles->emit(ParticleType::FLASK, 2, obj, ctx.rng,
+                            /*angle=*/0xc0);
     }
 
     // &43de-&43e4: countdown, then become empty.
@@ -354,12 +385,27 @@ void update_control_device(Object& obj, UpdateContext& ctx) {
     static constexpr uint8_t kSoundRCDFire[4] = { 0x57, 0x07, 0xc1, 0xd3 };
     Audio::play(Audio::CH_ANY, kSoundRCDFire);
 
-    // &435d JMP create_aim_particle: one PARTICLE_AIM per firing frame.
-    // The 6502 also flips horizontally to "put aim particles on same
-    // side as player's face" (&312e) — our particle emitter inherits
-    // the object's flip state via emit so it falls out naturally.
+    // &435d JMP create_aim_particle (&312b): launch one PARTICLE_AIM
+    // along the player's aiming angle.
+    //
+    //   &312b JSR calculate_firing_vector_from_aiming_angle  (&330f)
+    //         → magnitude = (rnd & 3) + 0x40 = 64..67
+    //         → vector_x, vector_y = magnitude × (cos angle, sin angle)
+    //   &312e JSR flip_this_object_horizontally
+    //   &3133 JSR add_particle (Y = PARTICLE_AIM)
+    //         → reads &b4/&b6 as the new particle's base velocity
+    //
+    // Previous port called emit() which uses the source object's
+    // velocity as the particle base — but the RCD is held, so source
+    // velocity is ~0 and the AIM particles just sat at the player's
+    // hands (looked like they'd hit something). emit_directed
+    // reproduces the 6502 path by converting (spd_base + rnd&spd_rand,
+    // angle) into vector_x/y before placing the particle. AIM's
+    // spd_base = 0x3f and spd_rand = 0x01 produce magnitude 63..64,
+    // close to the 6502's 64..67.
     if (ctx.particles) {
-        ctx.particles->emit(ParticleType::AIM, 1, obj, ctx.rng);
+        ctx.particles->emit_directed(
+            ParticleType::AIM, ctx.player_aim_angle, obj, ctx.rng);
     }
 }
 

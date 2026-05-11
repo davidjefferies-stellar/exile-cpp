@@ -449,6 +449,25 @@ void ObjectManager::remove_object(int primary_slot) {
                            static_cast<uint8_t>(obj.type),
                            obj.x.whole, obj.y.whole);
     }
+    // Port of &1e29 remove_object_for_touching_and_targeting: walk every
+    // other slot and clear any touching/target field that pointed at the
+    // slot we're removing. Without this, sticky touching semantics leave
+    // doors / hives / other heavy primaries pointing at empty slots after
+    // the toucher dies, and update_door's gate-fail path then misreads
+    // the dead slot's stale type/weight bytes.
+    uint8_t self = static_cast<uint8_t>(primary_slot);
+    for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
+        if (i == primary_slot) continue;
+        Object& other = primary_[i];
+        if (other.touching == self) other.touching = 0x80;
+        // Port of &1e34 — clear targeting too. target_and_flags low 5 bits
+        // are the slot index; bits 5-7 are AVOID/DIRECTNESS. Reset to
+        // self-target (slot i) so the NPC re-resolves on its next path tick.
+        if ((other.target_and_flags & 0x1f) == self) {
+            other.target_and_flags =
+                static_cast<uint8_t>((other.target_and_flags & 0xe0) | i);
+        }
+    }
     obj.y.whole = 0;
 }
 

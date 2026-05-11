@@ -1,7 +1,9 @@
 #include "objects/collision.h"
 #include "objects/object_data.h"
+#include "objects/object_manager.h"
 #include "world/tile_data.h"
 #include "world/obstruction.h"
+#include "world/tertiary.h"
 #include "rendering/sprite_atlas.h"
 #include "core/types.h"
 #include <cstdlib>
@@ -85,6 +87,19 @@ static bool tile_obstructs_point(const Landscape& landscape,
                                  uint8_t tile_x, uint8_t tile_y,
                                  uint8_t x_frac, uint8_t y_frac) {
     return point_in_tile_solid(landscape, tile_x, tile_y, x_frac, y_frac);
+}
+
+bool point_in_tile_solid_with_doors(
+        const Landscape& landscape, ObjectManager& mgr,
+        uint8_t tile_x, uint8_t tile_y,
+        uint8_t x_frac, uint8_t y_frac) {
+    ResolvedTile r = resolve_tile_with_tertiary(landscape, tile_x, tile_y);
+    uint8_t tile = substitute_door_for_obstruction(
+        r.tile_and_flip, r.data_offset,
+        reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(mgr.object(0)),
+        mgr.tertiary_data_byte(r.data_offset));
+    if (!is_tile_type_solid(tile & TileFlip::TYPE_MASK)) return false;
+    return tile_and_flip_obstructs_point(tile, x_frac, y_frac);
 }
 
 // Returns true if the object's point position (x, y) is inside solid geometry.
@@ -189,11 +204,14 @@ ObjectCollisionResult check_object_collision(
         const Object& other = all_objects[i];
         if (!other.is_active()) continue;
 
-        // Intangibility gate (&2b2d)
-        uint8_t idx = static_cast<uint8_t>(other.type);
-        if (idx < static_cast<uint8_t>(ObjectType::COUNT)) {
-            if (object_types_flags[idx] & ObjectTypeFlags::INTANGIBLE) continue;
-        }
+        // No intangibility filter here. The 6502 sets objects_touching for
+        // both sides at &2b11-&2b27 BEFORE the INTANGIBLE check at
+        // &2b27-&2b2d — intangibility only skips the velocity-transfer /
+        // physics path that follows. Filtering intangibles out of the
+        // touching detection makes a door miss its shooter the moment the
+        // bullet's slot mutates to EXPLOSION (intangible) on impact:
+        // door.touching stays 0x80 and update_door's touch-toggle never
+        // fires, so unlocked doors never open from gunfire.
 
         // Broad phase in whole-tile units (&2a7e-&2a90): x within +/-2 tiles,
         // y within +/-2 tiles of this object.
@@ -415,13 +433,35 @@ uint8_t substitute_door_for_obstruction(
     // slot, that's authoritative (update_door mutates it each frame).
     // Otherwise fall back to the tertiary store (with the spawn gate
     // stripped — bit 7 is for spawning, not door state).
+    //
+    // Destroyed-door handling (port deviation, no 6502 analogue): when
+    // the door's energy hits 0, object_update step 12 mutates the slot
+    // IN-PLACE into an EXPLOSION, repurposing tertiary_data_offset as
+    // the explosion duration counter (10→0). The original substitution
+    // treated that counter as door flags, so bit 1 of each duration
+    // value (10=0b1010 open, 9=0b1001 closed, 8=closed, 7=open, ...)
+    // would flicker the tile between SPACE and solid mid-explosion —
+    // the user could drop into the tile during an "open" frame, then
+    // land on a solid pattern when the bit cleared.
+    //
+    // After the explosion is reaped, the tertiary fallback still holds
+    // whatever update_door last wrote (typically OPENING-clear), so the
+    // tile reverted to permanently-solid until the door respawns. The
+    // SLOW_OR_DESTROYED bit (DoorFlag::SLOW_OR_DESTROYED = 0x08) is the
+    // only durable signal that this tile was destroyed — treat it as
+    // permanently passable until something explicitly resets it.
     uint8_t data = static_cast<uint8_t>(tertiary_byte_fallback & 0x7f);
+    bool destroyed_explosion = false;
     if (data_offset > 0) {
         for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
             const Object& obj = all_objects[i];
             if (obj.is_active() &&
                 obj.tertiary_slot == static_cast<uint16_t>(data_offset)) {
-                data = obj.tertiary_data_offset;
+                if (obj.type == ObjectType::EXPLOSION) {
+                    destroyed_explosion = true;
+                } else {
+                    data = obj.tertiary_data_offset;
+                }
                 break;
             }
         }
@@ -442,16 +482,35 @@ uint8_t substitute_door_for_obstruction(
     // makes the player sink into the door past the slope's solid
     // region. Horizontal doors must use the SPACESHIP_WALL_HORIZONTAL_
     // QUARTER tile, whose obstruction is a uniform thin top slab.
-    bool opening = (data & 0x02) != 0;
+    bool opening   = (data & 0x02) != 0;
+    bool destroyed = (data & 0x08) != 0; // DoorFlag::SLOW_OR_DESTROYED
     bool fh = (tile_and_flip & TileFlip::HORIZONTAL) != 0;
     bool fv = (tile_and_flip & TileFlip::VERTICAL)   != 0;
     bool vertical = (fh != fv);
-    if (opening) {
-        return static_cast<uint8_t>(TileType::SPACE);
+
+    // CRITICAL: preserve the ORIGINAL door tile's flip bits.
+    //
+    // The 6502 substitution at &3ebf-&3ec2 stores a bare type byte to
+    // `&08 ; tile_type_and_flip`, but set_obstruction_data_variables_
+    // for_top_tile at &2462 reads `&09 ; tile_flip` for the
+    // y_offset-nibble selection AND the &247a collision-flip XOR.
+    // `&09` retains the ORIGINAL door tile's flip bits — so a
+    // horizontal door with flip_v=true substituted to SPACESHIP_WALL_
+    // HORIZONTAL_QUARTER (0x17) ends up using the LOW nibble of
+    // tiles_obstruction_y_offsets[0x17] = 0x3 → y_offset 0x3f, with
+    // collision_flip = true. That gives a thin top slab the player
+    // walks on. Without preserving the flip we'd get y_offset 0xbf and
+    // solid-bottom-quarter — the player sinks past the empty top
+    // three-quarters of the door tile and gets stuck on the next tile
+    // down.
+    uint8_t flip_bits = tile_and_flip & ~TileFlip::TYPE_MASK;
+    if (opening || destroyed || destroyed_explosion) {
+        return static_cast<uint8_t>(TileType::SPACE) | flip_bits;
     }
-    return vertical
+    uint8_t sub_type = vertical
         ? static_cast<uint8_t>(TileType::STONE_SLOPE_78)
         : static_cast<uint8_t>(TileType::SPACESHIP_WALL_HORIZONTAL_QUARTER);
+    return static_cast<uint8_t>(sub_type | flip_bits);
 }
 
 } // namespace Collision

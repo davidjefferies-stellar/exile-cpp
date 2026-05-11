@@ -217,11 +217,14 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         if (inp.move_right) accel_x = static_cast<int8_t>( 4 * accel_scale);
     }
 
-    // Lying down disables normal walking acceleration (the 6502 clears
-    // the walking state and lets gravity take over).
-    if (player_lying_down_) {
-        accel_x = 0;
-        if (accel_y < 0) accel_y = 0;  // can't stand up mid-jump
+    // Lying down doesn't disable horizontal acceleration on the 6502 —
+    // &37c6 clears player_is_lying_down at the top of every frame and
+    // &37dc-&37e4 only re-sets it if the player isn't accelerating. So
+    // pressing left/right while lying makes the player stand up and walk.
+    // We mirror that here: any horizontal input cancels the toggle so the
+    // sprite stands and the walking branch above stays in effect.
+    if (player_lying_down_ && (inp.move_left || inp.move_right)) {
+        player_lying_down_ = false;
     }
 
     // Port of &1f3d add_jetpack_thrust_particles: emit one jetpack
@@ -230,13 +233,37 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         particles_.emit(ParticleType::JETPACK, 1, player, rng_);
     }
 
-    // Whistle playing (port of &2c99 and &2cac)
-    // whistle_one_active_ is cleared at start of each frame in update_timers()
+    // Whistle playing — full port of handle_playing_whistle_one at
+    // &2cac and handle_playing_whistle_two at &2c99.
+    //
+    // Whistle two (&2c99-&2caa):
+    //   BIT player_whistle_two_collected  ; negative if collected
+    //   BPL leave                          ; ignore if not collected
+    //   play_sound (b0 24 b6 e2)           ; high note
+    //   STA whistle_two_activating_object  ; A = this_object = player slot 0
+    //   BPL play_sound_for_whistle         ; always (A=0 is positive)
+    //
+    // Whistle one (&2cac-&2cba):
+    //   BIT player_whistle_one_collected
+    //   BPL leave
+    //   ROR whistle_one_active             ; bit 7 set
+    //   ; fall through to play_sound_for_whistle
+    //
+    // play_sound_for_whistle (&2cb4): play_sound (b0 24 b6 b3) — the
+    // shared low note. So whistle two emits TWO sounds (the high note
+    // at &2c9e plus the shared low note at &2cb4), giving the
+    // characteristic two-tone "tweet"; whistle one emits ONE sound
+    // (just the low note).
+    static constexpr uint8_t kSoundWhistleHigh[4] = { 0xb0, 0x24, 0xb6, 0xe2 };
+    static constexpr uint8_t kSoundWhistleLow[4]  = { 0xb0, 0x24, 0xb6, 0xb3 };
     if (inp.whistle_one && whistle_one_collected_) {
         whistle_one_active_ = true;
+        Audio::play(Audio::CH_ANY, kSoundWhistleLow);
     }
     if (inp.whistle_two && whistle_two_collected_) {
         whistle_two_activator_ = 0; // Player (slot 0) played whistle two
+        Audio::play(Audio::CH_ANY, kSoundWhistleHigh);
+        Audio::play(Audio::CH_ANY, kSoundWhistleLow);
     }
 
     // Aim control — port of &30fc update_player_aiming_angle + the I/K/O
@@ -272,9 +299,22 @@ void Game::apply_player_input(Object& player, const InputState& inp,
             Object aim_src = has_held
                 ? object_mgr_.object(held_object_slot_)
                 : player;
-            Weapon::get_firing_velocity(player_aim_angle_, player.is_flipped_h(),
-                                        aim_src.velocity_x, aim_src.velocity_y);
-            particles_.emit(ParticleType::AIM, 1, aim_src, rng_);
+            // Use emit_directed so the particle's velocity is computed
+            // FROM the player_aiming_angle_with_flip (port of &330f),
+            // not from src.velocity + a hard-coded right-biased base.
+            // The old emit() path used angle=0 default (spd_base 0x3f
+            // pointed right) and just *added* a magnitude-0x20 aim
+            // vector from Weapon::get_firing_velocity on top — the
+            // 0x40 rightward base dominated, so aim-down only nudged
+            // the stream a few pixels downward and aim-up didn't read
+            // at all. emit_directed matches the 6502's
+            // create_aim_particle (&312b → calculate_firing_vector_
+            // from_aiming_angle → add_particle) exactly.
+            uint8_t angle_with_flip = player.is_flipped_h()
+                ? static_cast<uint8_t>(0x80 - static_cast<int8_t>(player_aim_angle_))
+                : player_aim_angle_;
+            particles_.emit_directed(ParticleType::AIM, angle_with_flip,
+                                     aim_src, rng_);
         }
     }
 

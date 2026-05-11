@@ -6,6 +6,8 @@
 #include "objects/object_data.h"
 #include "objects/object_tables.h"
 #include "rendering/sprite_atlas.h"
+#include "world/landscape.h"
+#include "world/tertiary.h"
 #include "world/water.h"
 #include "particles/particle_system.h"
 #include <algorithm>
@@ -25,68 +27,32 @@ static uint8_t rotate_colour_from_A(Object& obj, uint8_t a) {
 
 // Port of explode_object_with_duration_A at &40db-&40ed.
 //
-// The 6502 mutates the current primary IN-PLACE into an EXPLOSION:
 //   STA this_object_tertiary_data_offset  ; duration counter
 //   LDA #&44 (OBJECT_EXPLOSION); STA this_object_type
 //   LDA #&ce; STA explosion_timer          ; -50 = active for 50 frames
 //
-// The slot keeps its position, its velocity, its (unused from here)
-// state, and every other field. update_explosion (ported to
-// projectile.cpp) then ticks the duration counter down each frame,
-// damages nearby objects, emits 2 PARTICLE_EXPLOSION per frame, and
-// eventually flags itself PENDING_REMOVAL.
+// The 6502 mutates ONLY `type` and `tertiary_data_offset` (plus the
+// global explosion_timer). Sprite, palette, energy, position, and
+// every other field stay exactly as the source object had them. From
+// the next tick on, update_explosion runs in this slot instead of the
+// source's update routine, decrementing duration and writing a random
+// palette value (`rng & 0x13`) into obj.palette every frame.
 //
-// We intentionally DON'T go through "set energy=0 → step-12 spawns a
-// new explosion slot" in object_update.cpp, because that path allocates
-// a separate primary and leaves the original one to be removed — a
-// faithful port needs the mutation to happen in the original's slot so
-// chain reactions and target bookkeeping line up. Sound playback (&13f8)
-// is a TODO.
-static void explode_object_with_duration(Object& obj, uint8_t duration) {
-    // Remember the centre of the object BEFORE changing types. Our
-    // renderer anchors sprites by their top-left in world coords, so if
-    // we only swap type/sprite without touching x/y a grenade-sized
-    // source (SPRITE_BALL, ~4x4) turns into an explosion-sized one
-    // (SPRITE_EXPLOSION, much larger) rooted at the same top-left,
-    // which drags the explosion down-and-right of where the fuse
-    // visibly burned. The 6502's tile-granular display masks this; our
-    // sub-tile fractions make it obvious.
-    int old_w_frac = 0, old_h_frac = 0;
-    if (obj.sprite <= 0x80) {
-        const SpriteAtlasEntry& e = sprite_atlas[obj.sprite];
-        old_w_frac = (e.w > 0 ? (e.w - 1) : 0) * 16;
-        old_h_frac = (e.h > 0 ? (e.h - 1) : 0) * 8;
-    }
-
+// The visible effect is the SOURCE'S sprite cycling through random
+// palettes for the duration — a door explodes by flickering its door
+// shape through colours, a grenade flickers its ball shape, etc. An
+// earlier port revision changed sprite to SPRITE_FIREBALL (0x17) and
+// recentred the position; that produced a generic small blob instead
+// of the source-shaped flicker the 6502 plays, and made door
+// destructions read as "the door just disappears".
+void explode_object_with_duration(Object& obj, uint8_t duration) {
     obj.tertiary_data_offset = duration;
-    obj.type    = ObjectType::EXPLOSION;
-    obj.sprite  = object_types_sprite[
-        static_cast<uint8_t>(ObjectType::EXPLOSION)];
-    obj.palette = object_types_palette_and_pickup[
-        static_cast<uint8_t>(ObjectType::EXPLOSION)] & 0x7f;
-    obj.energy  = get_initial_energy(
-        static_cast<uint8_t>(ObjectType::EXPLOSION));
-    obj.timer   = 0;
-
-    // Recenter on the old sprite's centre. Shift = (old_size − new_size)
-    // / 2, applied to the position fraction + carry into whole.
-    int new_w_frac = 0, new_h_frac = 0;
-    if (obj.sprite <= 0x80) {
-        const SpriteAtlasEntry& e = sprite_atlas[obj.sprite];
-        new_w_frac = (e.w > 0 ? (e.w - 1) : 0) * 16;
-        new_h_frac = (e.h > 0 ? (e.h - 1) : 0) * 8;
-    }
-    auto shift_axis = [](uint8_t& whole, uint8_t& frac, int delta) {
-        int sum = int(whole) * 0x100 + int(frac) + delta;
-        sum &= 0xffff;
-        whole = static_cast<uint8_t>((sum >> 8) & 0xff);
-        frac  = static_cast<uint8_t>(sum & 0xff);
-    };
-    shift_axis(obj.x.whole, obj.x.fraction, (old_w_frac - new_w_frac) / 2);
-    shift_axis(obj.y.whole, obj.y.fraction, (old_h_frac - new_h_frac) / 2);
-
-    // &40e8: global explosion_timer is used to drive the screen flash;
-    // we don't have that hooked up yet (TODO), so skip it here.
+    obj.type = ObjectType::EXPLOSION;
+    // sprite, palette, energy, position, timer all left intact — they
+    // belong to the source object and update_explosion will keep
+    // overwriting palette per-frame anyway.
+    // &40e8: global explosion_timer drives the screen flash; not yet
+    // wired into the renderer.
 }
 
 // Port of &4005 add_to_player_mushroom_timer. Adds 0x3f (+optional 1 from
@@ -260,6 +226,14 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
             ev.amount = hurt;
             ctx.damage_events->push_back(ev);
         }
+        // &4425-&4428 explode_bullet sound (channel zero, bullet pop).
+        // Distinct from the generic explosion sound played in step 12 —
+        // this is the short "ptack" the SN76489's noise channel plays
+        // when a bullet hits something. The 6502 always plays this
+        // before turning the bullet into a fireball.
+        static constexpr uint8_t kSoundBulletPop[4] = { 0x17, 0x03, 0x1b, 0x02 };
+        Audio::play_at(Audio::CH_PRIORITY, kSoundBulletPop,
+                       obj.x.whole, obj.y.whole);
         obj.energy = 0; // explode_bullet
         return;
     }
@@ -274,6 +248,63 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
     // &4439: tile collision → explode. The 6502's SBC #&14 / distance check
     // isn't ported yet; we just explode on any solid-tile collision.
     if (obj.tile_collision) {
+        // Port-only: redirect tile_collision-against-a-door-tile into
+        // damage on the door's primary. The substituted door
+        // obstruction (SPACESHIP_WALL_HORIZONTAL_QUARTER thin top
+        // slab, or STONE_SLOPE_78 quarter-solid) sits ABOVE where the
+        // door's primary AABB lives — bullets get caught by the
+        // substituted tile pattern before their AABB reaches the
+        // primary, so object-vs-object touching never fires and
+        // common damage path doesn't run. Walk a few tiles around
+        // the bullet's bottom edge looking for a METAL_DOOR /
+        // STONE_DOOR landscape tile, find the primary owning that
+        // tertiary slot, and damage it the same way a regular touch
+        // would.
+        int sprite_h = (obj.sprite <= 0x80)
+                       ? sprite_atlas[obj.sprite].h : 1;
+        int sprite_h_frac = (sprite_h > 0 ? sprite_h - 1 : 0) * 8;
+        int feet_abs_y = static_cast<int>(obj.y.whole) * 256 +
+                         static_cast<int>(obj.y.fraction) + sprite_h_frac;
+        // Probe the bullet's bottom-edge tile and one tile down — the
+        // bullet might have just nicked into the door tile from above.
+        for (int dy = 0; dy <= 1; dy++) {
+            uint8_t probe_ty = static_cast<uint8_t>(
+                ((feet_abs_y >> 8) + dy) & 0xff);
+            ResolvedTile r = resolve_tile_with_tertiary(
+                ctx.landscape, obj.x.whole, probe_ty);
+            uint8_t type = r.tile_and_flip & TileFlip::TYPE_MASK;
+            bool is_door =
+                type == static_cast<uint8_t>(TileType::METAL_DOOR) ||
+                type == static_cast<uint8_t>(TileType::STONE_DOOR);
+            if (!is_door) continue;
+            // Find the primary owning this tertiary slot.
+            int door_slot = -1;
+            for (int j = 1; j < GameConstants::PRIMARY_OBJECT_SLOTS; j++) {
+                Object& cand = ctx.mgr.object(j);
+                if (!cand.is_active()) continue;
+                if (cand.tertiary_slot !=
+                    static_cast<uint16_t>(r.data_offset)) continue;
+                door_slot = j;
+                break;
+            }
+            if (door_slot < 0) continue;
+            Object& door = ctx.mgr.object(door_slot);
+            uint16_t hurt = std::min<uint16_t>(damage, door.energy);
+            if (door.energy > damage) door.energy -= damage;
+            else                       door.energy = 0;
+            door.flags |= ObjectFlags::WAS_DAMAGED;
+            if (ctx.damage_events) {
+                DamageVisual ev;
+                ev.src_x = obj.x.whole; ev.src_y = obj.y.whole;
+                ev.src_x_frac = obj.x.fraction; ev.src_y_frac = obj.y.fraction;
+                ev.tgt_x = door.x.whole; ev.tgt_y = door.y.whole;
+                ev.tgt_x_frac = door.x.fraction; ev.tgt_y_frac = door.y.fraction;
+                ev.tgt_slot = static_cast<int8_t>(door_slot);
+                ev.amount = hurt;
+                ctx.damage_events->push_back(ev);
+            }
+            break;
+        }
         obj.energy = 0;
         return;
     }
@@ -308,6 +339,9 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
 void update_active_grenade(Object& obj, UpdateContext& ctx) {
     // &4305-&4309: destroyed → quick explosion (duration 10).
     if (obj.energy == 0) {
+        ctx.mgr.log_diag(
+            "grenade p%d DESTROYED (fuse cut) timer=%u → duration 10",
+            ctx.this_slot, static_cast<unsigned>(obj.timer));
         explode_object_with_duration(obj, 0x0a);
         // Immediately seed the explosion with its first burst of
         // particles so the transition frame isn't silent.
@@ -319,6 +353,9 @@ void update_active_grenade(Object& obj, UpdateContext& ctx) {
 
     // &430d-&4311: fuse expired → full explosion (duration 16).
     if (obj.timer >= 0x60) {
+        ctx.mgr.log_diag(
+            "grenade p%d FUSE_EXPIRED timer=%u → duration 16",
+            ctx.this_slot, static_cast<unsigned>(obj.timer));
         explode_object_with_duration(obj, 0x10);
         if (ctx.particles) {
             ctx.particles->emit(ParticleType::EXPLOSION, 10, obj, ctx.rng);
@@ -369,19 +406,61 @@ void update_icer_bullet(Object& obj, UpdateContext& ctx) {
     emit_projectile_trail(obj, ctx);
 }
 
-// &4614: Tracer bullet - follows target, regenerates energy
+// &4614: Tracer bullet — never expires, homes on player.
+//
+//   &4614 JSR increase_energy_by_one      ; cancel move_bullet's decrement
+//   &4617 LDA #&08                        ; explosion duration
+//   &4619 LDX #&0f                        ; damage 15
+//   &461b JSR update_bullet_with_particle_trail
+//   &461e JMP consider_moving_towards_player
+//
+// In our port the lifespan counter is obj.timer (not obj.energy), so we
+// pre-increment obj.timer to cancel common_bullet_update's decrement.
+// Net effect: timer stays constant — tracer never times out, matching
+// the 6502. Previous port pumped obj.energy instead of obj.timer, which
+// did nothing useful: timer hit 0 → common_bullet_update returned early
+// before the angle/sprite update at line 305, leaving the sprite frozen
+// at its last orientation while the bullet kept drifting under residual
+// homing. That's the "doesn't always orientate / stays still" pair.
+//
+// Also re-orient AFTER the homing nudge so the sprite reflects the
+// post-homing velocity (the 6502 has the same one-frame staleness, but
+// our +1/frame homing changes direction more often than the 6502's
+// 1-in-4 magnitude-0x40 cadence, making the staleness more visible).
 void update_tracer_bullet(Object& obj, UpdateContext& ctx) {
+    // &4614 increase_energy_by_one — but timer is the equivalent here.
+    if (obj.timer < 0xff) obj.timer++;
+
     common_bullet_update(obj, ctx, 15);
-    // Tracer homes toward player
+
+    // &4686 DEC acceleration_y — cancel gravity for the tracer. The
+    // 6502 walks tracers as flying enemies (no gravity); without this
+    // gravity's +1/frame velocity_y cancels the homing's -1/frame
+    // when the player is above the bullet, so the tracer can never
+    // rise. X tracking still works (gravity doesn't touch velocity_x),
+    // which is exactly the "homes on X but not Y" failure mode.
+    NPC::cancel_gravity(obj);
+
+    // &467a-&4683 consider_moving_towards_player: homing on player.
     const Object& player = ctx.mgr.player();
     int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
     int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);
-    if (dx > 0 && obj.velocity_x < 0x20) obj.velocity_x++;
+    if (dx > 0 && obj.velocity_x <  0x20) obj.velocity_x++;
     if (dx < 0 && obj.velocity_x > -0x20) obj.velocity_x--;
-    if (dy > 0 && obj.velocity_y < 0x20) obj.velocity_y++;
+    if (dy > 0 && obj.velocity_y <  0x20) obj.velocity_y++;
     if (dy < 0 && obj.velocity_y > -0x20) obj.velocity_y--;
-    // Tracer never expires (energy restored)
-    if (obj.energy < 0x10) obj.energy++;
+
+    // Re-orient the sprite to the post-homing velocity so the bullet
+    // visibly tracks its current motion. The 6502 doesn't do a second
+    // orient call here — the angle from move_bullet's earlier call is
+    // baked in until next frame — but matching the homing changes from
+    // every frame +1 to every-4-frame +8 would require porting
+    // move_towards_target_with_probability and the rng gate; an extra
+    // re-orient is the cheaper way to keep the sprite in sync.
+    uint8_t angle = calculate_angle_from_velocities(obj.velocity_x,
+                                                    obj.velocity_y);
+    orient_bullet_to_angle(obj, angle);
+
     emit_projectile_trail(obj, ctx);
 }
 
@@ -624,6 +703,7 @@ void update_invisible_debris(Object& obj, UpdateContext& ctx) {
 // our port's INTANGIBLE-gravity-exempt skips that, so re-add the +1/
 // frame ramp manually. Without it the drop crawls one tile and dies.
 void update_red_drop(Object& obj, UpdateContext& ctx) {
+    bool should_explode = false;
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
         Object& target = ctx.mgr.object(obj.touching);
         ObjectType tt = target.type;
@@ -633,6 +713,11 @@ void update_red_drop(Object& obj, UpdateContext& ctx) {
             if (tt == ObjectType::YELLOW_SLIME) {
                 target.type = ObjectType::CORONIUM_BOULDER;
             } else if (tt != ObjectType::PIRANHA) {
+                // &47aa-&47ad: damage sound (channel zero, bullet pop).
+                static constexpr uint8_t kSoundBulletPop[4] = {
+                    0x17, 0x03, 0x1b, 0x02 };
+                Audio::play_at(Audio::CH_PRIORITY, kSoundBulletPop,
+                               obj.x.whole, obj.y.whole);
                 // &47ab: 100 damage to anyone else (incl. player).
                 uint16_t hurt = std::min<uint16_t>(100, target.energy);
                 if (target.energy > 100) target.energy -= 100;
@@ -649,12 +734,74 @@ void update_red_drop(Object& obj, UpdateContext& ctx) {
                     ctx.damage_events->push_back(ev);
                 }
             }
-            obj.energy = 0;
-            return;
+            should_explode = true;
         }
+    } else if (obj.tile_collision) {
+        // Port-only: same door-tile redirect as common_bullet_update.
+        // The substituted door obstruction (SPACESHIP_WALL_HORIZONTAL_
+        // QUARTER thin top slab) catches the drop above the door
+        // primary's AABB, so object-vs-object touching never fires
+        // and the drop's 100-damage payload is wasted on the empty
+        // tile. Walk a tile or two around the drop's bottom edge for
+        // a METAL_DOOR / STONE_DOOR landscape tile and apply the
+        // 100-damage hit to the door's primary directly.
+        int sprite_h = (obj.sprite <= 0x80)
+                       ? sprite_atlas[obj.sprite].h : 1;
+        int sprite_h_frac = (sprite_h > 0 ? sprite_h - 1 : 0) * 8;
+        int feet_abs_y = static_cast<int>(obj.y.whole) * 256 +
+                         static_cast<int>(obj.y.fraction) + sprite_h_frac;
+        for (int dy = 0; dy <= 1; dy++) {
+            uint8_t probe_ty = static_cast<uint8_t>(
+                ((feet_abs_y >> 8) + dy) & 0xff);
+            ResolvedTile r = resolve_tile_with_tertiary(
+                ctx.landscape, obj.x.whole, probe_ty);
+            uint8_t type = r.tile_and_flip & TileFlip::TYPE_MASK;
+            bool is_door =
+                type == static_cast<uint8_t>(TileType::METAL_DOOR) ||
+                type == static_cast<uint8_t>(TileType::STONE_DOOR);
+            if (!is_door) continue;
+            int door_slot = -1;
+            for (int j = 1; j < GameConstants::PRIMARY_OBJECT_SLOTS; j++) {
+                Object& cand = ctx.mgr.object(j);
+                if (!cand.is_active()) continue;
+                if (cand.tertiary_slot !=
+                    static_cast<uint16_t>(r.data_offset)) continue;
+                door_slot = j;
+                break;
+            }
+            if (door_slot < 0) continue;
+            Object& door = ctx.mgr.object(door_slot);
+            uint16_t hurt = std::min<uint16_t>(100, door.energy);
+            if (door.energy > 100) door.energy -= 100;
+            else                    door.energy = 0;
+            door.flags |= ObjectFlags::WAS_DAMAGED;
+            if (ctx.damage_events) {
+                DamageVisual ev;
+                ev.src_x = obj.x.whole; ev.src_y = obj.y.whole;
+                ev.src_x_frac = obj.x.fraction; ev.src_y_frac = obj.y.fraction;
+                ev.tgt_x = door.x.whole; ev.tgt_y = door.y.whole;
+                ev.tgt_x_frac = door.x.fraction; ev.tgt_y_frac = door.y.fraction;
+                ev.tgt_slot = static_cast<int8_t>(door_slot);
+                ev.amount = hurt;
+                ctx.damage_events->push_back(ev);
+            }
+            break;
+        }
+        should_explode = true;
     }
-    if (obj.tile_collision) {
-        obj.energy = 0;
+    // 6502 &47b6-&47bb: explode_red_drop calls explode_object_with_
+    // duration_A_but_no_sound with A=0. Going via energy=0 instead
+    // would route through the generic (init_energy/32)+3 fallback in
+    // object_update.cpp step 12, giving duration 4 — ~4× the particles
+    // and a non-zero acceleration radius pushing nearby objects.
+    if (should_explode) {
+        // &47b6 JSR play_high_beep — high-pitched chirp on red drop
+        // popping. The "_but_no_sound" explosion path means this is
+        // the only sound the player hears for a red-drop impact.
+        static constexpr uint8_t kSoundHighBeep[4] = { 0x17, 0x82, 0x13, 0xf2 };
+        Audio::play_at(Audio::CH_ANY, kSoundHighBeep,
+                       obj.x.whole, obj.y.whole);
+        explode_object_with_duration(obj, 0);
         return;
     }
     if (obj.velocity_y < 0x40) obj.velocity_y++;
@@ -697,25 +844,34 @@ void update_moving_fireball(Object& obj, UpdateContext& ctx) {
 
 // &4F9C: Explosion - expanding damage area
 void update_explosion(Object& obj, UpdateContext& ctx) {
-    // Duration stored in tertiary_data_offset. Matches &4fca-&4fce: if
-    // the counter has hit zero the explosion is finished — flag for
-    // removal (set_object_for_removal &2516 ORA #&20) and return. The
-    // main update loop's PENDING_REMOVAL step reaps the slot next frame.
+    // 6502 &4fbf: AND #&13 — cycles through the 8 explosion palettes
+    // {kyK,rgK,rmK,rcK,kyR,rgR,rmR,rcR}. &0f would mix in unrelated indices.
+    obj.palette = ctx.rng.next() & 0x13;
+
+    // 6502 &4fc3-&4fc7: emit 10 particles BEFORE the duration check.
+    // A duration-0 explosion (e.g. red drop at &47b9) gets exactly one
+    // frame of particles before removal. Earlier port checked duration
+    // first and skipped emit, which combined with the energy=0 fallback
+    // (object_update.cpp computing duration=(init/32)+3) made small
+    // bullet hits emit ~40 particles instead of 10.
+    if (ctx.particles)
+        ctx.particles->emit(ParticleType::EXPLOSION, 10, obj, ctx.rng);
+
+    // 6502 &4fca-&4fce: BEQ to_set_object_for_removal if duration==0.
+    // The main update loop's PENDING_REMOVAL step reaps the slot next frame.
     if (obj.tertiary_data_offset == 0) {
         obj.flags |= ObjectFlags::PENDING_REMOVAL;
         return;
     }
     obj.tertiary_data_offset--;
-    // Explosions are INTANGIBLE, so the main loop's physics gate already
-    // skips the gravity tick for them — no explicit cancel_gravity needed.
 
-    // 6502 &4fbf: AND #&13 — cycles through the 8 explosion palettes
-    // {kyK,rgK,rmK,rcK,kyR,rgR,rmR,rcR}. &0f would mix in unrelated indices.
-    obj.palette = ctx.rng.next() & 0x13;
-
-    // Emit explosion particles each frame while burning.
-    if (ctx.particles)
-        ctx.particles->emit(ParticleType::EXPLOSION, 2, obj, ctx.rng);
+    ctx.mgr.log_diag(
+        "exp p%d tdo=%u pal=0x%02x sprite=0x%02x @%u,%u",
+        ctx.this_slot,
+        static_cast<unsigned>(obj.tertiary_data_offset),
+        static_cast<unsigned>(obj.palette),
+        static_cast<unsigned>(obj.sprite),
+        obj.x.whole, obj.y.whole);
 
     apply_explosion_radius(ctx.mgr, obj, /*source_slot=*/-1,
                            obj.tertiary_data_offset, ctx.damage_events);

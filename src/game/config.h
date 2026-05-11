@@ -113,6 +113,20 @@ struct StartupConfig {
     // imp spawn.
     bool pipe_198_190_crab = true;
 
+    // [debug] stress_test — when true, scatter one of every animated
+    // creature type in a grid around the player's spawn at startup. The
+    // grid covers a ~24×15 tile area NW of the player and stresses the
+    // primary slot pool, AI dispatch, and rendering with ~40 active NPCs
+    // simultaneously. Defaults to false; intended only for benchmarking
+    // and visual regression testing.
+    bool stress_test = false;
+
+    // [audio] — master enable for the synthesised sound. When false,
+    // Audio::play / play_at become no-ops; the device still opens so
+    // toggling at runtime stays cheap. Defaults to true to match the
+    // existing "no [audio] section means full audio" behaviour.
+    bool audio_enabled = true;
+
     // [startup_spawns] — list of primary objects to drop into the world
     // during Game::init, after the landscape is baked. Each entry maps a
     // unique key (slot0..slotN, or any other distinct name) to a tuple

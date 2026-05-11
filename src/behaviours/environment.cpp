@@ -4,7 +4,9 @@
 #include "core/types.h"
 #include "objects/object_data.h"
 #include "objects/object_tables.h"
+#include "objects/object_manager.h"
 #include "world/landscape.h"
+#include "world/tertiary.h"
 #include "particles/particle_system.h"
 #include <algorithm>
 #include <cstdlib>
@@ -159,15 +161,40 @@ void update_door(Object& obj, UpdateContext& ctx) {
     uint8_t colour      = (data >> 4) & 0x07;
     uint8_t colour_pair = colour & 0x03;
 
-    // &4cbe-&4cd5: energy / destruction ladder.
-    if (obj.energy >= doors_energy_table[colour_pair]) {
+    // &4cbe-&4cd5: energy / destruction ladder. Faithful to the 6502:
+    //   if energy >= threshold       → refill to 0xff (door regenerates)
+    //   else if SLOW_OR_DESTROYED    → energy = 0 (next tick destroys)
+    //   else                          → set SLOW_OR_DESTROYED
+    // The refill makes doors indestructible by light gunfire — only
+    // single hits big enough to drop energy below the colour threshold
+    // start the slow-then-explode chain. Two simultaneous grenades at
+    // point-blank are the cheapest reliable destroy (76+76=152 in one
+    // frame > 128 threshold for pair 3).
+    //
+    // Once the explosion's slot is reaped, the door's tertiary entry
+    // re-spawns it at full energy.
+    uint8_t energy_pre  = obj.energy;
+    uint8_t threshold   = doors_energy_table[colour_pair];
+    const char* branch;
+    if (obj.energy >= threshold) {
         obj.energy = 0xff;
+        branch = "REFILL";
     } else if (slow) {
         obj.energy = 0;
+        branch = "DESTROY";
     } else {
         data |= DoorFlag::SLOW_OR_DESTROYED;
         slow = true;
+        branch = "SLOW_SET";
     }
+    ctx.mgr.log_diag(
+        "door @%u,%u pre_e=%u thresh=%u slow_in=%d -> %s post_e=%u",
+        obj.x.whole, obj.y.whole,
+        static_cast<unsigned>(energy_pre),
+        static_cast<unsigned>(threshold),
+        ((obj.tertiary_data_offset & DoorFlag::SLOW_OR_DESTROYED) != 0) ? 1 : 0,
+        branch,
+        static_cast<unsigned>(obj.energy));
 
     // &4cd7-&4cec: door speed.
     //   slow → 1
@@ -448,14 +475,89 @@ static void process_switch_effects(ObjectManager& mgr,
             if (live) {
                 mgr.set_tertiary_data_byte(slot, newv);
             } else {
-                // Not currently a primary — preserve the spawn gate so
-                // the tile still spawns the object next time it comes
-                // into view.
+                // Port-only: force bit 7 so the next tile-plot spawns
+                // the primary. The 6502 doesn't need this — it always
+                // re-plots the tertiary tile_and_flip graphic (e.g. a
+                // closed-door tile) regardless of bit 7, and bit 7 only
+                // gates the primary's existence. Our renderer ties the
+                // door's visual state to its primary (open/close
+                // animation, palette) so without bit 7 the door at
+                // (156, 61), etc., never animates after the switch
+                // press. Setting the gate here is harmless even when
+                // bit 7 was already clear in ROM, because the next
+                // demote round-trip (&1d20-&1d24 ORA #&80) re-arms it
+                // anyway.
                 mgr.set_tertiary_data_byte(slot,
                     static_cast<uint8_t>(newv | 0x80));
             }
         }
     }
+}
+
+// &49C5 check_if_object_can_trigger_switches: heavy enough (weight >= 2)
+// AND not on the per-type blacklist (invisible debris, maggots, clawed
+// robots, Triax). Used by both the visible-switch press path and the
+// invisible-switch collision trigger.
+static bool object_can_trigger_switches(const Object& obj) {
+    uint8_t w = obj.weight();
+    if (w < 2) return false;
+    uint8_t t = static_cast<uint8_t>(obj.type);
+    return t != static_cast<uint8_t>(ObjectType::INVISIBLE_DEBRIS) &&
+           t != static_cast<uint8_t>(ObjectType::MAGGOT) &&
+           t != static_cast<uint8_t>(ObjectType::MAGENTA_CLAWED_ROBOT) &&
+           t != static_cast<uint8_t>(ObjectType::CYAN_CLAWED_ROBOT) &&
+           t != static_cast<uint8_t>(ObjectType::GREEN_CLAWED_ROBOT) &&
+           t != static_cast<uint8_t>(ObjectType::RED_CLAWED_ROBOT) &&
+           t != static_cast<uint8_t>(ObjectType::TRIAX);
+}
+
+void trigger_invisible_switch_at(Object& toucher,
+                                 uint8_t tile_x, uint8_t tile_y,
+                                 ObjectManager& mgr,
+                                 const Landscape& landscape) {
+    ResolvedTile r = resolve_tile_with_tertiary(landscape, tile_x, tile_y);
+    // Dispatch on the RESOLVED tile type, not the raw landscape byte —
+    // the 6502 stores the resolved tile_type into &08 at &1761/&1772 and
+    // indexes update_routine_addresses with it (&177c). The opener switch
+    // at (&87, &77) is entry &89, which sits in the STONE_DOOR (4) range
+    // but has tile_and_flip = &00 (INVISIBLE_SWITCH) — i.e. a redirect.
+    // Without using the resolved type these redirect-shaped switches
+    // never trigger, and any door wired to them stays in its bake state.
+    uint8_t resolved_type = r.tile_and_flip & TileFlip::TYPE_MASK;
+    if (resolved_type != static_cast<uint8_t>(TileType::INVISIBLE_SWITCH))
+        return;
+    if (r.data_offset <= 0) return;
+
+    // &3ef4-&3efb: tertiary type 0x80+ means "any object can trigger"; else
+    // the type byte must equal the toucher's object type for the switch to
+    // fire (e.g. the (&7f, &77) closer at idx &ae is type &4c so only an
+    // OBJECT_EMPTY_FLASK can trip it).
+    uint8_t type_byte = mgr.tertiary_type_byte(r.type_offset);
+    if (!(type_byte & 0x80) &&
+        type_byte != static_cast<uint8_t>(toucher.type)) return;
+
+    // &3eff-&3f02 check_if_object_can_trigger_switches.
+    if (!object_can_trigger_switches(toucher)) return;
+
+    // &3f06-&3f15 decode the switch's data byte. The bit-7 spawn gate is
+    // part of the packed switch-effects id for INVISIBLE_SWITCH tiles, so
+    // do NOT strip it before computing the mask (matches the comment at
+    // tertiary_spawn.cpp:36-46 — switch_redirect tertiaries keep bit 7).
+    //   mask        = ((data >> 1) | 0xfc) ^ 0x03   (clears the toggle bits)
+    //   set path    (data bit 0 = 1): effect_byte = data
+    //   clear path  (data bit 0 = 0): effect_byte = data & 0xf8
+    //   toggle      = (effect_byte >> 1) & 0x03
+    //   effect_id   = effect_byte >> 3
+    uint8_t data = mgr.tertiary_data_byte(r.data_offset);
+    uint8_t mask = static_cast<uint8_t>(((data >> 1) | 0xfc) ^ 0x03);
+    bool set_path = (data & 0x01) != 0;
+    uint8_t effect_byte = set_path
+        ? data
+        : static_cast<uint8_t>(data & 0xf8);
+    uint8_t toggle    = static_cast<uint8_t>((effect_byte >> 1) & 0x03);
+    uint8_t effect_id = static_cast<uint8_t>(effect_byte >> 3);
+
+    process_switch_effects(mgr, landscape, effect_id, mask, toggle);
 }
 
 // &499D-&49C2: Switch. `tx` is a rolling 8-frame press-history register:
@@ -571,6 +673,12 @@ void update_transporter_beam(Object& obj, UpdateContext& ctx) {
                 // play_sound, params 29 c2 37 f3).
                 static constexpr uint8_t kSoundTeleport[4] = { 0x29, 0xc2, 0x37, 0xf3 };
                 Audio::play_at(Audio::CH_ANY, kSoundTeleport, obj.x.whole, obj.y.whole);
+                // Clear touching now so the rest of this frame's update
+                // can't re-fire on the just-launched target. The end-of-
+                // update OR #&80 in the slot loop would clear it shortly
+                // anyway, but doing so here avoids any same-frame reads
+                // seeing the stale slot.
+                obj.touching = 0x80;
             }
         }
 

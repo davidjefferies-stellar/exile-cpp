@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{8F9A6B3C-1D2E-4F7A-B5C8-9E0123456789}</ProjectGuid>
+    <RootNamespace>exile_tests</RootNamespace>
+    <ProjectName>exile_tests</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>D:\Projects\Exile\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\$(ProjectName)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>D:\Projects\Exile\</OutDir>
+    <IntDir>$(SolutionDir)build\obj\$(ProjectName)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)data;$(ProjectDir)deps;$(ProjectDir)tests;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <Optimization>Disabled</Optimization>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)data;$(ProjectDir)deps;$(ProjectDir)tests;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <Optimization>MaxSpeed</Optimization>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <!-- All exile sources EXCEPT src\main.cpp. The test exe substitutes
+         tests\main.cpp as the entry point. Pixel renderer / fenster
+         TUs are still compiled and linked — they're inert as long as
+         no test instantiates a PixelRenderer. -->
+    <ClCompile Include="src\core\random.cpp" />
+    <ClCompile Include="src\world\landscape.cpp" />
+    <ClCompile Include="src\world\landscape_cpp.cpp" />
+    <ClCompile Include="src\world\obstruction.cpp" />
+    <ClCompile Include="src\world\wind.cpp" />
+    <ClCompile Include="src\world\water.cpp" />
+    <ClCompile Include="src\world\tertiary.cpp" />
+    <ClCompile Include="src\objects\object.cpp" />
+    <ClCompile Include="src\objects\object_manager.cpp" />
+    <ClCompile Include="src\objects\physics.cpp" />
+    <ClCompile Include="src\objects\collision.cpp" />
+    <ClCompile Include="src\objects\tile_collision.cpp" />
+    <ClCompile Include="src\objects\held_object.cpp" />
+    <ClCompile Include="src\objects\weapon.cpp" />
+    <ClCompile Include="src\behaviours\npc_helpers.cpp" />
+    <ClCompile Include="src\behaviours\path.cpp" />
+    <ClCompile Include="src\behaviours\mood.cpp" />
+    <ClCompile Include="src\behaviours\behavior_dispatch.cpp" />
+    <ClCompile Include="src\behaviours\projectile.cpp" />
+    <ClCompile Include="src\behaviours\creature.cpp" />
+    <ClCompile Include="src\behaviours\robot.cpp" />
+    <ClCompile Include="src\behaviours\environment.cpp" />
+    <ClCompile Include="src\audio\audio.cpp" />
+    <ClCompile Include="src\audio\fenster_audio_impl.c" />
+    <ClCompile Include="src\behaviours\collectable.cpp" />
+    <ClCompile Include="src\behaviours\exile1_creatures.cpp" />
+    <ClCompile Include="src\player\input.cpp" />
+    <ClCompile Include="src\rendering\camera.cpp" />
+    <ClCompile Include="src\rendering\pixel_renderer.cpp" />
+    <ClCompile Include="src\rendering\pixel_renderer_debug.cpp" />
+    <ClCompile Include="src\rendering\fenster_impl.cpp" />
+    <ClCompile Include="src\rendering\sprite_atlas.cpp" />
+    <ClCompile Include="src\rendering\sprite_data.cpp" />
+    <ClCompile Include="src\rendering\palette.cpp" />
+    <ClCompile Include="src\particles\particle_system.cpp" />
+    <ClCompile Include="src\game\game.cpp" />
+    <ClCompile Include="src\game\config.cpp" />
+    <ClCompile Include="src\game\save_load.cpp" />
+    <ClCompile Include="src\game\tertiary_spawn.cpp" />
+    <ClCompile Include="src\player\player_actions.cpp" />
+    <ClCompile Include="src\player\player_motion.cpp" />
+    <ClCompile Include="src\player\player_sprite.cpp" />
+    <ClCompile Include="src\game\object_update.cpp" />
+    <ClCompile Include="src\game\render.cpp" />
+    <!-- Test entry point -->
+    <ClCompile Include="tests\main.cpp" />
+    <!-- Test cases (one *_test.cpp per area) -->
+    <ClCompile Include="tests\boot_test.cpp" />
+    <ClCompile Include="tests\walking_gate_test.cpp" />
+    <ClCompile Include="tests\random_test.cpp" />
+    <ClCompile Include="tests\fixed_point_test.cpp" />
+    <ClCompile Include="tests\weapons_test.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\rendering\null_renderer.h" />
+    <ClInclude Include="tests\test_harness.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

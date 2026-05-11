@@ -90,3 +90,58 @@ static constexpr uint8_t object_types_palette_and_pickup[] = {
     // Bit 7 clear (not pickable). Tune after the sprites are wired up.
     0x32, 0x35,
 };
+
+// Per-type high byte from the 6502's object_types_update_routine_addresses
+// _high_table at &0446-&04aa. Step 12 of update_objects (port of &1ce3-&1cf3)
+// reads `(byte & 0xc0)` to dispatch the energy=0 explosion routine:
+//
+//   0x00 indestructible       — consider_teleporting_damaged_player (no-op
+//                                for non-player, i.e. the object stays at
+//                                energy 0 but is NOT removed / mutated)
+//   0x40 explode loud squeal
+//   0x80 explode no squeal     — turn into fireball
+//   0xc0 explode with squeal
+//
+// We only consult bit 6 and 7 in the port; the other bits are the routine
+// address bits, irrelevant once we dispatch on object type directly. Keep
+// the byte intact so future ports of the &xx-encoded effects don't have
+// to reverse-engineer the table.
+//
+// EMPTY_FLASK (&4c) = 0x05, FULL_FLASK (&4d) = 0x05, both indestructible —
+// without consulting this table, a flask near a grenade explosion has its
+// energy hit 0 and step 12 transmutes it into an EXPLOSION sprite. The
+// 6502 leaves the flask sitting there at energy 0.
+static constexpr uint8_t object_types_update_routine_addresses_high[] = {
+    // &00-&0f
+    0x0b, 0x0a, 0x88, 0x84, 0xcd, 0xcd, 0x86, 0x86,
+    0x86, 0x09, 0x04, 0x04, 0x09, 0x0f, 0x89, 0x83,
+    // &10-&1f
+    0xd1, 0x91, 0xc4, 0xc8, 0xc7, 0xc5, 0xc5, 0xc5,
+    0xc6, 0x8c, 0x45, 0x45, 0x50, 0x50, 0x50, 0x50,
+    // &20-&2f
+    0x50, 0x49, 0x4a, 0x4a, 0x4a, 0x4a, 0x08, 0x90,
+    0xc3, 0x86, 0x86, 0x86, 0x86, 0x86, 0x88, 0x88,
+    // &30-&3f
+    0x88, 0x88, 0x02, 0x08, 0x08, 0x09, 0xc9, 0x0c,
+    0x0a, 0x0d, 0x05, 0x0d, 0xce, 0xce, 0xce, 0xce,
+    // &40-&4f
+    0x0d, 0x0f, 0xcb, 0x05, 0x11, 0x05, 0x02, 0x43,
+    0x03, 0x0d, 0x05, 0x85, 0x05, 0x05, 0x05, 0x05,
+    // &50-&5f
+    0xc3, 0x0d, 0x0d, 0x0d, 0x0d, 0x03, 0x0d, 0x0d,
+    0x03, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d, 0x0d,
+    // &60-&64
+    0x0d, 0x0d, 0x0d, 0x0d, 0x0d,
+    // &65 DOG, &66 CRAB — port-only extensions, follow their analogues
+    // (DOG ≈ FROGMAN = 0x86 fireball; CRAB ≈ GARGOYLE = 0xc3 squeal).
+    0x86, 0xc3,
+};
+
+// Helper: per &1ce9-&1cec, top 2 bits == 0 means "&10 indestructible". The
+// 6502's energy=0 dispatch jumps to consider_teleporting_damaged_player
+// for these and does nothing for non-player slots. Use this to gate our
+// step 12 in update_objects so indestructible primaries don't transmute.
+inline bool object_type_is_indestructible(uint8_t type) {
+    if (type >= sizeof(object_types_update_routine_addresses_high)) return true;
+    return (object_types_update_routine_addresses_high[type] & 0xc0) == 0;
+}

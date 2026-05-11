@@ -185,8 +185,9 @@ public:
     bool should_close = false;
     // Zoom factor = scale / zoom_den. Only one of the two is >1 at any
     // time: wheel up from 1:1 grows `scale`; wheel down grows `zoom_den`.
-    // Start one notch zoomed in so the BBC tile reads at 2:1, not 1:1.
-    int scale = 2;
+    // Start two notches zoomed in (3:1) so the BBC tile reads chunkier
+    // by default — one wheel-up step from the previous 2:1 baseline.
+    int scale = 3;
     int zoom_den = 1;
 
     // Mouse / pan / click state

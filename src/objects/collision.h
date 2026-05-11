@@ -3,6 +3,8 @@
 #include "world/landscape.h"
 #include <array>
 
+class ObjectManager;
+
 // Tile and object-object collision detection.
 namespace Collision {
 
@@ -32,6 +34,19 @@ bool is_tile_solid(const Landscape& landscape, uint8_t tile_x, uint8_t tile_y);
 bool point_in_tile_solid(const Landscape& landscape,
                          uint8_t tile_x, uint8_t tile_y,
                          uint8_t x_frac, uint8_t y_frac);
+
+// Same as point_in_tile_solid, but applies the 6502's update_*_door_tile
+// substitution at &3ebd-&3ec2 first. Closed doors test as their substitute
+// (SPACESHIP_WALL_HORIZONTAL_QUARTER for horizontal, STONE_SLOPE_78 for
+// vertical); open doors test as SPACE. The 6502 routed every obstruction
+// query through update_*_door_tile, so this is the door-aware variant for
+// callers that want closed doors to block (NPC LOS, projectile vs tile,
+// etc.). The plain point_in_tile_solid stays available for callers that
+// must NOT see doors as obstacles (held-object overlap probes).
+bool point_in_tile_solid_with_doors(
+    const Landscape& landscape, ObjectManager& mgr,
+    uint8_t tile_x, uint8_t tile_y,
+    uint8_t x_frac, uint8_t y_frac);
 
 // Same pattern check, but operates on an explicit tile_and_flip byte rather
 // than reading from landscape. Useful after substitute_door_for_obstruction:

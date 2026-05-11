@@ -259,6 +259,16 @@ StartupConfig load_startup_config(const std::string& path) {
             if (key == "pipe_198_190_crab" && parse_bool(value, b)) {
                 cfg.pipe_198_190_crab = b;
             }
+        } else if (section == "audio") {
+            bool b = false;
+            if (key == "enabled" && parse_bool(value, b)) {
+                cfg.audio_enabled = b;
+            }
+        } else if (section == "debug") {
+            bool b = false;
+            if (key == "stress_test" && parse_bool(value, b)) {
+                cfg.stress_test = b;
+            }
         } else if (section == "startup_spawns") {
             // Format: <key> = <type>, <tile_x>, <tile_y>[, <x_frac>][, <y_frac>]
             // Key is just a uniqueness handle — slot0..slotN, names,

@@ -52,6 +52,13 @@ struct UpdateContext {
     // reads this to emit aim particles; doors and transporters (&4c9e /
     // &4dc8) compare against it via check_if_object_hit_by_remote_control.
     uint8_t player_object_fired;
+    // &34 player_aiming_angle_with_flip — already mirrored across the
+    // vertical axis when the player is facing left (port of &311d
+    // EOR #&7f / +1). update_remote_control_device feeds this through
+    // calculate_firing_vector_from_aiming_angle (&330f) to give aim
+    // particles a directional velocity; doors / cannons read it via
+    // check_if_object_hit_by_remote_control hit-cone tests.
+    uint8_t player_aim_angle;
     // Slot index of the object whose update routine is currently running
     // (the 6502's &aa this_object). update_collectable compares against
     // held_object_slot to decide whether the player is carrying it.

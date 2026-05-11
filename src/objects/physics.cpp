@@ -37,9 +37,37 @@ void apply_acceleration(Object& obj, int8_t accel_x, int8_t accel_y,
         int8_t old_vel     = velocity;
         int    gravity_bit = (axis == 0) ? 1 : 0;
 
+        // Port deviation (not in 6502): skip gravity when SUPPORTED and no
+        // y-axis input. The 6502 always adds gravity, which produces a
+        // gravity-vs-floor cycle that oscillates position by 1 push width
+        // each cycle. On the BBC's 8-px-tall tile that's invisible; at our
+        // 32-px tile resolution it crosses a pixel boundary. Cleared bit
+        // re-enables gravity the moment SUPPORTED clears (walked off a
+        // ledge, etc.) so the deviation is local to the resting case.
+        bool supported = (obj.flags & ObjectFlags::SUPPORTED) != 0;
+        if (axis == 0 && supported && accel == 0) {
+            gravity_bit = 0;
+        }
+
         // &1f05-&1f0a: ADC acceleration + velocity (+ gravity carry for Y)
         int sum = static_cast<int>(accel) + static_cast<int>(old_vel) + gravity_bit;
         int8_t new_vel = prevent_overflow(sum);
+
+        // Port deviation #2: when SUPPORTED, clamp any newly-computed
+        // *downward* y-velocity to 0. The walking branch in apply_player_
+        // input adds a small downward `accel_y` bias to "keep the player
+        // into the floor" (port of the 6502's &3b3a-&3b44 angle base).
+        // On the BBC that produces a sub-pixel oscillation invisible at
+        // 32-frac/pixel; at our 8-frac/pixel resolution every frac of
+        // walking-induced vy crosses a pixel boundary, hitting a fresh
+        // collision-bounce cycle each frame. Clearing the downward
+        // component while supported pins vy=0 on flat ground without
+        // breaking jumps (accel_y < 0 from jetpack/jump → new_vel < 0,
+        // not clamped) or slope descents (those go via velocity_x with
+        // SUPPORTED dropping naturally as the player crests an edge).
+        if (axis == 0 && supported && new_vel > 0) {
+            new_vel = 0;
+        }
 
         // &1f0f-&1f16: skip-limit test. The original computes
         //   A = invert_if_negative(new_vel, sign_of_accel)

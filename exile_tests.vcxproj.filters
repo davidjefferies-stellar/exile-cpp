@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- IDE folders for exile_tests. Two top-level groups:
+         Tests : the test runner + every *_test.cpp
+         Game  : the src/ files compiled into the test exe (read-only
+                 mirror of the layout in exile.vcxproj.filters)
+       Keeps the tests visible without scrolling past 40+ game source
+       files. -->
+  <ItemGroup>
+    <Filter Include="Tests">
+      <UniqueIdentifier>{b0010001-0000-0000-0000-00000000001b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game">
+      <UniqueIdentifier>{b0010002-0000-0000-0000-00000000001b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game\core">
+      <UniqueIdentifier>{b0010003-0000-0000-0000-00000000001b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game\world">
+      <UniqueIdentifier>{b0010004-0000-0000-0000-00000000001b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game\objects">
+      <UniqueIdentifier>{b0010005-0000-0000-0000-00000000001b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game\behaviours">
+      <UniqueIdentifier>{b0010006-0000-0000-0000-00000000001b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game\player">
+      <UniqueIdentifier>{b0010007-0000-0000-0000-00000000001b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game\rendering">
+      <UniqueIdentifier>{b0010008-0000-0000-0000-00000000001b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game\particles">
+      <UniqueIdentifier>{b0010009-0000-0000-0000-00000000001b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game\audio">
+      <UniqueIdentifier>{b001000a-0000-0000-0000-00000000001b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Game\game">
+      <UniqueIdentifier>{b001000b-0000-0000-0000-00000000001b}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Tests -->
+    <ClCompile Include="tests\main.cpp">                          <Filter>Tests</Filter> </ClCompile>
+    <ClCompile Include="tests\boot_test.cpp">                     <Filter>Tests</Filter> </ClCompile>
+    <ClCompile Include="tests\walking_gate_test.cpp">             <Filter>Tests</Filter> </ClCompile>
+    <ClCompile Include="tests\random_test.cpp">                   <Filter>Tests</Filter> </ClCompile>
+    <ClCompile Include="tests\fixed_point_test.cpp">              <Filter>Tests</Filter> </ClCompile>
+    <ClCompile Include="tests\weapons_test.cpp">                  <Filter>Tests</Filter> </ClCompile>
+
+    <!-- Game / core -->
+    <ClCompile Include="src\core\random.cpp">                     <Filter>Game\core</Filter> </ClCompile>
+
+    <!-- Game / world -->
+    <ClCompile Include="src\world\landscape.cpp">                 <Filter>Game\world</Filter> </ClCompile>
+    <ClCompile Include="src\world\landscape_cpp.cpp">             <Filter>Game\world</Filter> </ClCompile>
+    <ClCompile Include="src\world\obstruction.cpp">               <Filter>Game\world</Filter> </ClCompile>
+    <ClCompile Include="src\world\wind.cpp">                      <Filter>Game\world</Filter> </ClCompile>
+    <ClCompile Include="src\world\water.cpp">                     <Filter>Game\world</Filter> </ClCompile>
+    <ClCompile Include="src\world\tertiary.cpp">                  <Filter>Game\world</Filter> </ClCompile>
+
+    <!-- Game / objects -->
+    <ClCompile Include="src\objects\object.cpp">                  <Filter>Game\objects</Filter> </ClCompile>
+    <ClCompile Include="src\objects\object_manager.cpp">          <Filter>Game\objects</Filter> </ClCompile>
+    <ClCompile Include="src\objects\physics.cpp">                 <Filter>Game\objects</Filter> </ClCompile>
+    <ClCompile Include="src\objects\collision.cpp">               <Filter>Game\objects</Filter> </ClCompile>
+    <ClCompile Include="src\objects\tile_collision.cpp">          <Filter>Game\objects</Filter> </ClCompile>
+    <ClCompile Include="src\objects\held_object.cpp">             <Filter>Game\objects</Filter> </ClCompile>
+    <ClCompile Include="src\objects\weapon.cpp">                  <Filter>Game\objects</Filter> </ClCompile>
+
+    <!-- Game / behaviours -->
+    <ClCompile Include="src\behaviours\npc_helpers.cpp">          <Filter>Game\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\path.cpp">                 <Filter>Game\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\mood.cpp">                 <Filter>Game\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\behavior_dispatch.cpp">    <Filter>Game\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\projectile.cpp">           <Filter>Game\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\creature.cpp">             <Filter>Game\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\robot.cpp">                <Filter>Game\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\environment.cpp">          <Filter>Game\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\collectable.cpp">          <Filter>Game\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\exile1_creatures.cpp">     <Filter>Game\behaviours</Filter> </ClCompile>
+
+    <!-- Game / player -->
+    <ClCompile Include="src\player\input.cpp">                    <Filter>Game\player</Filter> </ClCompile>
+    <ClCompile Include="src\player\player_actions.cpp">           <Filter>Game\player</Filter> </ClCompile>
+    <ClCompile Include="src\player\player_motion.cpp">            <Filter>Game\player</Filter> </ClCompile>
+    <ClCompile Include="src\player\player_sprite.cpp">            <Filter>Game\player</Filter> </ClCompile>
+
+    <!-- Game / rendering -->
+    <ClCompile Include="src\rendering\camera.cpp">                <Filter>Game\rendering</Filter> </ClCompile>
+    <ClCompile Include="src\rendering\pixel_renderer.cpp">        <Filter>Game\rendering</Filter> </ClCompile>
+    <ClCompile Include="src\rendering\pixel_renderer_debug.cpp">  <Filter>Game\rendering</Filter> </ClCompile>
+    <ClCompile Include="src\rendering\fenster_impl.cpp">          <Filter>Game\rendering</Filter> </ClCompile>
+    <ClCompile Include="src\rendering\sprite_atlas.cpp">          <Filter>Game\rendering</Filter> </ClCompile>
+    <ClCompile Include="src\rendering\sprite_data.cpp">           <Filter>Game\rendering</Filter> </ClCompile>
+    <ClCompile Include="src\rendering\palette.cpp">               <Filter>Game\rendering</Filter> </ClCompile>
+
+    <!-- Game / particles -->
+    <ClCompile Include="src\particles\particle_system.cpp">       <Filter>Game\particles</Filter> </ClCompile>
+
+    <!-- Game / audio -->
+    <ClCompile Include="src\audio\audio.cpp">                     <Filter>Game\audio</Filter> </ClCompile>
+    <ClCompile Include="src\audio\fenster_audio_impl.c">          <Filter>Game\audio</Filter> </ClCompile>
+
+    <!-- Game / game -->
+    <ClCompile Include="src\game\game.cpp">                       <Filter>Game\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\config.cpp">                     <Filter>Game\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\save_load.cpp">                  <Filter>Game\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\tertiary_spawn.cpp">             <Filter>Game\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\object_update.cpp">              <Filter>Game\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\render.cpp">                     <Filter>Game\game</Filter> </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="tests\test_harness.h">                    <Filter>Tests</Filter> </ClInclude>
+    <ClInclude Include="src\rendering\null_renderer.h">           <Filter>Game\rendering</Filter> </ClInclude>
+  </ItemGroup>
+</Project>

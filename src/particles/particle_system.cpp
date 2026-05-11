@@ -118,7 +118,8 @@ void ParticleSystem::update(uint8_t waterline_y, uint8_t waterline_y_frac, Rando
 
 // ---------- Emission (port of &218c / &218e / associated helpers) ----------
 
-void ParticleSystem::emit(ParticleType type, int count, const Object& src, Random& rng) {
+void ParticleSystem::emit(ParticleType type, int count, const Object& src,
+                          Random& rng, uint8_t angle) {
     if (type >= ParticleType::COUNT || count <= 0) return;
     const TypeData& t = TYPES[static_cast<int>(type)];
 
@@ -189,22 +190,41 @@ void ParticleSystem::emit(ParticleType type, int count, const Object& src, Rando
     apply_base_offset(base_x, base_x_frac, sw_units, x_flipped,
                       consider_hflip, use_hcentre);
 
-    // Base velocity from the source object's velocity or acceleration
-    // (bits 7-6 of flags). Acceleration source isn't wired yet; treat any
-    // non-zero value as "use object velocity" and zero as "no base vel".
-    int8_t base_vx = 0, base_vy = 0;
+    // Base velocity — full port of &21bc-&21e1.
+    //
+    //   1. If flags bit 7 set: angle = angle_from(src.velocity_x/y)
+    //      (or src.acceleration_x/y when bit 6 also set), then EOR #&80
+    //      so particles fly OPPOSITE to the object's motion.
+    //   2. Else: keep the caller-passed angle (the 6502's `&b5 angle`,
+    //      set by the call site before JSR add_particles).
+    //   3. magnitude = (rnd & spd_rand) + spd_base.
+    //   4. (vector_x, vector_y) = vector_from_magnitude_and_angle(
+    //        magnitude, angle) — this is the per-batch base velocity
+    //      that every particle in this call shares (per-particle
+    //      ±vx_rand / ±vy_rand jitter added below).
+    //
+    // Acceleration source (bit 6 with bit 7) isn't wired in our port —
+    // we don't store accel persistently on the object. Fall back to
+    // velocity in that case; the only built-in user is JETPACK
+    // (flags 0xed = use_src_accel + cycle + foreground + use_vcentre)
+    // and update_player feeds accel_x/accel_y into apply_acceleration
+    // each frame, so velocity is a close-enough proxy.
     bool use_src_vel   = (t.flags & 0x80) != 0 && (t.flags & 0x40) == 0;
     bool use_src_accel = (t.flags & 0xc0) == 0xc0;
     bool add_obj_vel   = (t.flags & 0x01) != 0;
+
+    uint8_t batch_angle = angle;
     if (use_src_vel || use_src_accel) {
-        base_vx = src.velocity_x;
-        base_vy = src.velocity_y;
-        // Original negates (EOR #&80 on computed angle); approximate by
-        // flipping the signed sign of each axis so particles leave the
-        // source opposite to its motion.
-        base_vx = clamp_signed(-int(base_vx));
-        base_vy = clamp_signed(-int(base_vy));
+        // EOR #&80 reversal at &21d3.
+        batch_angle = NPC::angle_from_deltas(src.velocity_x, src.velocity_y);
+        batch_angle = static_cast<uint8_t>(batch_angle ^ 0x80);
     }
+
+    uint8_t magnitude = static_cast<uint8_t>(
+        (rng.next() & t.spd_rand) + t.spd_base);
+    int8_t base_vx = 0, base_vy = 0;
+    NPC::vector_from_magnitude_and_angle(magnitude, batch_angle,
+                                          base_vx, base_vy);
 
     for (int k = 0; k < count; k++) {
         int slot = allocate_slot(rng);
@@ -319,6 +339,53 @@ void ParticleSystem::emit_directed(ParticleType type, uint8_t angle,
     int8_t base_vx = 0, base_vy = 0;
     NPC::vector_from_magnitude_and_angle(magnitude, angle, base_vx, base_vy);
 
+    // &21e4-&2209 spawn-position flag walk. The four spawn-position bits
+    // (consider_vflip, use_vcentre, consider_hflip, use_hcentre) shift
+    // the base position by sprite width/height before per-axis emission.
+    // emit() honours these; emit_directed didn't, so PARTICLE_AIM (flags
+    // 0x2d = use_vcentre + consider_hflip) was spawning from the held
+    // object's top-left instead of the player's mid-body. With a
+    // right-facing aim that puts the horizontal stream above the head
+    // and reads as "always upward".
+    uint8_t base_x      = src.x.whole;
+    uint8_t base_x_frac = src.x.fraction;
+    uint8_t base_y      = src.y.whole;
+    uint8_t base_y_frac = src.y.fraction;
+    {
+        uint8_t sprite_id = src.sprite;
+        if (sprite_id > 0x80) {
+            uint8_t tidx = static_cast<uint8_t>(src.type);
+            if (tidx < static_cast<uint8_t>(ObjectType::COUNT)) {
+                sprite_id = object_types_sprite[tidx];
+            }
+        }
+        int sw_units = 0, sh_units = 0;
+        if (sprite_id <= 0x80) {
+            const SpriteAtlasEntry& e = sprite_atlas[sprite_id];
+            sw_units = (e.w > 0 ? (e.w - 1) : 0) * 16;
+            sh_units = (e.h > 0 ? (e.h - 1) : 0) * 8;
+        }
+        bool consider_vflip = (t.flags & 0x10) != 0;
+        bool use_vcentre    = (t.flags & 0x08) != 0;
+        bool consider_hflip = (t.flags & 0x04) != 0;
+        bool use_hcentre    = (t.flags & 0x02) != 0;
+        bool y_flipped = (src.flags & ObjectFlags::FLIP_VERTICAL)   != 0;
+        bool x_flipped = (src.flags & ObjectFlags::FLIP_HORIZONTAL) != 0;
+        auto apply = [](uint8_t& whole, uint8_t& frac, int size,
+                        bool flipped, bool consider_flip, bool use_centre) {
+            int offset = 0;
+            if (consider_flip && flipped) offset = size;
+            if (use_centre) offset += size / 2;
+            int sum = int(frac) + offset;
+            frac = static_cast<uint8_t>(sum);
+            whole = static_cast<uint8_t>(whole + (sum >> 8));
+        };
+        apply(base_y, base_y_frac, sh_units, y_flipped,
+              consider_vflip, use_vcentre);
+        apply(base_x, base_x_frac, sw_units, x_flipped,
+              consider_hflip, use_hcentre);
+    }
+
     int slot = allocate_slot(rng);
     Particle& p = pool_[slot];
 
@@ -326,9 +393,9 @@ void ParticleSystem::emit_directed(ParticleType type, uint8_t angle,
     p.colour_and_flags = (rng.next() & t.cf_rand) ^ t.cf_base;
 
     emit_directed_axis(rng, base_vx, t.vx_rand,
-                       src.x.whole, src.x.fraction, t.x_rand,
+                       base_x, base_x_frac, t.x_rand,
                        p.velocity_x, p.x, p.x_fraction);
     emit_directed_axis(rng, base_vy, t.vy_rand,
-                       src.y.whole, src.y.fraction, t.y_rand,
+                       base_y, base_y_frac, t.y_rand,
                        p.velocity_y, p.y, p.y_fraction);
 }

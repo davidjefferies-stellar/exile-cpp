@@ -21,7 +21,17 @@ public:
     bool init();
     void run();
 
+    // One frame of the main loop, no frame-timing sleep. run() is just a
+    // while-loop around tick() with a 50fps budget; tests drive tick()
+    // directly so they can advance N frames without real time elapsing.
+    void tick();
+
 private:
+    // Test harness reaches into private state to spawn fixtures, snapshot
+    // counters, and assert on per-object fields without bloating the
+    // public surface. Production code goes through run()/tick() only.
+    friend class TestHarness;
+
     // Core systems
     std::unique_ptr<IRenderer> renderer_;
     Landscape landscape_;
@@ -60,6 +70,15 @@ private:
     // to point acceleration ALONG the slope instead of purely horizontal.
     uint8_t player_tile_collision_angle_ = 0;
     uint8_t held_object_slot_ = 0x80; // 0x80+ = no object held
+    // Snapshot of the held primary's snap-to-player-side position
+    // (port of 6502 &0a..&0d held_object_x/y/fraction). Set in
+    // object_update.cpp's held-alignment step BEFORE collision runs;
+    // consume_dropping_held_object compares this against the post-
+    // collision obj.x/y to detect "wall pulled the held off the
+    // player's side" and drops the object when the drift exceeds
+    // 0x30 frac per axis (matching &1ca9-&1cc4).
+    Fixed8_8 held_expected_x_;
+    Fixed8_8 held_expected_y_;
     // &29d7 player_object_fired: set to the held object's slot when the
     // player presses fire while holding something; 0xff when nothing was
     // fired this frame. update_remote_control_device (&4351) and doors /
@@ -188,6 +207,16 @@ private:
     // the world state freezes and the diagnostic banner becomes readable.
     bool paused_ = false;
     bool pause_key_prev_ = false;
+
+    // Test rig — door-destruction setup at startup spawns 1 active
+    // grenade plus 3 inactive ones; halfway through the active's fuse
+    // (timer >= 0x30), each inactive slot here is converted to active
+    // by setting type=ACTIVE_GRENADE and timer=0x30 so all four detonate
+    // on the same frame (active + 3 newly-activated each at fuse 0x30,
+    // counting up to 0x60 in 48 more frames).
+    int test_active_grenade_slot_ = -1;
+    int test_pending_grenade_slots_[4] = { -1, -1, -1, -1 };
+    bool test_grenades_activated_ = false;
 
     // Rising-edge state for inventory keys. Without these, holding down
     // ENTER / S / R for more than one frame causes a pickup → drop →

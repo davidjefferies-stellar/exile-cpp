@@ -51,12 +51,12 @@ static uint8_t energy_floor_for_obj(const Object& obj) {
         case ObjectType::RED_MAGENTA_BIRD:      return 0x1e;
         case ObjectType::TRIAX:                 return 0xfd;
         case ObjectType::SWITCH:                return 0x1e;
-        case ObjectType::GREEN_WHITE_TURRET:
-        case ObjectType::CYAN_RED_TURRET:       return 0x14;
+        case ObjectType::GREEN_WHITE_TURRET:    return 0x14;
+        case ObjectType::CYAN_RED_TURRET:       return 0x7f;
         case ObjectType::MAGENTA_ROLLING_ROBOT: return 0x14;
         case ObjectType::RED_ROLLING_ROBOT:     return 0x46;
         case ObjectType::BLUE_ROLLING_ROBOT:    return 0x46;
-        case ObjectType::HOVERING_ROBOT:        return 0x81;
+        case ObjectType::HOVERING_ROBOT:        return 0x14;
         case ObjectType::MAGENTA_CLAWED_ROBOT:  return 0x46;
         case ObjectType::CYAN_CLAWED_ROBOT:     return 0x5a;
         case ObjectType::GREEN_CLAWED_ROBOT:    return 0x80;
@@ -527,30 +527,76 @@ void Game::render() {
                 // below depending on coll_fv. Sample the section's
                 // centre (xs * 0x20 + 0x10) so the reading matches
                 // tile_threshold_at_x's x_frac >> 5 quantisation.
+                //
+                // Two passes per section: first the filled solid region
+                // (red, low-contrast), then a 1-frac-tall surface line
+                // (yellow, high-contrast) at the exact threshold. The
+                // line makes the 8-section staircase explicit when
+                // zoomed in — adjacent same-threshold sections merge
+                // visually in the fill but the line still draws
+                // section-by-section, and the threshold's sub-pixel
+                // position lands on the right screen-pixel via
+                // render_tile_shade_rect's frac→px math.
+                uint8_t prev_threshold = 0;
+                bool    prev_has_surface = false;
                 for (int xs = 0; xs < 8; xs++) {
                     uint8_t xf_sample = static_cast<uint8_t>(xs * 0x20 + 0x10);
                     uint8_t threshold = tile_threshold_at_x(
                         type, fh, fv, xf_sample);
                     uint8_t y0, h;
+                    bool    has_fill;
                     if (coll_fv) {
                         // Solid when y_frac <= threshold → fill 0..threshold.
-                        if (threshold == 0) continue;
+                        has_fill = (threshold != 0);
                         y0 = 0;
                         h  = threshold;
                     } else {
                         // Solid when y_frac > threshold → fill threshold+1..0xff.
-                        if (threshold >= 0xff) continue;
+                        has_fill = (threshold < 0xff);
                         y0 = static_cast<uint8_t>(threshold + 1);
                         h  = static_cast<uint8_t>(0xff - threshold);
                     }
-                    // Opaque red — fenster's fill_rect doesn't blend,
-                    // so use a colour that's distinct over any tile
-                    // background. Toggle the overlay off to see the
-                    // tiles it's covering.
-                    renderer_->render_tile_shade_rect(
-                        wx, wy,
-                        static_cast<uint8_t>(xs * 0x20), y0,
-                        0x20, h, 0xCC2222);
+                    if (has_fill) {
+                        renderer_->render_tile_shade_rect(
+                            wx, wy,
+                            static_cast<uint8_t>(xs * 0x20), y0,
+                            0x20, h, 0xCC2222);
+                    }
+                    // Surface line + risers only when this section has
+                    // any solid material (has_fill). A fully-clear
+                    // section's threshold sits on the tile edge with
+                    // nothing behind it — drawing the line there
+                    // produced stray horizontal stripes through empty
+                    // space. Fully-solid sections (threshold = 0 or
+                    // 0xff but has_fill true) DO have a real surface
+                    // at the tile edge — that's the floor/ceiling of
+                    // a rock block — so they keep their line.
+                    bool has_surface = has_fill;
+                    if (has_surface) {
+                        renderer_->render_tile_shade_rect(
+                            wx, wy,
+                            static_cast<uint8_t>(xs * 0x20), threshold,
+                            0x20, 1, 0xFFEE44);
+                    }
+                    // Vertical riser at the section boundary, but only
+                    // when both adjacent sections have a real surface
+                    // and the threshold actually changed. Either side
+                    // missing a surface means the "riser" would dangle
+                    // into empty air or full-solid space.
+                    if (prev_has_surface && has_surface &&
+                        threshold != prev_threshold) {
+                        uint8_t lo = (prev_threshold < threshold)
+                                     ? prev_threshold : threshold;
+                        uint8_t hi = (prev_threshold < threshold)
+                                     ? threshold : prev_threshold;
+                        renderer_->render_tile_shade_rect(
+                            wx, wy,
+                            static_cast<uint8_t>(xs * 0x20), lo,
+                            1, static_cast<uint8_t>(hi - lo + 1),
+                            0xFFEE44);
+                    }
+                    prev_threshold   = threshold;
+                    prev_has_surface = has_surface;
                 }
             }
         }
@@ -599,9 +645,21 @@ void Game::render() {
             int w_pix = sprite_atlas[sid].w;
             int sprite_w_frac = (w_pix > 0 ? (w_pix - 1) : 0) * 16;
             int outer_w_frac = sprite_w_frac + BAR_PAD_X * 2;
-            uint8_t energy = obj.energy & 0x7f;
+            // The collectable types 0x4a..0x64 store the "undisturbed"
+            // pin in bit 7 of energy (init_object_from_type's
+            // obj.energy |= 0x80; cleared on first touch). For those,
+            // mask bit 7 off and treat 0x7f as the full-bar value.
+            // Everything else uses the full 8-bit value — without this
+            // distinction a door's energy decreasing from 0x80 (bar
+            // empty after mask) to 0x7f (bar full after mask) looked
+            // like the bar was wrapping back to 127 instead of being
+            // about to hit zero.
+            uint8_t tidx = static_cast<uint8_t>(obj.type);
+            bool collectable_pin = (tidx >= 0x4a && tidx <= 0x64);
+            uint8_t energy = collectable_pin ? (obj.energy & 0x7f) : obj.energy;
+            int     e_max  = collectable_pin ? 0x7f : 0xff;
             int inner_w_frac = outer_w_frac - BAR_BORDER * 2;
-            int fill_w_frac = (inner_w_frac * energy + 0x3f) / 0x7f;
+            int fill_w_frac = (inner_w_frac * energy + e_max / 2) / e_max;
 
             // Position above sprite. Use 16-bit math so the offset can
             // straddle a whole-tile boundary cleanly.

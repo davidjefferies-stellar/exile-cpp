@@ -47,7 +47,10 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
 
     // Bit-7 "needs spawning" gate. Switch-redirects use bit 7 as part of
     // the effect-id, and doors (&3e95/&3e98) recreate every frame with
-    // no bit-7 check, so both bypass.
+    // no bit-7 check, so both bypass. Doors are visible even when the
+    // ROM data has bit 7 clear — the BBC's tile renderer always plots
+    // the tertiary tile_and_flip graphic (closed-door tile) and the
+    // door primary tracks state but isn't gated on the data byte.
     bool is_door = (tile_type == static_cast<uint8_t>(TileType::METAL_DOOR) ||
                     tile_type == static_cast<uint8_t>(TileType::STONE_DOOR));
     if (!switch_redirect && !is_door && data_offset != 0 &&

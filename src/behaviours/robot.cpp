@@ -177,15 +177,79 @@ void update_rolling_robot(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4EE2: Blue rolling robot - more aggressive, uses NPC walking
+// &4EE2: Blue rolling robot - faithful 6502 port.
+//
+//   &4ee2  LDX #&05                ; npc stimuli type
+//   &4ee4  JSR check_for_npc_stimuli
+//   &4ee7  JSR consider_updating_npc_path
+//   &4eea  LDX #&04                ; npc walking type 4
+//   &4eec  LDA #&18                ; speed = 24
+//   &4eee  JSR update_walking_npc_and_check_for_obstacles_with_speed_A
+//   &4ef1  JSR consider_flipping_object_to_match_velocity_x
+//   &4ef4  fall through to consider_firing
+//
+// Walking type 4's tables (&3962-&397e):
+//   max_angle = 0x20 (45°)   max_accel = 4   weight = 1
+//   turn_prob = 0            jump_prob = 0
+// → blue rolling robot is GROUND-WALKING only. It never jumps and never
+// reverses on obstacles; gravity owns velocity_y. The previous port set
+// velocity_y directly via NPC::seek_player, which let the robot fly when
+// the player was above it. Faithful behaviour: only set velocity_x; let
+// physics integrate gravity for vertical motion.
 void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
-    NPC::enforce_minimum_energy(obj, 0x46);
-
+    // &4ee4: check_for_npc_stimuli (mood / phobia / interest reactions).
     Mood::update_mood(obj, ctx);
 
-    // Blue rolling robot actively seeks player
-    if (obj.energy >= 0x80) {
-        NPC::seek_player(obj, ctx.mgr.player(), 4);
+    // &4ee7: consider_updating_npc_path — refresh target_and_flags via
+    // the LOS-gated directness chain.
+    NPC::update_npc_path(obj, ctx);
+
+    // &4eea-&4eee: update_walking_npc_and_check_for_obstacles, X=4,
+    // speed=0x18. The 6502 routine writes ACCELERATION (capped at
+    // max_accel=4 from table[4], split through cos/sin into _x/_y by
+    // the surface angle) and lets apply_acceleration_to_velocities
+    // integrate. The asymptote is velocity 0x18, with friction /
+    // walking-state damping holding it well below that in practice.
+    //
+    // Reduced port: ramp velocity_x by 1/frame toward a ±4 cap when
+    // supported. Speed lowered from the 6502's 0x18 setpoint to 4 to
+    // match the magenta/red rolling robot speed in our port — at 0x18
+    // the blue ran roughly 6× faster than its red/magenta siblings,
+    // reading as cartoonish. Supported gate mirrors the 6502 walker's
+    // "leave if not on walkable surface" path at &3b10, so the robot
+    // doesn't keep accelerating horizontally while in the air.
+    constexpr int8_t kSpeed = 4;
+    // Per-frame velocity correction. The 6502 uses
+    // apply_weight_and_limit_to_acceleration at &3201 with
+    // max_accel = npc_walking_types_maximum_acceleration_table[4] = 4
+    // — that's the cap, not 1. With a ±1/frame ramp the robot took ~25
+    // frames to recover from a single bullet hit (mass-ratio transfer
+    // typically gives a weight-6 target a vx kick around 21 frac/frame
+    // from a weight-3 bullet at vx=30); ±4/frame brings it back in line
+    // with the 6502's ~6-frame recovery, so the robot reads as heavy.
+    constexpr int8_t kMaxAccel = 4;
+    if (obj.is_supported()) {
+        // Read the path target from obj.tx, NOT target.x.whole. The 6502's
+        // update_walking_npc at &3b08 calls set_this_object_relative_tx_ty
+        // which reads obj.tx/obj.ty as the destination — those are the
+        // OUTPUT of update_npc_path, not the live target's position.
+        // When LOS is blocked (door closed), update_target_directness
+        // decays directness to 0 and update_npc_path's `default:` branch
+        // (use_relaxed_path) sets tx/ty to a wander offset around the
+        // NPC's OWN position. Reading target.x directly here bypassed
+        // the wander and let the robot home in on the player even
+        // through a sealed door — sealed-room robot "activated early".
+        bool avoid = (obj.target_and_flags & TargetFlags::AVOID) != 0;
+        int8_t dx  = static_cast<int8_t>(obj.tx - obj.x.whole);
+        if (avoid) dx = static_cast<int8_t>(-dx);
+        int8_t target_vx = (dx > 0) ? kSpeed
+                         : (dx < 0) ? static_cast<int8_t>(-kSpeed)
+                         : 0;
+        int diff = int(target_vx) - int(obj.velocity_x);
+        int step = (diff >  kMaxAccel) ?  kMaxAccel
+                 : (diff < -kMaxAccel) ? -kMaxAccel
+                 : diff;
+        obj.velocity_x = static_cast<int8_t>(int(obj.velocity_x) + step);
     }
 
     // &4ef1: 1-in-4 gated flip (shared path with magenta/red rolling robot).
@@ -195,23 +259,28 @@ void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
         log_flip_if_changed(obj, ctx, before_flip);
     }
 
-    // Fire tracer bullets. LOS-gated — see rolling-robot comment above;
-    // same 6502 find_object-driven randomised cap.
+    // &4ef9 consider_firing: tracer bullets, gated on energy >= 0x80
+    // (BIT this_object_energy / BPL skips). LOS-gated via the &3cb5
+    // randomised cap.
     if (ctx.every_sixteen_frames && obj.energy >= 0x80 &&
         NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
         const Object& player = ctx.mgr.player();
-        int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
-        if (std::abs(dx) < 16) {
+        int8_t pdx = static_cast<int8_t>(player.x.whole - obj.x.whole);
+        if (std::abs(pdx) < 16) {
             int slot = NPC::fire_projectile(obj, ObjectType::TRACER_BULLET, ctx);
             if (slot >= 0) {
                 Object& b = ctx.mgr.object(slot);
-                b.velocity_x = (dx > 0) ? 0x18 : -0x18;
+                b.velocity_x = (pdx > 0) ? 0x18 : -0x18;
                 b.velocity_y = 0;
                 NPC::offset_child_from_parent(b, obj);
                 b.timer = 96;
             }
         }
     }
+
+    // &4f10-&4f15: minimum energy = 0x46. Re-applied last so the firing
+    // gate above sees the live (un-floored) value before this clamp.
+    NPC::enforce_minimum_energy(obj, 0x46);
 }
 
 // &4804: Hovering robot - flies, patrols, fires

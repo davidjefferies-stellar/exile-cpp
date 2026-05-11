@@ -1,4 +1,5 @@
 #include "game/game.h"
+#include "behaviours/environment.h"
 #include "behaviours/npc_helpers.h"
 #include "objects/physics.h"
 #include "objects/collision.h"
@@ -9,6 +10,7 @@
 #include "rendering/sprite_atlas.h"
 #include "world/tertiary.h"
 #include "world/tile_data.h"
+#include "world/obstruction.h"
 #include "world/wind.h"
 #include "world/water.h"
 #include <array>
@@ -418,22 +420,96 @@ void Game::integrate_player_motion(Object& player,
     // object_y_flags. We don't yet track the object_collision_y_flags
     // separately; tcr.landed_on_bottom plus object_supported together
     // approximate the same disjunction.
+    //
+    // Port deviation: latch the prior frame's SUPPORTED through "no
+    // collision this frame but the player isn't moving up either." The
+    // 6502 collision push at &308a defaults to -8 frac when there's no
+    // perpendicular obstruction, leaving a sub-pixel gap above the
+    // surface. On the BBC that's invisible (32 frac/pixel); at our
+    // 8 frac/pixel the next frame finds no bottom collision, clears
+    // SUPPORTED, gravity resumes, and the player oscillates 1px until
+    // damping kills the cycle. Latching keeps the deviation in
+    // physics.cpp (clamp downward vy to 0 when SUPPORTED) effective
+    // across the gap. The player jumps off normally because jetpack
+    // input drives velocity_y < 0, which clears the latch.
     bool any_bottom_collision = tcr.landed_on_bottom || object_supported;
     bool any_top_collision    = tcr.top_or_bottom_collision && !tcr.landed_on_bottom;
+    bool was_supported = (player.flags & ObjectFlags::SUPPORTED) != 0;
     player.flags &= ~ObjectFlags::SUPPORTED;
     if (!any_top_collision && any_bottom_collision) {
         player.flags |= ObjectFlags::SUPPORTED;
+    } else if (was_supported && player.velocity_y >= 0 && !any_top_collision) {
+        // No fresh bottom collision, but we were supported last frame
+        // and aren't rising. Probe for solid ground within ~1 pixel
+        // below the player's feet — if there's nothing there, the
+        // player has walked off a ledge and SUPPORTED must release.
+        // The probe samples the tile at the player's x and the tile_y
+        // just below the feet, applying the same door substitution
+        // collision uses, then asks if the bottom-edge x section sits
+        // inside the obstruction pattern.
+        int feet_abs_y = static_cast<int>(player.y.whole) * 256 +
+                         static_cast<int>(player.y.fraction) + sprite_h_frac;
+        // Probe 8 frac below the feet — well within the bounce gap
+        // (-8 frac default at &308a) but small enough that a real
+        // ledge fall reads as empty space.
+        int probe_abs_y = feet_abs_y + 8;
+        uint8_t probe_ty = static_cast<uint8_t>((probe_abs_y >> 8) & 0xff);
+        uint8_t probe_yf = static_cast<uint8_t>(probe_abs_y & 0xff);
+        ResolvedTile pres = resolve_tile_with_tertiary(
+            landscape_, player.x.whole, probe_ty);
+        uint8_t ptile = Collision::substitute_door_for_obstruction(
+            pres.tile_and_flip, pres.data_offset,
+            reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
+                object_mgr_.object(0)),
+            object_mgr_.tertiary_data_byte(pres.data_offset));
+        uint8_t ptype = ptile & TileFlip::TYPE_MASK;
+        bool pfh = (ptile & TileFlip::HORIZONTAL) != 0;
+        bool pfv = (ptile & TileFlip::VERTICAL)   != 0;
+        if (Collision::is_tile_type_solid(ptype) &&
+            Obstruction::is_obstructed(
+                get_obstruction_pattern_index(ptype, pfh, pfv),
+                player.x.fraction, probe_yf,
+                get_tile_y_offset(ptype, pfv),
+                pfv ^ tile_obstruction_v_flip_bit(ptype))) {
+            player.flags |= ObjectFlags::SUPPORTED;
+        }
+    }
+
+    // Landing damping — port of &37e6-&37f5 (inside update_player_angle_
+    // facing_and_sprite). When a player who has been airborne (state low
+    // nibble ≥ 0x0a) lands with accel_y == 0, the 6502 runs vy through
+    // calculate_seven_eighths THREE times: vy *= (7/8)³ ≈ 0.67. The
+    // tile collision bounce at &30e1-&30ef already reduces magnitude
+    // (clamp to 0x1e + seven_eighths once), but without this extra
+    // triple-pass the player keeps bouncing 6+ times instead of settling
+    // in 2-3 hops the original game shows. The check uses the OLD
+    // counter (pre-update) — the 6502 calls check_if_player_or_npc_
+    // jumping_or_flying BEFORE consider_updating_walking_player at
+    // &38b9, so &11's low nibble still holds the last frame's value.
+    {
+        uint8_t old_counter = player.state & 0x0f;
+        bool jumping_or_flying = (old_counter >= 0x0a);
+        if (accel_y == 0 && jumping_or_flying && any_bottom_collision) {
+            for (int i = 0; i < 3; i++) {
+                int v = player.velocity_y;
+                int abs_v = v < 0 ? -v : v;
+                int eighth = (abs_v + 7) / 8;
+                player.velocity_y = static_cast<int8_t>(
+                    v < 0 ? v + eighth : v - eighth);
+            }
+        }
     }
 
     // Frames-since-walkable counter — port of update_walking_state at
     // &3a4c-&3a8a. Stored in the low nibble of player.state. Reset to 0
-    // on any_bottom_collision, otherwise incremented (cap at 0x0f).
-    // The walking branch in apply_player_input gates strictly on
-    // counter == 0 (port of &3b10 BNE leave); this also feeds
-    // check_if_player_or_npc_jumping (&3b8c) which considers the
+    // while SUPPORTED (so walking remains active across latched frames),
+    // otherwise incremented (cap at 0x0f). The walking branch in
+    // apply_player_input gates strictly on counter == 0 (port of &3b10
+    // BNE leave); check_if_player_or_npc_jumping (&3b8c) considers the
     // player jumping when counter ≥ 0x0a.
+    bool effectively_supported = (player.flags & ObjectFlags::SUPPORTED) != 0;
     uint8_t counter = player.state & 0x0f;
-    if (any_bottom_collision) {
+    if (effectively_supported) {
         counter = 0;
     } else if (counter < 0x0f) {
         counter++;
@@ -1049,6 +1125,27 @@ void Game::integrate_player_motion(Object& player,
             static constexpr uint8_t kSoundMushroomPoof[4] = { 0x33, 0xf3, 0x1d, 0x03 };
             Audio::play(Audio::CH_ANY, kSoundMushroomPoof);
             break;
+        }
+    }
+
+    // &3ef2 update_invisible_switch_tile — collision branch. For each
+    // tile row the player AABB overlaps, fire any INVISIBLE_SWITCH
+    // tertiary's effects. Without this, switches that key off the player
+    // walking through them (e.g. entry &89 at (&87,&77) which sets the
+    // OPENING bit on the doors at (&80,&77) and (&83,&77)) never trigger
+    // and the doors stay in their bake state forever.
+    {
+        int head_abs = static_cast<int>(player.y.whole) * 256 +
+                       static_cast<int>(player.y.fraction);
+        int feet_abs = head_abs + sprite_h_frac;
+        uint8_t head_tile_y = static_cast<uint8_t>((head_abs >> 8) & 0xff);
+        uint8_t feet_tile_y = static_cast<uint8_t>((feet_abs >> 8) & 0xff);
+        for (int ty = head_tile_y;
+             ty != static_cast<uint8_t>(feet_tile_y + 1);
+             ty = static_cast<uint8_t>(ty + 1)) {
+            Behaviors::trigger_invisible_switch_at(
+                player, player.x.whole, static_cast<uint8_t>(ty),
+                object_mgr_, landscape_);
         }
     }
 

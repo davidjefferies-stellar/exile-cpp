@@ -98,27 +98,43 @@ void update_active_chatter(Object& obj, UpdateContext& ctx) {
     // Chattering animation (timer counts down when active)
     if (obj.timer > 0 && !(obj.timer & 0x80)) {
         obj.timer--;
-        // Chattering palette change
+        // &4925-&492b: produce the chatter call. 6502 stores the
+        // computed pitch into envelopes_table + &cf via self-modifying
+        // code; we use the default block. Only fires periodically when
+        // chatter is animating (~1/4 of those frames).
         if ((ctx.rng.next() & 0x03) == 0) {
             obj.palette = 0x4b; // cyB when chattering
+            static constexpr uint8_t kSoundChatter[4] = { 0x33, 0xf3, 0xcd, 0x82 };
+            Audio::play_at(Audio::CH_ANY, kSoundChatter,
+                           obj.x.whole, obj.y.whole);
         }
     }
 
-    // Whistle two response: produce power pod if Chatter can see the source (&4933)
-    if (ctx.whistle_two_activator < GameConstants::PRIMARY_OBJECT_SLOTS) {
+    // &4933-&494a: produce power pod if whistle two was played AND
+    // Chatter has clear LOS to the source.
+    //   LDX whistle_two_activating_object         ; positive if played
+    //   BMI skip_producing_power_pod
+    //   JSR check_for_obstruction_between_objects_80   ; 16-tile LOS
+    //   BCS skip_producing_power_pod               ; obstructed → bail
+    //   ...fire POWER_POD at source, set energy = 0 to deactivate
+    // Previous port skipped the obstruction check — Chatter would fire
+    // through walls / closed doors at the player whenever U was pressed
+    // anywhere in a 16-tile box. has_line_of_sight is the port of
+    // check_for_obstruction_between_objects_80 (16 tiles, door-aware).
+    if (ctx.whistle_two_activator < GameConstants::PRIMARY_OBJECT_SLOTS &&
+        NPC::has_line_of_sight(obj, ctx.whistle_two_activator,
+                                /*max_tiles=*/16, ctx)) {
         const Object& source = ctx.mgr.object(ctx.whistle_two_activator);
         int8_t sdx = static_cast<int8_t>(source.x.whole - obj.x.whole);
         int8_t sdy = static_cast<int8_t>(source.y.whole - obj.y.whole);
-        if (std::abs(sdx) < 16 && std::abs(sdy) < 16) {
-            // Fire a power pod toward the whistle source
-            int slot = NPC::fire_projectile(obj, ObjectType::POWER_POD, ctx);
-            if (slot >= 0) {
-                Object& pod = ctx.mgr.object(slot);
-                pod.velocity_x = (sdx > 0) ? 0x10 : -0x10;
-                pod.velocity_y = (sdy > 0) ? 0x10 : -0x10;
-                NPC::offset_child_from_parent(pod, obj);
-                obj.energy = 0; // Deactivate chatter after producing power pod
-            }
+        // Fire a power pod toward the whistle source.
+        int slot = NPC::fire_projectile(obj, ObjectType::POWER_POD, ctx);
+        if (slot >= 0) {
+            Object& pod = ctx.mgr.object(slot);
+            pod.velocity_x = (sdx > 0) ? 0x10 : -0x10;
+            pod.velocity_y = (sdy > 0) ? 0x10 : -0x10;
+            NPC::offset_child_from_parent(pod, obj);
+            obj.energy = 0; // Deactivate chatter after producing power pod
         }
     }
 }
@@ -695,11 +711,11 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                 b.energy &= 0x7f;
                 NPC::offset_child_from_parent(b, obj);
 
-                // &460c imp_sound_parameters. The 6502 patches the
-                // pitch byte at runtime per imp variant; we use the
-                // default-table values as a stand-in. Mostly heard as
-                // a wide pitch range across the imp colours.
-                static constexpr uint8_t kSoundImp[4] = { 0x57, 0x07, 0x4f, 0x35 };
+                // &460f imp_sound_parameters. The 6502 patches byte 3
+                // (pitch) at runtime per imp variant via STA at &4609;
+                // here we use the default-table values verbatim. Mostly
+                // heard as a wide pitch range across the imp colours.
+                static constexpr uint8_t kSoundImp[4] = { 0x9c, 0x05, 0xa6, 0xa5 };
                 Audio::play_at(Audio::CH_ANY, kSoundImp, obj.x.whole, obj.y.whole);
             }
         }
@@ -883,6 +899,19 @@ void update_worm(Object& obj, UpdateContext& ctx) {
     }
     NPC::damage_player_if_touching(obj, ctx.mgr.player(), 3, ctx.damage_events);
     NPC::face_movement_direction(obj);
+
+    // &4ea1-&4eb3: distance-gated squeal pair. The 6502 plays both
+    // back-to-back to layer two pitches into one warble, only when the
+    // creature is within ~15 tiles of the screen centre and the random
+    // roll favours nearer creatures. play_at's 16-tile cutoff gives us
+    // the same audible range; the rng gate keeps it from chattering
+    // every frame.
+    if ((ctx.rng.next() & 0x0f) == 0) {
+        static constexpr uint8_t kSoundWormA[4] = { 0x33, 0xf3, 0x09, 0xb4 };
+        static constexpr uint8_t kSoundWormB[4] = { 0x33, 0xf3, 0x07, 0xb5 };
+        Audio::play_at(Audio::CH_ANY, kSoundWormA, obj.x.whole, obj.y.whole);
+        Audio::play_at(Audio::CH_ANY, kSoundWormB, obj.x.whole, obj.y.whole);
+    }
 
     // Random chance to despawn
     if (ctx.rng.next() == 0) {
@@ -1129,22 +1158,81 @@ void update_invisible_bird(Object& obj, UpdateContext& ctx) {
     update_bird_common(obj, ctx);
 }
 
-// &4170: Gargoyle - stationary, spits fireballs
+// &4170 update_gargoyle. Faithful port of the 6502 routine. The data
+// byte selects one of 5 sub-types (bits 6-0 = `.4218421` per the &4170
+// header doc; bit 7 is the unspawned flag and is masked off here).
+// Each sub-type has its own firing cadence, projectile type, and
+// velocity vector. Tables below are byte-for-byte copies from
+// &418b-&419e:
+//
+//   type | freq mask | vx    | vy   | projectile
+//     0  |   0x0f    | 0x11  | 0xc0 | LIGHTNING       (every 16 frames)
+//     1  |   0x07    | 0x7f  | 0x0c | PLASMA_BALL     (every  8 frames)
+//     2  |   0x07    | 0x7f  | 0x04 | PLASMA_BALL     (every  8 frames; type 2 unused)
+//     3  |   0x07    | 0x7f  | 0xf9 | PLASMA_BALL     (every  8 frames)
+//     4  |   0x03    | 0x01  | 0x9a | LIGHTNING       (every  4 frames)
+//
+// vy values 0xc0/0xf9/0x9a are negative int8 (upward / upward-left
+// trajectories); 0x7f and 0x11 are positive (toward the right). The
+// 6502's create_projectile at &33ab applies invert_if_negative to vx
+// based on the gargoyle's x_flip, mirroring the projectile when the
+// gargoyle faces left — same logic here.
 void update_gargoyle(Object& obj, UpdateContext& ctx) {
-    // Gargoyles don't move, just fire periodically
-    if (ctx.every_thirty_two_frames) {
-        const Object& player = ctx.mgr.player();
-        int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
-        if (std::abs(dx) < 16) {
-            int slot = NPC::fire_projectile(obj, ObjectType::FIREBALL, ctx);
-            if (slot >= 0) {
-                Object& fireball = ctx.mgr.object(slot);
-                fireball.velocity_x = (dx > 0) ? 8 : -8;
-                fireball.velocity_y = -4;
-                NPC::offset_child_from_parent(fireball, obj);
-            }
+    static constexpr uint8_t kFreqMask[5] = { 0x0f, 0x07, 0x07, 0x07, 0x03 };
+    static constexpr int8_t  kVx[5] = {
+        static_cast<int8_t>(0x11),
+        static_cast<int8_t>(0x7f),
+        static_cast<int8_t>(0x7f),
+        static_cast<int8_t>(0x7f),
+        static_cast<int8_t>(0x01),
+    };
+    static constexpr int8_t  kVy[5] = {
+        static_cast<int8_t>(0xc0),
+        static_cast<int8_t>(0x0c),
+        static_cast<int8_t>(0x04),
+        static_cast<int8_t>(0xf9),
+        static_cast<int8_t>(0x9a),
+    };
+    static constexpr ObjectType kProj[5] = {
+        ObjectType::LIGHTNING,
+        ObjectType::PLASMA_BALL,
+        ObjectType::PLASMA_BALL,
+        ObjectType::PLASMA_BALL,
+        ObjectType::LIGHTNING,
+    };
+
+    // Strip the spawn-gate bit (bit 7) and clamp to table range. The
+    // 6502 indexes blindly with no bounds check; clamping is a port
+    // safety since corrupted data shouldn't read past the tables.
+    uint8_t type = static_cast<uint8_t>(obj.tertiary_data_offset & 0x7f);
+    if (type >= 5) type = 0;
+
+    // &4170-&4175: fire when (freq_mask & frame_counter) == 0.
+    if ((kFreqMask[type] & ctx.frame_counter) == 0) {
+        int8_t vx = kVx[type];
+        int8_t vy = kVy[type];
+        // &33ab-&33b0 invert_if_negative flips vx when x_flip is set —
+        // i.e. fire to the left when the gargoyle faces left.
+        if (obj.flags & ObjectFlags::FLIP_HORIZONTAL) {
+            vx = static_cast<int8_t>(-vx);
+        }
+        int slot = NPC::fire_projectile(obj, kProj[type], ctx);
+        if (slot >= 0) {
+            Object& proj = ctx.mgr.object(slot);
+            proj.velocity_x = vx;
+            proj.velocity_y = vy;
+            NPC::offset_child_from_parent(proj, obj);
         }
     }
+
+    // &4186-&4188: gain_energy_Y_and_flash_if_damaged with min 0x5a (90).
+    // Inline the 6502's regen ladder: every 4 frames, if energy < 0xc0
+    // increment by 1; then floor to min_energy. Skipping the
+    // damaged-palette flash for now — it's purely visual.
+    if (ctx.every_four_frames && obj.energy != 0 && obj.energy < 0xc0) {
+        obj.energy++;
+    }
+    NPC::enforce_minimum_energy(obj, 0x5a);
 }
 
 // &4704: Triax - the boss, teleports and attacks

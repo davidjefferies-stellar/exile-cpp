@@ -84,6 +84,10 @@ bool Game::init() {
     invincible_ = cfg.invincible;
     player_weapon_ = cfg.weapon;
 
+    // [audio] enabled gates Audio::play / play_at. The device is already
+    // open by this point so toggling is just a flag flip.
+    Audio::set_enabled(cfg.audio_enabled);
+
     // Whistle collected flags (ports of &0816 / &0817). Default true so
     // Y / U work from the start; set `whistle_one_collected = false` in
     // the ini to replay the pick-up-the-whistle discovery path.
@@ -155,14 +159,6 @@ bool Game::init() {
         triax.y = {0x3b, 0x20};
     }
 
-    // EXILE1 dog placement test — no tertiary entry for OBJECT_DOG yet.
-    {
-        int dog_slot = object_mgr_.create_object(ObjectType::DOG, /*min_free_slots=*/0,
-                                                  /*x=*/141, /*x_frac=*/0x80,
-                                                  /*y=*/129, /*y_frac=*/0x80);
-        (void)dog_slot;
-    }
-
     // PIPE at (198, 190) re-typed BLUE_CYAN_IMP -> CRAB when
     // [creatures] pipe_198_190_crab is true (default).
     if (cfg.pipe_198_190_crab) {
@@ -189,6 +185,163 @@ bool Game::init() {
             s.tile_y, s.y_frac);
         (void)slot;
     }
+
+    // Test setup: 2 active grenades primed to detonate simultaneously
+    // on the door at (79, 96). Both at point-blank → 76 damage each
+    // on the explosion's first apply_explosion_radius tick (tdo=15
+    // post-decrement, power=60, weight_factor=22 for the door's
+    // weight 7, distance 0). 76 + 76 = 152 in one frame drops the
+    // door's energy from 255 to 103, below the pair-3 threshold of
+    // 128 → SLOW_OR_DESTROYED latches and the next update_door tick
+    // turns it into an EXPLOSION primary.
+    //
+    // Pre-arm the fuse with timer=0x5e so both detonate two frames
+    // later: tick N reads 0x5e (< 0x60), INCs to 0x5f; tick N+1 reads
+    // 0x5f, INCs to 0x60; tick N+2 reads 0x60 → fuse-expired branch
+    // fires explode_object_with_duration(16) on both at the same
+    // frame.
+    //
+    // Stagger x_frac so the two grenades don't AABB-overlap each
+    // other (would mutually damage and explode early via the
+    // bullet-style touch path before the fuse runs).
+    // Test setup: 2 red slime drops dropped onto the door at (80, 96).
+    // Each drop deals 100 damage on contact (&47b1 LDA #&64). With both
+    // hitting on the same frame, total = 200 damage, dropping the door
+    // (255) to 55 < pair-3 threshold 128 → SLOW_OR_DESTROYED latches and
+    // the next update_door tick destroys it.
+    //
+    // The drops fall through tile (80, 95) under gravity (vy ramps from
+    // 0 to 0x40 cap per update_red_drop). Stagger x_frac so their AABBs
+    // don't overlap each other before reaching the door — they need the
+    // tile-collision-into-door redirect (projectile.cpp ~684) to fire
+    // for both on the same frame.
+    {
+        constexpr uint8_t kStartTileX = 80;
+        constexpr uint8_t kStartTileY = 90;
+        for (int i = 0; i < 2; i++) {
+            uint8_t x_frac = static_cast<uint8_t>(0x40 + i * 0x60);
+            int slot = object_mgr_.create_object(
+                ObjectType::RED_DROP, /*min_free_slots=*/0,
+                kStartTileX, x_frac, kStartTileY, 0x40);
+            if (slot > 0) {
+                Object& d = object_mgr_.object(slot);
+                d.velocity_x = 0;
+                d.velocity_y = 4;  // matches &47f3 LDA #&04 spawn velocity
+            }
+        }
+    }
+
+    // [debug] stress_test — gated test rig that spawns one of every
+    // animated creature type in a grid NW of the player. Off by
+    // default; enable in exile.ini when benchmarking the AI / render
+    // pipeline.
+    if (cfg.stress_test) {
+        static constexpr ObjectType kCreatures[] = {
+            ObjectType::ACTIVE_CHATTER,
+            ObjectType::CREW_MEMBER,
+            ObjectType::FLUFFY,
+            ObjectType::SMALL_HIVE,
+            ObjectType::LARGE_HIVE,
+            ObjectType::RED_FROGMAN,
+            ObjectType::GREEN_FROGMAN,
+            ObjectType::INVISIBLE_FROGMAN,
+            ObjectType::RED_SLIME,
+            ObjectType::GREEN_SLIME,
+            ObjectType::YELLOW_SLIME,
+            ObjectType::DENSE_NEST,
+            ObjectType::SUCKING_NEST,
+            ObjectType::BIG_FISH,
+            ObjectType::WORM,
+            ObjectType::PIRANHA,
+            ObjectType::WASP,
+            ObjectType::HOVERING_BALL,
+            ObjectType::INVISIBLE_HOVERING_BALL,
+            ObjectType::MAGENTA_ROLLING_ROBOT,
+            ObjectType::RED_ROLLING_ROBOT,
+            ObjectType::BLUE_ROLLING_ROBOT,
+            ObjectType::HOVERING_ROBOT,
+            ObjectType::MAGENTA_CLAWED_ROBOT,
+            ObjectType::CYAN_CLAWED_ROBOT,
+            ObjectType::GREEN_CLAWED_ROBOT,
+            ObjectType::RED_CLAWED_ROBOT,
+            ObjectType::MAGGOT,
+            ObjectType::GARGOYLE,
+            ObjectType::RED_MAGENTA_IMP,
+            ObjectType::RED_YELLOW_IMP,
+            ObjectType::BLUE_CYAN_IMP,
+            ObjectType::CYAN_YELLOW_IMP,
+            ObjectType::RED_CYAN_IMP,
+            ObjectType::GREEN_YELLOW_BIRD,
+            ObjectType::WHITE_YELLOW_BIRD,
+            ObjectType::RED_MAGENTA_BIRD,
+            ObjectType::INVISIBLE_BIRD,
+            ObjectType::DOG,
+            ObjectType::CRAB,
+        };
+        constexpr int kCols      = 8;
+        constexpr uint8_t kBaseX = 60;  // 18 tiles left of player (78)
+        constexpr uint8_t kBaseY = 85;  // 10 tiles above player (95)
+        constexpr uint8_t kStepX = 3;
+        constexpr uint8_t kStepY = 3;
+        for (size_t i = 0; i < sizeof(kCreatures) / sizeof(kCreatures[0]); i++) {
+            uint8_t tx = static_cast<uint8_t>(kBaseX +
+                static_cast<int>(i % kCols) * kStepX);
+            uint8_t ty = static_cast<uint8_t>(kBaseY +
+                static_cast<int>(i / kCols) * kStepY);
+            object_mgr_.create_object(
+                kCreatures[i], /*min_free_slots=*/0,
+                tx, 0x80, ty, 0x80);
+        }
+    }
+#if 0
+    // Disabled — grenade chain-reaction test rig.
+    {
+        constexpr uint8_t kDoorTileX = 80;
+        constexpr uint8_t kDoorTileY = 95;
+        for (int i = 0; i < 5; i++) {
+            uint8_t x_frac = static_cast<uint8_t>(0x00 + i * 0x33);
+            ObjectType t = (i == 0) ? ObjectType::ACTIVE_GRENADE
+                                    : ObjectType::INACTIVE_GRENADE;
+            int slot = object_mgr_.create_object(
+                t, /*min_free_slots=*/0,
+                kDoorTileX, x_frac, kDoorTileY, 0x40);
+            if (slot > 0) {
+                Object& g = object_mgr_.object(slot);
+                g.velocity_x = 0;
+                g.velocity_y = 0;
+                g.timer = 0;
+                if (i > 0) {
+                    g.energy = 0x3f;
+                }
+                if (i == 0) {
+                    test_active_grenade_slot_ = slot;
+                } else {
+                    test_pending_grenade_slots_[i - 1] = slot;
+                }
+            }
+        }
+    }
+#endif
+#if 0
+    // Disabled — kept around as a reference for the bullet-drop test.
+    {
+        constexpr uint8_t kStartTileX = 80;
+        constexpr uint8_t kStartTileY = 80;
+        constexpr int8_t  kFallVy     = 0x30;
+        for (int i = 0; i < 7; i++) {
+            uint8_t x_frac = static_cast<uint8_t>(0x20 + i * 0x20);
+            int slot = object_mgr_.create_object(
+                ObjectType::ICER_BULLET, /*min_free_slots=*/0,
+                kStartTileX, x_frac, kStartTileY, 0x80);
+            if (slot > 0) {
+                Object& b = object_mgr_.object(slot);
+                b.velocity_x = 0;
+                b.velocity_y = kFallVy;
+                b.timer = 0x30;
+            }
+        }
+    }
+#endif
 
     // Truncate + open the lifecycle log. Any previous session's data is
     // discarded — we only ever want the current run's churn record. Each
@@ -510,7 +663,17 @@ void Game::run() {
 
     while (running_) {
         auto frame_start = clock::now();
+        tick();
+        auto frame_end = clock::now();
+        auto elapsed = frame_end - frame_start;
+        if (elapsed < frame_duration) {
+            std::this_thread::sleep_for(frame_duration - elapsed);
+        }
+    }
+}
 
+void Game::tick() {
+    {
         // Main game loop sequence (matching &19b6). Order inside the
         // frame is: input → toggles → anchor → world updates → render.
         // While paused the world-update block is skipped so the current
@@ -641,6 +804,35 @@ void Game::run() {
                 std::remove_if(floating_labels_.begin(), floating_labels_.end(),
                                [](const FloatingLabel& f){ return f.ttl == 0; }),
                 floating_labels_.end());
+            // Test rig: when the original active grenade's fuse hits
+            // halfway (timer >= 0x30), convert the 3 pending inactive
+            // slots to ACTIVE_GRENADE with their fuses fresh
+            // (timer = 0). The 3 newly-activated grenades take a full
+            // 96 frames to reach 0x60, so they detonate ~48 frames
+            // after the original — a clean test that multi-frame
+            // damage cannot destroy the door while the refill is on.
+            if (!test_grenades_activated_ && test_active_grenade_slot_ > 0) {
+                Object& src = object_mgr_.object(test_active_grenade_slot_);
+                if (src.is_active() &&
+                    src.type == ObjectType::ACTIVE_GRENADE &&
+                    src.timer >= 0x30) {
+                    for (int i = 0; i < 4; i++) {
+                        int s = test_pending_grenade_slots_[i];
+                        if (s <= 0) continue;
+                        Object& g = object_mgr_.object(s);
+                        if (!g.is_active()) continue;
+                        if (g.type != ObjectType::INACTIVE_GRENADE) continue;
+                        g.type = ObjectType::ACTIVE_GRENADE;
+                        g.sprite = object_types_sprite[
+                            static_cast<uint8_t>(ObjectType::ACTIVE_GRENADE)];
+                        g.palette = object_types_palette_and_pickup[
+                            static_cast<uint8_t>(ObjectType::ACTIVE_GRENADE)] & 0x7f;
+                        g.timer = 0;
+                    }
+                    test_grenades_activated_ = true;
+                }
+            }
+
             update_player();
             update_objects();
 
@@ -700,13 +892,6 @@ void Game::run() {
         if (!paused_) {
             flush_debug_log();
         }
-
-        // Frame timing: sleep to maintain 50fps
-        auto frame_end = clock::now();
-        auto elapsed = frame_end - frame_start;
-        if (elapsed < frame_duration) {
-            std::this_thread::sleep_for(frame_duration - elapsed);
-        }
     }
 }
 
@@ -715,8 +900,12 @@ void Game::run() {
 // every_two_frames fires on even frames (bit 0 = 0),
 // every_four_frames fires when bits 0-1 are 0, etc.
 void Game::update_timers() {
-    // Clear per-frame flags (port of &19b6: LSR &27)
+    // Clear per-frame flags (port of &19b6: LSR &27 for whistle one,
+    // and the &1aa4-&1aa9 ROR &29d8 chain for whistle two — the 6502
+    // clears the activator whenever the activator's own slot processes,
+    // so the flag survives at most one frame across all NPC updates).
     whistle_one_active_ = false;
+    whistle_two_activator_ = 0xff;
 
     frame_counter_++;
     uint8_t a = frame_counter_;
@@ -1369,6 +1558,12 @@ bool Game::advance_player_teleport(Object& player) {
         player.velocity_x = 0;
         player.velocity_y = 0;
 
+        // &1c32-&1c35: play sound for object changing position in teleport.
+        // Distinct from kSoundTeleport (the &4410 "teleport activation"
+        // chime) — this fires once at the rematerialise frame.
+        static constexpr uint8_t kSoundTeleportArrive[4] = { 0x33, 0xf3, 0x63, 0xf3 };
+        Audio::play(Audio::CH_ANY, kSoundTeleportArrive);
+
         // Re-anchor the camera so the view snaps to the teleport target
         // immediately — otherwise the player emerges off-screen and the
         // camera lazily scrolls there.
@@ -1416,4 +1611,8 @@ void Game::handle_remembering_position(Object& player) {
     player_teleports_y_[y] = centre_y;
     // &2c5e INC next / &2c61 fix_player_next_teleport AND #&03.
     player_next_teleport_ = (player_next_teleport_ + 1) & 0x03;
+
+    // &2c5b JSR play_middle_beep (&14a0 sound block).
+    static constexpr uint8_t kSoundMiddleBeep[4] = { 0x17, 0xe3, 0x2f, 0x72 };
+    Audio::play(Audio::CH_ANY, kSoundMiddleBeep);
 }

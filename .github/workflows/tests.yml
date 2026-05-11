@@ -1,0 +1,43 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  # Manual trigger so we can rerun without a code push.
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      # The committed .vcxproj has <OutDir>D:\Projects\Exile\</OutDir>
+      # which is the maintainer's local path. Override it on the
+      # command line so MSBuild drops the exe inside the checkout
+      # instead — the runner has no D: drive. /p:OutDir keeps the
+      # repo source untouched (no .vcxproj edits needed).
+      #
+      # Platform=x64 must match the only configuration the .vcxproj
+      # defines; without it MSBuild picks "Win32" and errors out.
+      - name: Build exile_tests
+        run: >
+          msbuild exile_tests.vcxproj
+          /p:Configuration=Release
+          /p:Platform=x64
+          /p:OutDir=${{ github.workspace }}\build\bin\
+
+      # Run from the repo root so the exe finds exile.ini, data/, and
+      # resources/ via their relative paths. The test binary's main()
+      # returns the failure count → non-zero exit fails the job, which
+      # is exactly what GitHub Actions wants.
+      - name: Run tests
+        run: ${{ github.workspace }}\build\bin\exile_tests.exe
+        working-directory: ${{ github.workspace }}

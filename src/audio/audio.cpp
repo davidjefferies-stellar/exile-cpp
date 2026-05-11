@@ -100,6 +100,13 @@ struct Channel {
     // distant world sounds quieter. Set by play_at; play() leaves it
     // at zero so player-anchored sounds stay full-volume.
     uint8_t  volume_reduction;
+    // SN76489 noise channel state — only used by g_channels[0]. The
+    // 6502's sound_channels_set_frequency_byte_table at &11a4 starts
+    // with &e0 = "latch noise control register", so channel 0 IS the
+    // chip's noise generator (used for CH_PRIORITY: explosions, fire,
+    // hits). Channels 1..3 are tones and ignore these fields.
+    uint16_t noise_lfsr;     // 15-bit LFSR; must never be zero.
+    uint32_t noise_phase;    // step counter; high-bit overflow shifts the LFSR.
 };
 // 6502 &1426: a channel is "busy" (can't be reused for a new sound)
 // while its volume envelope is still running. When vol_duration hits 0
@@ -122,6 +129,11 @@ static bool channel_audible(const Channel& ch) {
 Channel g_channels[kNumChannels];
 bool g_debug_tone = false;
 uint32_t g_debug_phase = 0;
+// Master enable flag — settable via [audio] enabled in exile.ini. When
+// false, play/play_at become no-ops and tick pushes silence (the device
+// stays open so toggling at runtime won't re-init the audio hw). Default
+// true so the legacy "no [audio] section" config keeps making noise.
+bool g_enabled = true;
 // Listener (player) position; play_at compares against this to compute
 // the volume reduction. Updated each tick by Audio::set_listener.
 uint8_t g_listener_x = 0;
@@ -212,6 +224,50 @@ struct PhaseTable {
     }
 };
 constexpr PhaseTable kPhaseIncTable = PhaseTable{};
+
+// Faithful port of the 6502 frequency-envelope → SN76489 noise-control-
+// register pipeline at &1345-&135f. The freq envelope output goes
+// through EOR #&ff, a 4-step range mapping (limits / bases tables at
+// &119c / &11a0), a shift loop, then AND #&0f and ORA &e0 (the noise
+// control register's latch byte). The bottom 3 data bits of the
+// resulting byte are what actually drive the chip:
+//   bit 2 : mode        — 0 = periodic, 1 = white
+//   bit 1 : rate-hi   ─┐ 00 = N/512  = 488 Hz
+//   bit 0 : rate-lo   ─┤ 01 = N/1024 = 244 Hz
+//                       │ 10 = N/2048 = 122 Hz
+//                       └ 11 = follow tone-2 freq (we approx as 122)
+// Smooth-byte interpolation gave the wrong mode/rate combo — bytes
+// near 0xff map to the chip's slowest mode (122 Hz, deep rumble), but
+// our old linear table mapped them to 478 Hz (bright hiss).
+constexpr uint8_t noise_reg_for_byte(unsigned byte_value) {
+    constexpr uint8_t limits[4] = { 0x00, 0x40, 0x84, 0xb6 };  // &119c
+    constexpr uint8_t bases[4]  = { 0xe0, 0x10, 0x4a, 0x80 };  // &11a0
+    uint8_t a = static_cast<uint8_t>((byte_value & 0xff) ^ 0xff);
+    int y = 3;
+    while (y > 0 && a < limits[y]) y--;
+    a = static_cast<uint8_t>(a - bases[y]);
+    for (int s = 0; s < y; s++) a = static_cast<uint8_t>(a << 1);
+    return static_cast<uint8_t>((a & 0x0f) | 0xe0);
+}
+constexpr uint32_t noise_step_for_byte(unsigned byte_value) {
+    constexpr uint64_t rate_hz[4] = { 488, 244, 122, 122 };
+    const uint8_t reg = noise_reg_for_byte(byte_value);
+    return static_cast<uint32_t>((rate_hz[reg & 0x03] << 32) / kSampleRate);
+}
+constexpr bool noise_white_for_byte(unsigned byte_value) {
+    return (noise_reg_for_byte(byte_value) & 0x04) != 0;
+}
+struct NoiseTable {
+    uint32_t step[256];
+    bool     white[256];
+    constexpr NoiseTable() : step{}, white{} {
+        for (unsigned i = 0; i < 256; i++) {
+            step[i]  = noise_step_for_byte(i);
+            white[i] = noise_white_for_byte(i);
+        }
+    }
+};
+constexpr NoiseTable kNoiseTable = NoiseTable{};
 
 
 // Channel selection — port of the 6502 logic at &1421-&144f.
@@ -405,7 +461,7 @@ void close() {
 }
 
 void play(int channel_hint, const uint8_t params[4]) {
-    if (!g_open) return;
+    if (!g_open || !g_enabled) return;
     const int ch_idx = pick_channel(channel_hint);
     Channel& ch = g_channels[ch_idx];
 
@@ -440,11 +496,20 @@ void play(int channel_hint, const uint8_t params[4]) {
     ch.volume_reduction = 0;
 
     ch.phase_inc = kPhaseIncTable.v[ch.freq.value];
+
+    // Re-seed the LFSR for channel 0 (noise). 0x4000 = single 1 in
+    // the top stage; in white mode it saturates within ~15 shifts via
+    // the XOR feedback, in periodic mode it produces the chip's
+    // characteristic 15-stage pulse train (one '1' cycling through).
+    if (ch_idx == 0) {
+        ch.noise_lfsr = 0x4000;
+        ch.noise_phase = 0;
+    }
 }
 
 void play_at(int channel_hint, const uint8_t params[4],
              uint8_t src_x, uint8_t src_y) {
-    if (!g_open) return;
+    if (!g_open || !g_enabled) return;
 
     // 6502 &1415-&141a get_object_distance_from_screen_centre + the
     // CMP #&10 / BCS leave gate. Chebyshev distance in tiles; bigger
@@ -511,9 +576,39 @@ void tick() {
             mix += (g_debug_phase & 0x80000000u) ? +0.5f : -0.5f;
             g_debug_phase += kDebugToneInc;
         }
-        for (auto& ch : g_channels) {
+        for (int ci = 0; ci < kNumChannels; ci++) {
+            Channel& ch = g_channels[ci];
             if (!channel_audible(ch)) continue;
-            const float square = (ch.phase & 0x80000000u) ? +1.0f : -1.0f;
+            // Channel 0 = SN76489 noise. Step a 15-bit LFSR at a
+            // freq.value-derived rate; output the LSB. Other channels
+            // use the existing square-wave generator.
+            float wave;
+            if (ci == 0) {
+                // freq.value selects one of the chip's four discrete
+                // noise modes via the 6502 pipeline (see
+                // noise_reg_for_byte). Step rate fires the LFSR once
+                // per accumulator wrap.
+                const uint32_t step = kNoiseTable.step[ch.freq.value];
+                const bool white    = kNoiseTable.white[ch.freq.value];
+                const uint32_t prev = ch.noise_phase;
+                ch.noise_phase = prev + step;
+                if (ch.noise_phase < prev) {
+                    // White: bit 0 XOR bit 1 (BBC SN76489AN taps).
+                    // Periodic: feed bit 0 back to bit 14 — a single
+                    // 1 cycles through 15 stages, producing a buzzy
+                    // pulse at step_rate / 15 Hz instead of noise.
+                    uint16_t fb = white
+                        ? ((ch.noise_lfsr ^ (ch.noise_lfsr >> 1)) & 1u)
+                        : (ch.noise_lfsr & 1u);
+                    ch.noise_lfsr = static_cast<uint16_t>(
+                        (ch.noise_lfsr >> 1) | (fb << 14));
+                    if (ch.noise_lfsr == 0) ch.noise_lfsr = 1;
+                }
+                wave = (ch.noise_lfsr & 1u) ? +1.0f : -1.0f;
+            } else {
+                wave = (ch.phase & 0x80000000u) ? +1.0f : -1.0f;
+                ch.phase += ch.phase_inc;
+            }
             // 6502 &1376-&137e: chip_volume = vol.value - reduction,
             // floored at zero. Renderer uses the reduced value's top
             // nibble (SN76489's 4-bit attenuation), matching how the
@@ -521,8 +616,7 @@ void tick() {
             const int reduced = int(ch.vol.value) - int(ch.volume_reduction);
             const uint8_t out = (reduced > 0) ? static_cast<uint8_t>(reduced) : 0;
             const float amp = (out >> 4) / 15.0f;
-            mix += square * amp * 0.25f;
-            ch.phase += ch.phase_inc;
+            mix += wave * amp * 0.25f;
         }
         buf[i] = std::clamp(mix, -1.0f, 1.0f);
     }
@@ -570,5 +664,22 @@ void set_debug_tone(bool on) {
     g_debug_phase = 0;
     audio_log("debug tone %s\n", on ? "ON" : "off");
 }
+
+void set_enabled(bool on) {
+    g_enabled = on;
+    if (!on) {
+        // Silence anything currently playing so the toggle takes effect
+        // immediately — without this, in-flight envelopes would keep
+        // ringing for up to a second after the disable.
+        for (auto& ch : g_channels) {
+            ch.vol.value = 0;
+            ch.vol.duration = 0;
+            ch.vol.stage_duration = 0;
+        }
+    }
+    audio_log("audio %s\n", on ? "ENABLED" : "disabled");
+}
+
+bool is_enabled() { return g_enabled; }
 
 }  // namespace Audio

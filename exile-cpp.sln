@@ -5,6 +5,8 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "exile", "exile.vcxproj", "{2692A890-38C0-4497-A195-6F63DF705F40}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "exile_tests", "exile_tests.vcxproj", "{8F9A6B3C-1D2E-4F7A-B5C8-9E0123456789}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -15,6 +17,10 @@ Global
 		{2692A890-38C0-4497-A195-6F63DF705F40}.Debug|x64.Build.0 = Debug|x64
 		{2692A890-38C0-4497-A195-6F63DF705F40}.Release|x64.ActiveCfg = Release|x64
 		{2692A890-38C0-4497-A195-6F63DF705F40}.Release|x64.Build.0 = Release|x64
+		{8F9A6B3C-1D2E-4F7A-B5C8-9E0123456789}.Debug|x64.ActiveCfg = Debug|x64
+		{8F9A6B3C-1D2E-4F7A-B5C8-9E0123456789}.Debug|x64.Build.0 = Debug|x64
+		{8F9A6B3C-1D2E-4F7A-B5C8-9E0123456789}.Release|x64.ActiveCfg = Release|x64
+		{8F9A6B3C-1D2E-4F7A-B5C8-9E0123456789}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
