@@ -30,7 +30,7 @@ bits 5-0 : tile type (one of TileType, 0x00..0x3f)
 Tile types 0x00..0x08 are special: they are `CHECK_TERTIARY_OBJECT_RANGE_N`
 markers, not real tiles. They get rewritten by `resolve_tile_with_tertiary`
 into either a real tile-from-tertiary or one of nine fallback feature
-tiles. See `docs/TERTIARY.md`.
+tiles. See `docs/tertiary.md`.
 
 Tile types 0x09..0x3f are the actual visible/collidable tiles (SPACE,
 EARTH, STONE, slopes, walls, switches, doors, …).

@@ -224,7 +224,7 @@ push-out, so as a stand-in `Game::update_objects` skips the per-axis
 position revert when the object **starts** the integration step already
 inside solid geometry — gravity (or any constant force) then walks the
 sprite out of the obstruction one fraction at a time. See
-`docs/INTRO_TRIAX.md` for why this is load-bearing for the opening
+`docs/intro_triax.md` for why this is load-bearing for the opening
 beat.
 
 ## Useful references

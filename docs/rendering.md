@@ -18,7 +18,7 @@ Three parallel 64-entry tables, all keyed on the 6-bit type:
 | `tiles_palette_table[64]` (`src/world/tile_data.h`) | `&052b` | BBC MODE 2 palette byte (4 logical colours packed 4 bits each), or a procedural code 0..6 |
 
 The same `tiles_y_offset_and_pattern` byte is consumed by both the
-renderer and the collision system — see `docs/COLLISION.md` for the
+renderer and the collision system — see `docs/collision.md` for the
 obstruction-pattern half.
 
 ## The pipeline
@@ -31,7 +31,7 @@ obstruction-pattern half.
    (`TILE_CHECK_TERTIARY_OBJECT_RANGE_N`); the matched tertiary entry's
    `tile_and_flip` byte is what actually renders. Doors, switches,
    transporters, level-specific overrides all enter the pipeline this
-   way. See `docs/TERTIARY.md`.
+   way. See `docs/tertiary.md`.
 
 2. **Pick sprite ID + flip.** `TILE_SPRITE_ID[type]` gives the atlas
    index. Tile flip bits come from the byte directly. `0xff`
@@ -118,7 +118,7 @@ Anything `≥ 0x07` in the table is a literal palette byte and is used as-is.
   decoded from the BBC tables.
 - `src/rendering/palette.cpp` — `resolve_palette_with_fg`,
   `LOGICAL_TO_RGB`.
-- `docs/COLLISION.md` — the obstruction-pattern half of
+- `docs/collision.md` — the obstruction-pattern half of
   `tiles_y_offset_and_pattern`.
-- `docs/TERTIARY.md` — the marker-tile redirection that runs ahead of
+- `docs/tertiary.md` — the marker-tile redirection that runs ahead of
   this whole pipeline.

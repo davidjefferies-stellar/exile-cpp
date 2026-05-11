@@ -9,7 +9,7 @@ The disassembly's verbose human-readable listing of all 254 entries
 lives at lines 796-2063 of `exile-standard-disassembly.txt` — this doc
 is a compact column-table view of the same data, grouped by the
 `TILE_CHECK_TERTIARY_OBJECT_RANGE_N` marker tile that fronts each block.
-See `docs/TERTIARY.md` for how the markers redirect into this table.
+See `docs/tertiary.md` for how the markers redirect into this table.
 
 ## Field encodings
 

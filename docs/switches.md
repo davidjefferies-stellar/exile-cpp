@@ -7,7 +7,7 @@ world tile in Option B's per-cell tertiary store.
 
 For the broader mechanism that lets a non-switch landscape tile *render
 and behave as a switch* (the "redirect" trick), see
-`docs/SWITCH_REDIRECTS.md`. This doc focuses on press-to-effect.
+`docs/switch_redirects.md`. This doc focuses on press-to-effect.
 
 ## Data sources
 
@@ -25,7 +25,7 @@ runtime table (in `Landscape::tertiary_entries_`) define a switch:
 
 `tertiary_ranges[]` and `tertiary_data_offset[]` slice the source tables
 into nine type-keyed sub-ranges (one per CHECK_TERTIARY tile type
-0x00..0x08) — see the table at the top of `docs/SWITCH_REDIRECTS.md`.
+0x00..0x08) — see the table at the top of `docs/switch_redirects.md`.
 
 ## At bake time: cell → entry → source row
 
