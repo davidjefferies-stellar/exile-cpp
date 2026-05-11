@@ -1,5 +1,7 @@
 # exile-cpp
 
+[![tests](https://github.com/davidjefferies-stellar/exile-cpp/actions/workflows/tests.yml/badge.svg)](https://github.com/davidjefferies-stellar/exile-cpp/actions/workflows/tests.yml)
+
 A C++ port of the BBC Micro game **Exile** (Peter Irvin & Jeremy Smith, 1988),
 working from the original 6502 disassembly. The goal is a faithful
 reimplementation of the game's procedural world, physics, AI, and audio in
