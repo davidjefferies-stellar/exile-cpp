@@ -283,26 +283,15 @@ void Game::integrate_player_motion(Object& player,
                    ? sprite_atlas[player.sprite].w : 5;
     int sprite_w_frac = (sprite_w > 0 ? sprite_w - 1 : 0) * 16;
 
-    // AABB-spanning obstruction probe lives in player_aabb_obstructed at
-    // TU scope above  Walks sections across
-    // tile boundaries so moving right into a wall is caught, and false
-    // blocks on left-edge tiles that spill into the next column are
-    // avoided.
-
-    // ====================================================================
-    // Tile collision — port of the 6502's &2f8c-&30df chain via the new
-    // TileCollision::resolve helper. Replaces the axis-separated revert
-    // and post-frame grounded snap that previously lived inline here.
-    // The single resolve call walks AABB edges, counts obstruction
-    // depths, builds a vector, pushes the player out perpendicular to
-    // the surface, and reflects velocity at reduced angle — the same
-    // pipeline the 6502 uses for slopes / walls / floors / ceilings.
+    // Tile collision — port of the 6502's &2f8c-&30df chain via
+    // TileCollision::resolve. The single resolve call walks AABB edges,
+    // counts obstruction depths, builds a vector, pushes the player
+    // perpendicular to the surface, and reflects velocity at reduced
+    // angle — the 6502's slope/wall/floor/ceiling pipeline.
     //
-    // Object-object collision still runs as a separate pass below
-    // (port of &2a64 + &2bb6), kept axis-aware in our port because we
-    // don't yet model the 6502's centre-to-centre vector approach for
-    // object-vs-object pushes.
-    // ====================================================================
+    // Object-object collision runs as a separate axis-aware pass below
+    // (port of &2a64 + &2bb6); we don't yet model the 6502's centre-to-
+    // centre vector approach for object-vs-object pushes.
     Fixed8_8 old_x = player.x;
     Fixed8_8 old_y = player.y;
     player.x.add_velocity(player.velocity_x);

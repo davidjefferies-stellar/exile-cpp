@@ -15,12 +15,7 @@ namespace Behaviors {
 // `energy` is overloaded as a "disturbed" flag — bit 7 SET means
 // undisturbed (still pinned to spawn). The 6502 uses ASL/LSR at &4ba1
 // to clear that bit when something touches the object, then BIT/BPL at
-// &4ba5 to skip the rest of the routine if disturbed. Our previous
-// version had this inverted: it SET bit 7 on touch, leaving the pin
-// behaviour permanently active and letting collectables drift under
-// gravity / tile collision (then demote to secondary, then promote, and
-// so on — over time the secondary pool fills with one entry per tile
-// the player has wandered through).
+// &4ba5 to skip the rest of the routine if disturbed.
 //
 // Faithful behaviour:
 //   - If the player is currently holding this object, mark it collected
@@ -395,14 +390,12 @@ void update_control_device(Object& obj, UpdateContext& ctx) {
     //   &3133 JSR add_particle (Y = PARTICLE_AIM)
     //         → reads &b4/&b6 as the new particle's base velocity
     //
-    // Previous port called emit() which uses the source object's
-    // velocity as the particle base — but the RCD is held, so source
-    // velocity is ~0 and the AIM particles just sat at the player's
-    // hands (looked like they'd hit something). emit_directed
-    // reproduces the 6502 path by converting (spd_base + rnd&spd_rand,
-    // angle) into vector_x/y before placing the particle. AIM's
-    // spd_base = 0x3f and spd_rand = 0x01 produce magnitude 63..64,
-    // close to the 6502's 64..67.
+    // emit_directed reproduces the 6502 path by converting
+    // (spd_base + rnd&spd_rand, angle) into vector_x/y before placing
+    // the particle. The plain emit() would use the RCD's own velocity
+    // as the base — ~0 while held — and the AIM particles would sit at
+    // the player's hands. AIM's spd_base = 0x3f and spd_rand = 0x01
+    // produce magnitude 63..64, close to the 6502's 64..67.
     if (ctx.particles) {
         ctx.particles->emit_directed(
             ParticleType::AIM, ctx.player_aim_angle, obj, ctx.rng);

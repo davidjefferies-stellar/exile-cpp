@@ -851,14 +851,7 @@ Landscape::SlopeResult Landscape::calculate_slope_function(uint8_t tile_x, uint8
         // with carry CLEAR — the 6502's `ASL A; ASL A` at &1953/&1954
         // always clears it (the byte being shifted is `f1 & 0x20`, so
         // bit 7 of the pre-shift A is always 0). The SMC opcode at
-        // &1961 (ADC vs SBC) inherits the carry produced by ADC #&16
-        // — NOT a forced sec() before it. Earlier code mistakenly did
-        // `s.sec(); s.adc(0x16); s.sbc(tile_x)` which added 1 too many,
-        // pushing edge-of-cavern cells onto sloping-passage feature
-        // tiles. Concrete fallout: (170, 193) ended up GREENERY 0x07,
-        // and tertiary x-only-in-range scan at X=170 attached source
-        // row 237 (range 7) whose tile_and_flip=0x08 redirected the
-        // cell to a (spurious) switch.
+        // &1961 (ADC vs SBC) inherits the carry produced by ADC #&16.
         s.lda(tile_y);
         s.clc();
         s.adc(0x16);

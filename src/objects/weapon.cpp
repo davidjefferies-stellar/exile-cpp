@@ -91,10 +91,7 @@ int fire(ObjectManager& mgr, const Object& player,
 
     Object& bullet = mgr.object(slot);
     // &3313-&3318: magnitude = 0x40 + (rng & 3). The +0..3 jitter keeps
-    // simultaneous shots from stacking pixel-perfectly, and 0x40 is ~2x
-    // the AIM-particle direction magnitude — bullets at 0x20 (the prior
-    // hard-coded value in diamond_vector) crawled at half the 6502's
-    // speed and exploded long before reaching distant targets.
+    // simultaneous shots from stacking pixel-perfectly.
     int magnitude = 0x40 + static_cast<int>(rng.next() & 3);
     int8_t vel_x, vel_y;
     get_firing_velocity(aim_angle, player.is_flipped_h(),

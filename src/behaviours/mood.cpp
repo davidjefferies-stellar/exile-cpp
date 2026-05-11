@@ -198,11 +198,9 @@ void update_mood(Object& npc, UpdateContext& ctx) {
     //       When a phobia or player WAS detected, AVOID is applied
     //       first and a 50% rng roll skips the home re-find so the
     //       imp keeps fleeing instead of swinging back to home.
-    //
-    // Earlier port had the home block nested inside `if (hit >= 0)`,
-    // which left fed imps with stale target_and_flags whenever no
-    // phobia/target was visible — hence the "doesn't reliably head
-    // home" behaviour.
+    //       The home block runs unconditionally (not nested inside the
+    //       phobia hit) so fed imps re-acquire the bush even when no
+    //       phobia/player target is visible this scan.
     if ((per_obj_fc & 0x3f) == 0) {
         bool was_player = false, was_primary = false;
         int hit = find_target(npc, ctx, ctx.this_slot,
@@ -282,8 +280,8 @@ void update_mood(Object& npc, UpdateContext& ctx) {
     }
 
     // &283a-&283e time: every 256 frames (when per-object fc == 0xff).
-    // Per-object — see per_obj_fc construction above; all NPCs used to
-    // tick over together.
+    // Per-object — see per_obj_fc construction above; the slot-offset
+    // phasing prevents every NPC from ticking over on the same frame.
     if (per_obj_fc == 0xff) {
         stimuli |= 0x80;
     }

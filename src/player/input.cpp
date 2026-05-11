@@ -31,8 +31,8 @@ void InputHandler::process_key(int key) {
         case 'i': case 'I': state_.aim_centre   = true; break;
         case 'k': case 'K': state_.aim_down     = true; break;
         case 'o': case 'O': state_.aim_up       = true; break;
-        // map-activation toggle used to live on 'W'; moved to the debug-
-        // panel "Map mode" checkbox in the HUD strip. W is now free.
+        // 'W' free — map-activation toggle is on the debug-panel
+        // "Map mode" checkbox in the HUD strip.
         case 'p': case 'P': state_.toggle_pause          = true; break;
         case 'y': case 'Y': state_.whistle_one   = true; break;
         case 'u': case 'U': state_.whistle_two   = true; break;

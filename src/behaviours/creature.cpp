@@ -117,10 +117,9 @@ void update_active_chatter(Object& obj, UpdateContext& ctx) {
     //   JSR check_for_obstruction_between_objects_80   ; 16-tile LOS
     //   BCS skip_producing_power_pod               ; obstructed → bail
     //   ...fire POWER_POD at source, set energy = 0 to deactivate
-    // Previous port skipped the obstruction check — Chatter would fire
-    // through walls / closed doors at the player whenever U was pressed
-    // anywhere in a 16-tile box. has_line_of_sight is the port of
-    // check_for_obstruction_between_objects_80 (16 tiles, door-aware).
+    // has_line_of_sight is the port of
+    // check_for_obstruction_between_objects_80 (16 tiles, door-aware) —
+    // without it Chatter would fire through walls / closed doors.
     if (ctx.whistle_two_activator < GameConstants::PRIMARY_OBJECT_SLOTS &&
         NPC::has_line_of_sight(obj, ctx.whistle_two_activator,
                                 /*max_tiles=*/16, ctx)) {
@@ -398,12 +397,8 @@ void update_imp(Object& obj, UpdateContext& ctx) {
     // the at-home block runs whenever the imp's current tile is PIPE
     // (regardless of WAS_FED), drops a gift only if fed AND the per-
     // variant counter is positive, and ALWAYS despawns the imp at the
-    // end (`JMP set_object_as_far_away` at &453f). Without the despawn
-    // the imp camps the pipe and re-runs the block forever, which would
-    // clear WAS_FED on the first tick the conditions are met but
-    // effectively turn the gift drop into a one-shot race against
-    // is_supported() flickering during the landing bounce — exactly
-    // the failure mode where "no gift gets thrown out" reproduces.
+    // end (`JMP set_object_as_far_away` at &453f). The despawn matters:
+    // without it the imp camps the pipe and re-runs the block forever.
     {
         // Resolve via the tertiary so a "greenery bush in a pipe" cell
         // (raw landscape type GREENERY_WITH_OBJECT_FROM_TYPE = 0x07,
@@ -411,10 +406,7 @@ void update_imp(Object& obj, UpdateContext& ctx) {
         // — what the imp visually walked back to. The 6502's tile_type
         // at &08 is set by get_tile_and_check_for_tertiary_objects
         // (&1715), which already does the redirect, so this matches the
-        // 6502 path. The previous version used landscape.get_tile() raw,
-        // which returned 0x07 for redirected cells and made the gift
-        // drop unreachable for any imp whose pipe was authored as a
-        // greenery-with-object tertiary rather than a literal PIPE tile.
+        // 6502 path.
         ResolvedTile res =
             resolve_tile_with_tertiary(ctx.landscape, obj.x.whole, obj.y.whole);
         uint8_t home_tile = res.tile_and_flip;
@@ -674,7 +666,7 @@ void update_imp(Object& obj, UpdateContext& ctx) {
     // entered with A = 8: A becomes 8/4 + 2 = 4, fires when rng <= 4
     // (5/256 ≈ 2% per frame). Plus the 16-tile-per-axis range gate
     // from calculate_firing_vector_from_distance (&335a CMP #&06 on
-    // relative_tiles_log) — without it imps used to plink the player
+    // relative_tiles_log) — without it imps would plink the player
     // from across the map. Skip when already touching the player so a
     // hugged imp doesn't keep launching crystals into its own face.
     bool not_at_target = (obj.touching != 0);
@@ -947,14 +939,10 @@ void update_piranha_or_wasp(Object& obj, UpdateContext& ctx) {
     // otherwise fall back on the species' default nest type. The 6502
     // updates target_and_flags here (not velocity) and lets the later
     // move_towards_target_with_probability_X at &4f75 carry the actual
-    // motion via a vector from obj to target.
-    //
-    // The old port called seek_player, which SETS velocity_x/y to ±4
-    // directly — that slammed the ±0x20 emerge velocity the hive gave
-    // a new wasp down to ±4 on the first tick, so the wasp never left
-    // the hive's immediate area and looked "stuck going the wrong way".
-    // Updating target_and_flags preserves the emerge momentum and lets
-    // move_towards_target_with_probability blend into it gradually.
+    // motion via a vector from obj to target. Updating target_and_flags
+    // (rather than slamming velocity_x/y) preserves the ±0x20 emerge
+    // momentum the hive gives a fresh wasp, letting blending into the
+    // seek vector happen gradually instead of stalling on tick one.
     //
     // Home-hive fallback: the 6502 calls find_object for the nearest
     // SMALL_HIVE; we approximate with "leave target_and_flags unchanged",

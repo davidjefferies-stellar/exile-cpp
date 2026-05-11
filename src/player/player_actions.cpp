@@ -103,15 +103,10 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     // input-driven acceleration_x (set by &2c6a INC / &2c6d DEC), then
     // the walking branch at &3b53 overwrites accel_x with a slope-vector
     // value — but that overwrite doesn't affect facing this frame
-    // because it happens AFTER the facing store. Decelerating ("stop
-    // walking right") therefore doesn't flip the player around in the
-    // 6502, even though the post-walking accel_x is negative.
-    //
-    // Our port reads accel_x in update_player_sprite, which runs after
-    // the walking model. With the previous "facing = sign(accel_x)"
-    // logic, a stop-walking spun the sprite 180° because the
-    // decelerating accel_x had the opposite sign of the walking
-    // direction.
+    // because it happens AFTER the facing store. Deriving facing from
+    // accel_x in our port (which is read after the walking model) would
+    // flip the sprite 180° on every deceleration, since the walking
+    // model produces an opposite-sign accel_x to brake the velocity.
     if (inp.move_right)      player_facing_ = 0x00;
     else if (inp.move_left)  player_facing_ = 0x80;
 
@@ -128,11 +123,6 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     // That converges on walking_speed in ~2 frames and HOLDS — no
     // overshoot, no "sticky" ramp.
     //
-    // Our previous port used the flying-style additive accumulation
-    // (`accel_x = ±4` every frame) regardless of supported state. With
-    // velocity climbing 4 per frame from 0, the first ~8 frames look
-    // motionless; then the player crosses ~32 and abruptly slides at
-    // ~max speed — the user's "sticks until enough force to fly".
     // Walking gate — port of &3b0e-&3b10 update_walking_npc_or_player:
     //   AND #&0f ; NPC_WALKING_MASK
     //   BNE leave   ; non-zero counter → not walking
@@ -299,17 +289,10 @@ void Game::apply_player_input(Object& player, const InputState& inp,
             Object aim_src = has_held
                 ? object_mgr_.object(held_object_slot_)
                 : player;
-            // Use emit_directed so the particle's velocity is computed
-            // FROM the player_aiming_angle_with_flip (port of &330f),
-            // not from src.velocity + a hard-coded right-biased base.
-            // The old emit() path used angle=0 default (spd_base 0x3f
-            // pointed right) and just *added* a magnitude-0x20 aim
-            // vector from Weapon::get_firing_velocity on top — the
-            // 0x40 rightward base dominated, so aim-down only nudged
-            // the stream a few pixels downward and aim-up didn't read
-            // at all. emit_directed matches the 6502's
-            // create_aim_particle (&312b → calculate_firing_vector_
-            // from_aiming_angle → add_particle) exactly.
+            // emit_directed computes the particle's velocity FROM
+            // player_aiming_angle_with_flip (port of &330f), matching
+            // the 6502's create_aim_particle (&312b → calculate_firing_
+            // vector_from_aiming_angle → add_particle) exactly.
             uint8_t angle_with_flip = player.is_flipped_h()
                 ? static_cast<uint8_t>(0x80 - static_cast<int8_t>(player_aim_angle_))
                 : player_aim_angle_;
@@ -357,20 +340,15 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     auto pickup_now = [&](void) {
         if (held_object_slot_ < 0x80) return;                  // already holding
 
-        // The 6502's handle_picking_up_object reads this_object_touching
-        // (&3b) directly, set by check_for_collisions earlier in the
-        // frame. Our port's player.touching is only refreshed at the
-        // end of integrate_player_motion (last frame), so by the time
-        // the user presses , the field can be stale — the player walks
-        // past the collectable's narrow AABB window faster than the
-        // user can press the key, and pickup misfires until a frame
-        // happens to land back on a stable overlap.
-        //
-        // Fix: do a fresh AABB scan against the player's current
-        // position when the key fires, with a small ±2 fraction-unit
-        // inflation in each direction to forgive sub-pixel
-        // misalignment. Falls back to player.touching if nothing
-        // overlaps the inflated AABB.
+        // Fresh AABB scan against the player's current position when
+        // the key fires, with a small ±2 fraction-unit inflation in
+        // each direction to forgive sub-pixel misalignment. Falls back
+        // to player.touching if nothing overlaps the inflated AABB.
+        // The 6502 reads this_object_touching (&3b) set by check_for_
+        // collisions earlier in the frame; our port's player.touching
+        // is refreshed at the end of integrate_player_motion (last
+        // frame), which can be stale when the player walks past a
+        // collectable's narrow AABB faster than the key edge.
         int target_slot = -1;
         {
             int p_x = static_cast<int>(player.x.whole) * 256 +

@@ -1050,9 +1050,9 @@ void Game::render() {
             // / transporters too (e.g. raw METAL_DOOR cells whose
             // tertiary tile_and_flip is rewritten to SWITCH 0x08, like
             // (227,156) / (227,188) wiring through source row idx 116
-            // of the METAL_DOOR range). The previous range-keyed scan
-            // missed all redirects because it only iterated the static
-            // SWITCH / TRANSPORTER source ranges.
+            // of the METAL_DOOR range). Iterating every entry rather
+            // than just the static SWITCH / TRANSPORTER ranges keeps
+            // redirects visible.
             int n_entries = landscape_.tertiary_count();
             for (int idx = 1; idx < n_entries; ++idx) {
                 const TertiaryEntry& e = landscape_.tertiary_entry(idx);

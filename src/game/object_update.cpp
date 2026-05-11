@@ -188,48 +188,14 @@ void Game::update_objects() {
         Object& obj = object_mgr_.object(slot);
         if (!obj.is_active()) continue;
 
-        // Step 3: Handle held objects.
-        //
-        // 6502 &1afd-&1b54: position the held primary flush to the
-        // player's facing side (objects_x = player_x + offset), then
-        // fall through to JSR check_for_collisions at &1b54 — exactly
-        // the same routine every other object runs. If the flush
-        // position penetrates solid geometry, that routine reverts
-        // position so the held bumps the wall and stays there while the
-        // player moves on. Drift accumulates, and consider_dropping_
-        // held_object (&1cab) eventually fires HeldObject::should_drop
-        // to drop it.
-        //
-        // Our port previously skipped tile collision for held primaries
-        // (step 15 has `if (slot != held_object_slot_)`), so the held
-        // visually clipped through walls. Re-add the revert here without
-        // touching step 15: snapshot the position before update_position,
-        // run a tile-overlap test on the four AABB corners, and if any
-        // sit inside a solid tile, restore the snapshot. The motion
-        // delta over a single frame is small, so a corner-only probe
-        // catches penetrations the same way the 6502's section sweep
-        // would.
+        // Step 3: Handle held objects. 6502 &1afd-&1b54 snaps the held
+        // primary flush to the player's facing side (height-centred,
+        // x_flip-mirrored, velocity copied from player), then falls
+        // through into the SAME check_for_collisions routine every
+        // other primary uses. The drift between the snap-set position
+        // (saved in held_expected_*) and the post-resolve position is
+        // what feeds &1ca9 consider_dropping_held_object below.
         if (slot == held_object_slot_) {
-            // 6502 &1afd-&1b54 held-object alignment + collision. The
-            // original snaps the held primary flush to the player's
-            // facing side (height-centred, x_flip-mirrored, velocity
-            // copied from player), then falls through into the SAME
-            // check_for_collisions routine every other primary uses.
-            // If the snap-position penetrates solid geometry, that
-            // routine pushes the held back out perpendicular to the
-            // surface — the same TileCollision::resolve we already use
-            // for everything else. The drift between the snap-set
-            // position (saved in held_expected_*) and the post-resolve
-            // position is what feeds &1ca9 consider_dropping_held_
-            // object below.
-            //
-            // Earlier port iteration replaced the unified collision
-            // call with a corner-only AABB probe + axis-separated
-            // hard revert; with the section-aware tile collision
-            // system now in place, that workaround is obsolete.
-            // Running the held through resolve gives the same wall-
-            // pushback the 6502 produces, including the fractional
-            // depth math that drives the drop threshold accurately.
             Fixed8_8 prev_held_x = obj.x;
             Fixed8_8 prev_held_y = obj.y;
             HeldObject::update_position(obj, player);
@@ -400,11 +366,8 @@ void Game::update_objects() {
         // Mutating IN-PLACE is critical for tertiary-backed primaries
         // like doors: keeping the same slot keeps obj.tertiary_slot
         // pointing at the door's entry, and tertiary_spawn.cpp's
-        // dedup scan (lines 62-68) blocks re-spawning the door while
-        // the explosion still occupies the slot. The previous
-        // create_object_centered + remove_object pair freed the
-        // tertiary_slot association, so the door respawned the very
-        // next render frame with no visible explosion.
+        // dedup scan blocks re-spawning the door while the explosion
+        // still occupies the slot.
         if (obj.energy == 0 && obj.type != ObjectType::EXPLOSION &&
             !object_type_is_indestructible(static_cast<uint8_t>(obj.type))) {
             // 6502 &1ce3-&1cf3 dispatches energy=0 through
@@ -482,10 +445,8 @@ void Game::update_objects() {
         // the main loop later zeroes the slot. It does NOT bounce the
         // object back to tertiary — PENDING_REMOVAL means "this thing is
         // GONE" (collected, exploded, despawned) and reviving it would
-        // undo whatever effect set the flag. Calling return_to_tertiary
-        // here used to re-arm bit 7 of the data byte (since the else
-        // branch unconditionally ORs 0x80) so collected items respawned
-        // a few frames later.
+        // undo whatever effect set the flag, and would re-arm bit 7 of
+        // the data byte so collected items respawn a few frames later.
         if (obj.flags & ObjectFlags::PENDING_REMOVAL) {
             object_mgr_.remove_object(slot);
             if (slot == held_object_slot_) held_object_slot_ = 0x80;
@@ -739,22 +700,13 @@ void Game::update_objects() {
                         subst, ttx_frac, tty_frac);
                 };
 
-                // Sample all four corners of the sprite's AABB. The
-                // previous implementation skipped right/bottom corners
-                // when they landed in the SAME tile as top-left, which
-                // misses slopes and partial-tile patterns: the corners
-                // have different (x_frac, y_frac) even inside one tile,
-                // and the obstruction threshold is a function of
-                // x_section / y_frac, so "same tile" doesn't mean "same
-                // obstruction answer". A red rolling robot (152-frac
-                // tall) fits entirely inside a single tile row; without
-                // the bottom probes the robot would slip through slope
-                // tiles because only the top of the sprite (y_frac ~0,
-                // above the slope surface) got tested.
-                //
-                // The probes are idempotent when corners happen to
-                // collapse onto the same point (sprite width or height
-                // zero), so always running all four is harmless.
+                // Sample all four corners of the sprite's AABB
+                // unconditionally. Even when corners share a tile, their
+                // (x_frac, y_frac) differ and the obstruction threshold
+                // is a function of x_section / y_frac, so "same tile"
+                // doesn't mean "same obstruction answer" — required for
+                // slopes and partial-tile patterns. The probes are
+                // idempotent when corners collapse onto the same point.
                 auto any_tile_solid = [&](uint8_t tx, uint8_t tx_frac,
                                           uint8_t ty, uint8_t ty_frac)->bool {
                     int right_abs  = static_cast<int>(tx) * 256 +
@@ -828,15 +780,9 @@ void Game::update_objects() {
                 // transporter beams, fireballs). The relax is needed because
                 // a bullet's spawn position can overlap its firer's AABB on
                 // frame 1 — without an escape, the next frame's revert
-                // would pin it inside the firer.
-                //
-                // Tightened: previously this fired for ANY established
-                // primary, which let imps that ended up inside a closed
-                // door's AABB (e.g. door closed on them, or tunnelling on
-                // a prior frame) walk straight out the other side. Restrict
-                // to NEWLY_CREATED + INTANGIBLE so an imp that somehow gets
-                // inside a door is stuck there (acceptable; a stuck imp is
-                // far less visible than one phasing through a locked door).
+                // would pin it inside the firer. Restricted to NEWLY_CREATED
+                // + INTANGIBLE so an established primary stuck inside a
+                // closed door's AABB stays trapped instead of phasing out.
                 bool start_obj_overlap = false;
                 if ((obj.flags & ObjectFlags::NEWLY_CREATED) ||
                     (tflags & ObjectTypeFlags::INTANGIBLE)) {
@@ -856,18 +802,15 @@ void Game::update_objects() {
                     // never punches through tiles — otherwise a player pushing
                     // a resting collectable would walk it through walls/floor.
                     //
-                    // Side-relax (clauses 2/3) is tile-pattern-only and was
-                    // letting fed imps phase through closed locked doors:
-                    // substitute_door_for_obstruction returns STONE_SLOPE_78
-                    // (solid only in the left tile-quarter) so an imp whose
-                    // left edge sat in the solid quarter and right edge in
-                    // the empty band registered start_left && !start_right,
-                    // and rightward motion got relaxed despite the door
-                    // primary's full-tile AABB. Gate the side-relax on
-                    // !obj_blocked so heavier-primary collisions (door,
-                    // cannon, hive) outrank the tile-pattern escape; the
-                    // bullet-escape clause 1 stays unconditional because
-                    // bullets must leave their firer's AABB on frame 1.
+                    // Side-relax (clauses 2/3) is tile-pattern-only and gated
+                    // on !obj_blocked so heavier-primary collisions (door,
+                    // cannon, hive) outrank the tile-pattern escape — without
+                    // the gate, substitute_door_for_obstruction's sub-tile
+                    // pattern (e.g. STONE_SLOPE_78, solid only in the left
+                    // quarter) lets an object straddling the door's AABB
+                    // phase out through the empty band. Clause 1 stays
+                    // unconditional because bullets must leave their firer's
+                    // AABB on frame 1.
                     bool relax_x = (start_obj_overlap && !tile_blocked) ||
                         (obj.velocity_x > 0 && start_left  && !start_right && !obj_blocked) ||
                         (obj.velocity_x < 0 && start_right && !start_left  && !obj_blocked);
@@ -954,7 +897,7 @@ void Game::update_objects() {
                                                  0xc0, obj, rng_);
                     }
                 }
-#endif // legacy axis-separated revert disabled
+#endif
 
                 // Apply water effects (buoyancy + damping)
                 Water::apply_water_effects(landscape_, obj, obj.weight(),
@@ -967,30 +910,8 @@ void Game::update_objects() {
                 Wind::apply_tile_environment(obj, landscape_, object_mgr_,
                                              frame_counter_, rng_, particles_);
 
-                // SUPPORTED is now driven by TileCollision::resolve's
-                // landed_on_bottom flag (see above). The legacy probe
-                // is kept under #if 0 for diff-readability and will be
-                // deleted with the rest of the legacy block.
-#if 0
-                {
-                    int foot_abs = static_cast<int>(obj.y.whole) * 256 +
-                                   static_cast<int>(obj.y.fraction) +
-                                   obj_h_units + 1;
-                    uint8_t foot_ty   = static_cast<uint8_t>((foot_abs >> 8) & 0xff);
-                    uint8_t foot_frac = static_cast<uint8_t>(foot_abs & 0xff);
-                    int right_abs  = static_cast<int>(obj.x.whole) * 256 +
-                                     static_cast<int>(obj.x.fraction) +
-                                     obj_w_units;
-                    uint8_t r_tx   = static_cast<uint8_t>((right_abs >> 8) & 0xff);
-                    uint8_t r_frac = static_cast<uint8_t>(right_abs & 0xff);
-                    bool supported =
-                        probe_tile(obj.x.whole, foot_ty,
-                                   obj.x.fraction, foot_frac) ||
-                        probe_tile(r_tx, foot_ty, r_frac, foot_frac);
-                    if (supported) obj.flags |=  ObjectFlags::SUPPORTED;
-                    else           obj.flags &= ~ObjectFlags::SUPPORTED;
-                }
-#endif
+                // SUPPORTED is driven by TileCollision::resolve's
+                // landed_on_bottom flag (see above).
 
                 // Object-object collision: stamp BOTH sides on overlap
                 // (port of &2b14-&2b27 in check_for_collisions). Late

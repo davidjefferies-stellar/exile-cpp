@@ -103,9 +103,9 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
     //                (PROTECTION_SUIT etc.) are X=2 + slow → 4
     //
     // So a single "spawn within 4 tiles" gate matches the actual demotion
-    // radius for every tile type. Spawning further out used to create a
-    // primary that check_demotion immediately reaped (1-in-4 frames) and
-    // the next render frame respawned — visible per-frame churn.
+    // radius for every tile type. Without it, a primary spawned outside
+    // the keep range would be reaped by check_demotion (1-in-4 frames)
+    // and respawned the next render frame — visible per-frame churn.
     //
     // The 6502 doesn't need this gate because its viewport was small
     // enough that tile plotting only ever fired within the keep range.

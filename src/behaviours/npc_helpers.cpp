@@ -59,8 +59,8 @@ void animate_walking(Object& obj, uint8_t base_sprite, uint8_t frame_counter) {
 
 // Thin wrapper over damage_object (&24a6). The 6502 routine takes
 // A = damage, Y = target slot and applies damage to this_object_energy.
-// Our helper folds in the "touching the player?" guard — callers
-// previously had to do it themselves and many forgot.
+// Our helper folds in the "touching the player?" guard so callers
+// don't have to repeat it at every site.
 void damage_player_if_touching(Object& obj, Object& player, uint8_t damage,
                                std::vector<DamageVisual>* damage_events) {
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {

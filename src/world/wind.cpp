@@ -23,11 +23,8 @@ namespace Wind {
 //   |delta| clamped to max_acceleration (0x0c)    (&3213)
 //   current_velocity += delta                     (&31fc)
 //
-// The previous port was missing this "accelerate toward desired"
-// step — it added `desired >> Y` to velocity every frame, so wind
-// never saturated and felt much stronger than the 6502. It also had
-// the base shift off by one and didn't implement the overflow-ceiling
-// case at dist >= 0x48 (&1c72 BPL/DEY DEY).
+// Wind saturates because we go through add_weighted_vector_component,
+// not by adding `desired >> Y` directly to the velocity each frame.
 void apply_surface_wind(Object& obj) {
     // Only above surface (y < 0x4f, &1c49 CMP #&4f / BCS skip)
     if (obj.y.whole >= 0x4f) return;

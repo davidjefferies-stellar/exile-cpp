@@ -124,10 +124,8 @@ inline uint8_t resolve_tile_palette(uint8_t& tile_type, uint8_t tile_x,
             //   CLC; ADC tile_x       ; A += tile_x with c=0
             //   AND #&03              ; index into bushes_palette_table
             //
-            // Earlier port did `tile_flip << 3 - tile_y >> 1 + tile_x`,
-            // which dropped the carry chain. Concrete fallout: TALL_BUSH
-            // (FLIP_H) at (139, 120) computed index 3 (red/cyan/white)
-            // instead of the 6502's 1 (green/magenta/red).
+            // The carry chain matters: dropping it (e.g. naive
+            // `tile_flip << 3 - tile_y >> 1 + tile_x`) flips the index.
             uint8_t a = tile_flip;
             uint8_t c = 1;  // CMP #&03 at &23bb left c=1 (A==3, equal)
             for (int i = 0; i < 3; ++i) {

@@ -1240,13 +1240,9 @@ void Game::update_events() {
         uint8_t r = rng_.next() & 0x03;
         int8_t avail = static_cast<int8_t>(clawed_robot_availability_[r]);
         if (avail == 0) {
-            // &2725-&2728: INC teleport_energy ; BPL leave.
-            // Only spawn once the counter overflows past 0x7f (signed
-            // positive → signed negative). Previously the conditional
-            // was inverted — a freshly-incremented counter (0 → 1) is
-            // positive, which is the "still recharging, don't spawn"
-            // case in the 6502, but my code ran the spawn branch there
-            // and a clawed robot appeared within 8 frames of game start.
+            // &2725-&2728: INC teleport_energy ; BPL leave. Only spawn
+            // once the counter overflows past 0x7f (signed positive →
+            // signed negative); a still-positive byte means "recharging".
             clawed_robot_teleport_energy_[r]++;
             if (static_cast<int8_t>(clawed_robot_teleport_energy_[r]) < 0) {
                 // Counter wrapped past 0x80 — robot has enough teleport
@@ -1591,10 +1587,6 @@ void Game::handle_remembering_position(Object& player) {
     // fraction is discarded by player_teleports_x_ being uint8_t. Most of
     // the time the centre's whole byte is simply player.x.whole; it ticks
     // up by 1 only when the half-width addition crosses a tile boundary.
-    //
-    // The earlier port added the half-width in *pixels* directly to the
-    // whole byte, which shifted the remembered tile two tiles east on the
-    // player's 5-pixel sprite — so teleport landed ~2 tiles off.
     int sw = (player.sprite <= 0x80) ? sprite_atlas[player.sprite].w : 1;
     int sh = (player.sprite <= 0x80) ? sprite_atlas[player.sprite].h : 1;
     int half_w_frac = ((sw > 0 ? sw - 1 : 0) * 16) / 2;

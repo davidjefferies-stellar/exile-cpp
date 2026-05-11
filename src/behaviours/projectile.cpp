@@ -40,11 +40,7 @@ static uint8_t rotate_colour_from_A(Object& obj, uint8_t a) {
 //
 // The visible effect is the SOURCE'S sprite cycling through random
 // palettes for the duration — a door explodes by flickering its door
-// shape through colours, a grenade flickers its ball shape, etc. An
-// earlier port revision changed sprite to SPRITE_FIREBALL (0x17) and
-// recentred the position; that produced a generic small blob instead
-// of the source-shaped flicker the 6502 plays, and made door
-// destructions read as "the door just disappears".
+// shape through colours, a grenade flickers its ball shape, etc.
 void explode_object_with_duration(Object& obj, uint8_t duration) {
     obj.tertiary_data_offset = duration;
     obj.type = ObjectType::EXPLOSION;
@@ -417,11 +413,7 @@ void update_icer_bullet(Object& obj, UpdateContext& ctx) {
 // In our port the lifespan counter is obj.timer (not obj.energy), so we
 // pre-increment obj.timer to cancel common_bullet_update's decrement.
 // Net effect: timer stays constant — tracer never times out, matching
-// the 6502. Previous port pumped obj.energy instead of obj.timer, which
-// did nothing useful: timer hit 0 → common_bullet_update returned early
-// before the angle/sprite update at line 305, leaving the sprite frozen
-// at its last orientation while the bullet kept drifting under residual
-// homing. That's the "doesn't always orientate / stays still" pair.
+// the 6502.
 //
 // Also re-orient AFTER the homing nudge so the sprite reflects the
 // post-homing velocity (the 6502 has the same one-frame staleness, but
@@ -535,12 +527,8 @@ void update_plasma_ball(Object& obj, UpdateContext& ctx) {
 
     // &4a92-&4a98: 1-in-4 random removal while fully underwater.
     //   LDA in_water / ORA rnd_state / ORA rnd_state+3 / BPL remove
-    // Needs the actual waterline, not npc_helpers::is_underwater — that
-    // one compares against SURFACE_Y (upper-world ceiling, 0x4f) and
-    // flags any y >= 0x4f as "underwater", which is the whole playfield.
-    // Previous code here killed the plasma ball 3-in-4 frames on land.
-    // Also: 6502 uses OR then BPL (kill when both high bits clear = 1/4);
-    // previous code used AND and then !(r & 0x80), giving 3/4 kill rate.
+    // Uses the actual per-column waterline, not npc_helpers::is_underwater,
+    // which compares against SURFACE_Y (upper-world ceiling 0x4f).
     if (Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole)) {
         uint8_t r = ctx.rng.next() | ctx.rng.next();
         if (!(r & 0x80)) {
@@ -848,12 +836,9 @@ void update_explosion(Object& obj, UpdateContext& ctx) {
     // {kyK,rgK,rmK,rcK,kyR,rgR,rmR,rcR}. &0f would mix in unrelated indices.
     obj.palette = ctx.rng.next() & 0x13;
 
-    // 6502 &4fc3-&4fc7: emit 10 particles BEFORE the duration check.
-    // A duration-0 explosion (e.g. red drop at &47b9) gets exactly one
-    // frame of particles before removal. Earlier port checked duration
-    // first and skipped emit, which combined with the energy=0 fallback
-    // (object_update.cpp computing duration=(init/32)+3) made small
-    // bullet hits emit ~40 particles instead of 10.
+    // 6502 &4fc3-&4fc7: emit 10 particles BEFORE the duration check, so
+    // a duration-0 explosion (e.g. red drop at &47b9) still gets one
+    // frame of particles before removal.
     if (ctx.particles)
         ctx.particles->emit(ParticleType::EXPLOSION, 10, obj, ctx.rng);
 

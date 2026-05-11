@@ -236,9 +236,8 @@ constexpr PhaseTable kPhaseIncTable = PhaseTable{};
 //   bit 0 : rate-lo   ─┤ 01 = N/1024 = 244 Hz
 //                       │ 10 = N/2048 = 122 Hz
 //                       └ 11 = follow tone-2 freq (we approx as 122)
-// Smooth-byte interpolation gave the wrong mode/rate combo — bytes
-// near 0xff map to the chip's slowest mode (122 Hz, deep rumble), but
-// our old linear table mapped them to 478 Hz (bright hiss).
+// We replay the 6502 pipeline byte-for-byte so envelope bytes near 0xff
+// hit the chip's slow/rumble mode rather than a bright hiss.
 constexpr uint8_t noise_reg_for_byte(unsigned byte_value) {
     constexpr uint8_t limits[4] = { 0x00, 0x40, 0x84, 0xb6 };  // &119c
     constexpr uint8_t bases[4]  = { 0xe0, 0x10, 0x4a, 0x80 };  // &11a0

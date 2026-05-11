@@ -6,8 +6,7 @@ class ObjectManager;
 struct Object;
 
 // Faithful port of the 6502 tile-collision response chain at
-// &2f8c - &30df. Replaces the axis-separated revert + post-frame
-// grounded-snap previously living in player_motion.cpp / object_update.cpp.
+// &2f8c - &30df.
 //
 // The 6502 walks the AABB section by section, counting obstruction
 // depths on all four edges, builds a vector from the depth differences,

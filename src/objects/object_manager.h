@@ -289,9 +289,9 @@ private:
     uint8_t activation_anchor_x_ = 0;
     uint8_t activation_anchor_y_ = 0;
 
-    // Cache-range radii (settable via exile.ini through set_*). Defaults
-    // match the values we used to have hard-coded; see check_demotion /
-    // promote_selective in object_manager.cpp for how they're applied.
+    // Cache-range radii (settable via exile.ini through set_*). See
+    // check_demotion / promote_selective in object_manager.cpp for how
+    // they're applied.
     uint8_t demote_distances_[3] = { 12, 12, 4 };
     uint8_t promote_distance_    = 4;
 

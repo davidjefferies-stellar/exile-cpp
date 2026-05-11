@@ -528,9 +528,6 @@ static void apply_tile_collision(Ctx& ctx) {
         // For mag >= 0x20: CMP sets C=1, cap to 0x20, SBC with C=1 → 0x1e.
         // For mag <  0x20: CMP sets C=0 (borrow), SBC with C=0 → mag - 3.
         // For mag <  3:    SBC borrows again, BCC's LDA #&00 zeros it.
-        // The previous port subtracted a flat 2, which left a 1-frac
-        // residual on a 4-frac fall and drove the perpetual ±0.5-pixel
-        // oscillation observed on flat ground.
         if (magnitude >= 0x20) {
             magnitude = 0x1e;
         } else if (magnitude >= 3) {

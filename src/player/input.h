@@ -18,8 +18,8 @@ struct InputState {
     bool throw_obj    = false;   // . key: drop with a horizontal kick (throw)
     bool store        = false;   // S key: store held object in a pocket
     bool retrieve     = false;   // G key: retrieve top pocket as held object
-                                  // (6502 key at &0c — was R in our earlier port
-                                  // but R is the 6502's remember-position key)
+                                  // (6502 key at &0c — R is the 6502's
+                                  // remember-position key, not retrieve)
     bool remember_pos = false;   // R key: remember current position for later
                                   // teleport (&2c3c handle_remembering_position)
     bool teleport     = false;   // T key: teleport back to last remembered

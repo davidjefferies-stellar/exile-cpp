@@ -60,8 +60,8 @@ void update_turret(Object& obj, UpdateContext& ctx) {
     // Line-of-sight gate. Turrets fire via `find_a_target_and_fire_at_it`
     // at &4f0d → `find_object` at &3c2a, which applies the randomised
     // &3cb5 cap — the same LOS path the rolling / hovering / clawed
-    // robots use. Previous code here used the fixed 16-tile `_80`
-    // variant, which isn't what the turret actually calls.
+    // robots use. has_line_of_sight_randomized reproduces that cap, not
+    // the fixed 16-tile `_80` variant.
     if (!NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
         return;
     }
@@ -96,10 +96,6 @@ void update_turret(Object& obj, UpdateContext& ctx) {
     // So data = (bullet_type << 1) | inactive_bit. Standard turret data
     // bytes are 0x26 (ICER), 0x28 (TRACER), 0x30 (PISTOL); the low bit
     // marks inactive.
-    //
-    // The previous port read obj.state and decoded bits (& 0x0e / & 0x06)
-    // which doesn't match the 6502 at all — turrets ended up always
-    // firing PISTOL_BULLET regardless of which variant the tile was.
     ObjectType bullet = ObjectType::PISTOL_BULLET;
     {
         uint8_t data = obj.tertiary_data_offset;
@@ -192,10 +188,8 @@ void update_rolling_robot(Object& obj, UpdateContext& ctx) {
 //   max_angle = 0x20 (45°)   max_accel = 4   weight = 1
 //   turn_prob = 0            jump_prob = 0
 // → blue rolling robot is GROUND-WALKING only. It never jumps and never
-// reverses on obstacles; gravity owns velocity_y. The previous port set
-// velocity_y directly via NPC::seek_player, which let the robot fly when
-// the player was above it. Faithful behaviour: only set velocity_x; let
-// physics integrate gravity for vertical motion.
+// reverses on obstacles; gravity owns velocity_y. Only set velocity_x;
+// let physics integrate gravity for vertical motion.
 void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
     // &4ee4: check_for_npc_stimuli (mood / phobia / interest reactions).
     Mood::update_mood(obj, ctx);
