@@ -2,14 +2,13 @@
 
 [![tests](https://github.com/davidjefferies-stellar/exile-cpp/actions/workflows/tests.yml/badge.svg)](https://github.com/davidjefferies-stellar/exile-cpp/actions/workflows/tests.yml)
 
-A C++ port of the BBC Micro game **Exile** (Peter Irvin & Jeremy Smith, 1988),
-working from the original 6502 disassembly. The goal is a faithful
-reimplementation of the game's procedural world, physics, AI, and audio in
-modern C++ — close enough that 6502 addresses cite straight across to the
-ported source.
+A C++ port of the BBC Micro masterpiece **Exile** (Peter Irvin & Jeremy Smith, 1988),
+working from the original 6502 disassembly. The goal of the project is educational -
+to re-author the 6502 in C++ for easier study and to preserve its groundbreaking its 
+concepts and techniques for a future where people no longer know 6502.
 
-The disassembly used as the spec lives at `exile-standard-disassembly.txt`
-in the project root.
+The disassembly used as the spec is the superb effort by Level7 and lives at 
+`exile-standard-disassembly.txt`in the project root.
 
 ## Build
 
