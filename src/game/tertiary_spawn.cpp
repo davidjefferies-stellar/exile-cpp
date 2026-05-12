@@ -10,37 +10,30 @@
 // sub-tile offset, copies flip flags, clears bit 7 to prevent respawn.
 void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
                                  uint8_t tile_x, uint8_t tile_y,
-                                 int data_offset, int type_offset,
-                                 uint8_t raw_tile_type) {
+                                 int data_offset, int type_offset) {
     // TILE_INVISIBLE_SWITCH (&3ef2) runs from collision only; no
     // primary ever spawns. Bail early so render-loop diagnostics
     // don't count visible invisible-switch tiles.
     if (tile_is(tile_type, TileType::INVISIBLE_SWITCH)) return;
 
-    // "Redirect" case: the LANDSCAPE tile (raw_tile_type) is a
-    // CHECK_TERTIARY marker (0x00..0x08) but the tertiary entry rewrites
-    // the rendered / dispatched tile to something else (a door, switch,
-    // transporter beam, etc.). We detect this by raw != resolved.
-    bool redirect = (raw_tile_type != tile_type);
-
-    // Only INVISIBLE_SWITCH packs switch-effect bits in the data byte
-    // (bit 7 = MSB of effect-id, not a spawn flag). All other redirects
-    // — including FROM_DATA-via-redirect — use bit 7 as a spawn flag.
-    bool switch_redirect = tile_is(raw_tile_type, TileType::INVISIBLE_SWITCH);
-
-    // Bit-7 spawn gate. Switch-redirects (bit 7 = effect-id) and doors
-    // (&3e95/&3e98 recreate every frame regardless of bit 7) bypass.
+    // Bit-7 spawn gate. Doors (&3e95/&3e98) recreate every frame regardless
+    // of bit 7, so they bypass the gate and rely on the dedup scan below.
+    // All other primary-spawning tertiaries use bit 7 as the spawn flag —
+    // including those whose RAW landscape tile is INVISIBLE_SWITCH but
+    // whose tertiary redirects to a turret/nest/etc (range-0 entries).
+    // The 6502's create_primary_object_from_tertiary clears bit 7 at &408a
+    // post-spawn; our port mirrors that via clear_tertiary_spawn_bit below.
     bool is_door = (tile_type == static_cast<uint8_t>(TileType::METAL_DOOR) ||
                     tile_type == static_cast<uint8_t>(TileType::STONE_DOOR));
-    if (!switch_redirect && !is_door && data_offset != 0 &&
+    if (!is_door && data_offset != 0 &&
         !(object_mgr_.tertiary_data_byte(data_offset) & 0x80)) {
         return;
     }
 
-    // Dedup scan for paths that bypass the bit-7 gate. Misses
+    // Dedup scan for the door path that bypasses the bit-7 gate. Misses
     // demoted-to-secondary primaries, but statics get re-armed via
     // return_to_tertiary so duplicates only appear intra-frame.
-    if ((switch_redirect || is_door) && data_offset > 0) {
+    if (is_door && data_offset > 0) {
         for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
             const Object& p = object_mgr_.object(i);
             if (p.is_active() &&
@@ -181,12 +174,16 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
         // uint8_t truncation breaks dedup and demote re-arm.
         obj.tertiary_slot = static_cast<uint16_t>(data_offset);
         // Copy tertiary data byte into objects_data (&0966) — door
-        // flags / switch effect-id / transporter destination. Strip
-        // bit 7 except on switch-redirect (effect-id MSB).
+        // flags / switch effect-id / transporter destination / turret
+        // projectile type. Strip bit 7: it's always the spawn flag for
+        // primary-spawning tertiaries (the 6502's &408a clears it post-
+        // spawn). For raw-INVISIBLE_SWITCH→turret redirects (range-0
+        // entries), leaving bit 7 set makes update_turret's `data >> 1`
+        // read into the 0x40..0x7f range — e.g. turret data 0xa6 (ICER)
+        // becomes 0x53 (a key) instead of 0x13.
         if (data_offset > 0) {
-            uint8_t db = object_mgr_.tertiary_data_byte(data_offset);
-            obj.tertiary_data_offset = switch_redirect ? db
-                                                        : static_cast<uint8_t>(db & 0x7f);
+            obj.tertiary_data_offset = static_cast<uint8_t>(
+                object_mgr_.tertiary_data_byte(data_offset) & 0x7f);
         } else {
             obj.tertiary_data_offset = 0;
         }
@@ -216,9 +213,8 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
         }
     }
 
-    // Mark spawned by clearing bit 7. Skip switch-redirects — bit 7
-    // there is part of the effect-id, matching the entry-side gate.
-    if (!switch_redirect) {
-        object_mgr_.clear_tertiary_spawn_bit(data_offset);
-    }
+    // Mark spawned by clearing bit 7 in the tertiary table entry
+    // (&408a in 6502 create_primary_object_from_tertiary). Subsequent
+    // tile renders see the cleared bit and bail at the gate above.
+    object_mgr_.clear_tertiary_spawn_bit(data_offset);
 }

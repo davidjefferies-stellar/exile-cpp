@@ -77,8 +77,13 @@ namespace InputKey {
     constexpr int DOWN       = 0x103;
     constexpr int ENTER      = 0x104;
     constexpr int TAB        = 0x105;
-    constexpr int CTRL_LEFT  = 0x106;
-    constexpr int CTRL_RIGHT = 0x107;
+    constexpr int CTRL_LEFT       = 0x106;
+    constexpr int CTRL_RIGHT      = 0x107;
+    constexpr int ESCAPE          = 0x108;
+    constexpr int SHIFT_LEFT      = 0x109;
+    // Synthetic — set when the window's close button was clicked;
+    // surfaces to input as state_.quit so Game::run can exit.
+    constexpr int CLOSE_REQUESTED = 0x10a;
 }
 
 class IRenderer {

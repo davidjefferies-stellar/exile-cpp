@@ -422,8 +422,7 @@ void Game::render() {
             if (res.tertiary_index >= 0) {
                 spawn_tertiary_object(tile_type, tile_flip,
                                       wx, wy,
-                                      res.data_offset, res.type_offset,
-                                      res.raw_tile_type);
+                                      res.data_offset, res.type_offset);
             }
 
             // Door tiles (METAL_DOOR &03, STONE_DOOR &04) are declared

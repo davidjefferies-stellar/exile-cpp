@@ -29,11 +29,13 @@ struct InputState {
     bool aim_centre   = false;   // I key: centre aim
     bool toggle_map_activation = false; // \ key: switch activation anchor
                                         // between player and camera centre
-    bool toggle_pause = false;          // P key: freeze world updates
+    bool toggle_pause = false;          // Esc key: freeze world updates
                                         // (rendering and input still run)
     bool whistle_one  = false;   // Y key: play whistle one (activates Chatter)
     bool whistle_two  = false;   // U key: play whistle two (Chatter produces power pod)
-    bool quit         = false;   // Q key: quit
+    bool quit         = false;   // Set when the window's close button was
+                                  // clicked — no key binding. Game::process_input
+                                  // sees this and breaks the run loop.
     bool save_game    = false;   // ';' key: write game-state save file
     bool load_game    = false;   // "'" key: read game-state save file
     bool save_map     = false;   // '\\' key: write current landscape grid to

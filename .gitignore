@@ -6,6 +6,7 @@ Release/
 
 # Visual Studio per-user state
 *.vcxproj.user
+*.vcxproj.filters
 *.suo
 .vs/
 

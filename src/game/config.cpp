@@ -271,13 +271,14 @@ StartupConfig load_startup_config(const std::string& path) {
             } else if (key == "show_fps" && parse_bool(value, b)) {
                 cfg.show_fps = b;
             } else if (key == "target_fps") {
-                // Accept 25/50/75/100. Anything else silently snaps to
-                // the nearest valid rate so a typo doesn't desync audio.
+                // Any integer between TARGET_FPS_MIN and TARGET_FPS_MAX.
+                // 25 = BBC original; higher fast-forwards the whole game.
+                // Audio re-aligns via Audio::set_logic_rate in Game::init.
                 int n = std::atoi(value.c_str());
-                if      (n <= 25) n = 25;
-                else if (n <= 50) n = 50;
-                else if (n <= 75) n = 75;
-                else              n = 100;
+                if (n < GameConstants::TARGET_FPS_MIN)
+                    n = GameConstants::TARGET_FPS_MIN;
+                if (n > GameConstants::TARGET_FPS_MAX)
+                    n = GameConstants::TARGET_FPS_MAX;
                 cfg.target_fps = n;
             }
         } else if (section == "startup_spawns") {

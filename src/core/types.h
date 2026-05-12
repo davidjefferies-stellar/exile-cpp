@@ -290,12 +290,12 @@ namespace GameConstants {
     // Game logic + render tick rate. BBC original ran the main loop at
     // 25 Hz (every other PAL frame); per-tick velocities, timers, AI
     // dispatch periods and audio envelopes are calibrated against that.
-    // Runtime override via [debug] target_fps in exile.ini — allowed
-    // values 25/50/75/100. Higher = correspondingly faster gameplay
-    // (logic and render advance together).
+    // Runtime override via [debug] target_fps in exile.ini — any integer
+    // between TARGET_FPS_MIN and TARGET_FPS_MAX. Higher = correspondingly
+    // faster gameplay (logic and render advance together).
     constexpr int TARGET_FPS_DEFAULT = 25;
-    constexpr int TARGET_FPS_MAX     = 100;
-    constexpr int TARGET_FPS_MIN     = 25;
+    constexpr int TARGET_FPS_MAX     = 200;
+    constexpr int TARGET_FPS_MIN     = 10;
 }
 
 // ============================================================================

@@ -99,23 +99,72 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     // must be 0; reset on bottom collision, otherwise incremented.
     uint8_t walk_counter = player.state & 0x0f;
     bool walking = (walk_counter == 0) && !flying;
-    if (debug_log_.is_open()) {
-        char line[180];
+    bool supported = (player.flags & ObjectFlags::SUPPORTED) != 0;
+    bool wants_walk = inp.move_left || inp.move_right;
+
+    // State-change log — only fires when one of the gate inputs flips
+    // so the log shows the timeline of grounded→airborne, walk→fly etc.
+    bool any_change =
+        supported    != walk_log_supported_prev_ ||
+        walk_counter != walk_log_counter_prev_   ||
+        walking      != walk_log_walking_prev_   ||
+        flying       != walk_log_flying_prev_;
+    if (debug_log_.is_open() && any_change) {
+        char line[260];
         std::snprintf(line, sizeof(line),
-            "inp %u L=%d R=%d U=%d D=%d J=%d B=%d ctr=%x fly=%d walk=%d "
-            "tcA=%02x v=(%+d,%+d)\n",
+            "walk-state %u sup=%d->%d ctr=%x->%x walk=%d->%d fly=%d->%d "
+            "tcA=%02x body_ang=%02x sprite=%02x flags=%02x v=(%+d,%+d) "
+            "wants_walk=%d inp(L=%d R=%d U=%d D=%d J=%d B=%d)\n",
             static_cast<unsigned>(frame_counter_),
+            walk_log_supported_prev_ ? 1 : 0, supported ? 1 : 0,
+            walk_log_counter_prev_, walk_counter,
+            walk_log_walking_prev_ ? 1 : 0, walking ? 1 : 0,
+            walk_log_flying_prev_ ? 1 : 0, flying ? 1 : 0,
+            player_tile_collision_angle_, player_angle_,
+            player.sprite, player.flags,
+            static_cast<int>(player.velocity_x),
+            static_cast<int>(player.velocity_y),
+            wants_walk ? 1 : 0,
             inp.move_left ? 1 : 0, inp.move_right ? 1 : 0,
             inp.move_up ? 1 : 0, inp.move_down ? 1 : 0,
-            inp.jetpack ? 1 : 0, inp.boost ? 1 : 0,
-            walk_counter,
-            flying ? 1 : 0, walking ? 1 : 0,
-            player_tile_collision_angle_,
-            static_cast<int>(player.velocity_x),
-            static_cast<int>(player.velocity_y));
+            inp.jetpack ? 1 : 0, inp.boost ? 1 : 0);
         debug_log_ << line;
         debug_log_.flush();
     }
+
+    // Walk-blocked diagnostic — fires once per frame the player presses
+    // left/right but doesn't get the walk branch. Shows *why*: counter,
+    // SUPPORTED, the flying-condition inputs, the tile-angle and the
+    // walking gate's expectations side-by-side.
+    if (debug_log_.is_open() && wants_walk && !walking) {
+        const char* reason =
+            !supported          ? "not-supported" :
+            walk_counter != 0   ? "counter-nonzero" :
+            flying              ? "flying-flag" :
+                                  "unknown";
+        char line[220];
+        std::snprintf(line, sizeof(line),
+            "walk-blocked %u reason=%s sup=%d ctr=%x fly(jp=%d up=%d "
+            "dn=%d boost+lr=%d) tcA=%02x sprite=%02x v=(%+d,%+d) "
+            "pos=(%02x.%02x,%02x.%02x)\n",
+            static_cast<unsigned>(frame_counter_),
+            reason, supported ? 1 : 0, walk_counter,
+            inp.jetpack ? 1 : 0, inp.move_up ? 1 : 0,
+            inp.move_down ? 1 : 0,
+            (inp.boost && (inp.move_left || inp.move_right)) ? 1 : 0,
+            player_tile_collision_angle_, player.sprite,
+            static_cast<int>(player.velocity_x),
+            static_cast<int>(player.velocity_y),
+            player.x.whole, player.x.fraction,
+            player.y.whole, player.y.fraction);
+        debug_log_ << line;
+        debug_log_.flush();
+    }
+
+    walk_log_supported_prev_ = supported;
+    walk_log_counter_prev_   = walk_counter;
+    walk_log_walking_prev_   = walking;
+    walk_log_flying_prev_    = flying;
     if (walking) {
     // &3b25 walk: angle = tcA + (right? 0x10 : 0x6f), then &2357 emits
     // (accel_x, accel_y). On flat ground (tcA=0) this is "horizontal +

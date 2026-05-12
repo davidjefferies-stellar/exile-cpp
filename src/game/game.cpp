@@ -909,6 +909,9 @@ void Game::process_input() {
         input_.process_key(key);
     }
 
+    // Window-close path: get_key returns InputKey::CLOSE_REQUESTED when
+    // the user clicked the title-bar X. No key binding to this — only
+    // the renderer's should_close flag drives it.
     if (input_.state().quit) {
         running_ = false;
     }
@@ -1342,7 +1345,22 @@ void Game::update_player() {
     bool motion_input = inp.move_left || inp.move_right ||
                         inp.move_up   || inp.move_down  ||
                         inp.jetpack   || inp.boost;
-    if (debug_log_.is_open() &&
+    // State-change only: emit when SUPPORTED, walking, or the
+    // motion_input mask flips. Suppresses per-frame spam when nothing
+    // interesting changes — pair with walk-state / walk-blocked /
+    // plr-tcr to get a focused timeline.
+    bool inp_supported_now = (player.flags & ObjectFlags::SUPPORTED) != 0;
+    bool inp_walking_now = inp_supported_now &&
+        !(inp.jetpack || inp.move_up || inp.move_down ||
+          (inp.boost && (inp.move_left || inp.move_right)));
+    bool inp_state_changed =
+        inp_supported_now != inp_log_supported_prev_ ||
+        inp_walking_now   != inp_log_walking_prev_   ||
+        motion_input      != inp_log_motion_prev_;
+    inp_log_supported_prev_ = inp_supported_now;
+    inp_log_walking_prev_   = inp_walking_now;
+    inp_log_motion_prev_    = motion_input;
+    if (debug_log_.is_open() && inp_state_changed &&
         (motion_input || pre_vx != 0 || pre_vy != 0 ||
          player.velocity_x != 0 || player.velocity_y != 0)) {
         bool supported = (player.flags & ObjectFlags::SUPPORTED) != 0;

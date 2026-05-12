@@ -62,6 +62,17 @@ private:
     // event; track previous energy and trigger a short strobe instead.
     uint8_t player_prev_energy_     = 0xff;
     uint8_t player_damage_flash_    = 0;
+    // State-change snapshots for the walk-vs-fly debug log. We log only
+    // when one of these flips, plus a one-shot "walk-blocked" line on
+    // each frame the player presses left/right but the walking gate
+    // refuses. Avoids spamming exile-debug.log every frame.
+    bool    walk_log_supported_prev_ = false;
+    uint8_t walk_log_counter_prev_   = 0xff;
+    bool    walk_log_walking_prev_   = false;
+    bool    walk_log_flying_prev_    = false;
+    bool    inp_log_supported_prev_  = false;
+    bool    inp_log_walking_prev_    = false;
+    bool    inp_log_motion_prev_     = false;
     // &1c tile_collision_angle: angle of the surface the player is standing
     // on, in 8-bit units (0x00 = flat ground, 0xe0 = 45° rising right,
     // 0x20 = 45° falling right). Refreshed each frame in
@@ -428,6 +439,5 @@ private:
     // tile_with_object_from_type / tile_with_object_from_data).
     void spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
                                uint8_t tile_x, uint8_t tile_y,
-                               int data_offset, int type_offset,
-                               uint8_t raw_tile_type);
+                               int data_offset, int type_offset);
 };

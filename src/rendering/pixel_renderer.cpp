@@ -719,7 +719,7 @@ bool PixelRenderer::consume_right_click(int& tile_dx, int& tile_dy) {
 }
 
 int PixelRenderer::get_key() {
-    if (should_close) return 'q';
+    if (should_close) return InputKey::CLOSE_REQUESTED;
 
     // Fenster keys 0..256; f.mod bit 0 = ctrl (no L/R distinction, so
     // we probe OS). Indices 256..262 are synthetic for ctrl + arrows on
@@ -737,7 +737,7 @@ int PixelRenderer::get_key() {
                 case 19: return InputKey::RIGHT;
                 case 20: return InputKey::LEFT;
                 case 10: return InputKey::ENTER;
-                case 27: return 'q';
+                case 27: return InputKey::ESCAPE;
                 default:
                     // Letters: lowercase so input.cpp's 'a'-case is hit.
                     if (i >= 'A' && i <= 'Z') return i + 32;
@@ -774,7 +774,12 @@ int PixelRenderer::get_key() {
                 if (GetAsyncKeyState(VK_DOWN)  & 0x8000)
                     return InputKey::DOWN;
                 break;
-            // Slot 262 reserved.
+            case 262:
+                // Left Shift surfaces only via the OS poll — fenster's
+                // scancode table doesn't separate LSHIFT from RSHIFT.
+                if (GetAsyncKeyState(VK_LSHIFT) & 0x8000)
+                    return InputKey::SHIFT_LEFT;
+                break;
             default: break;
         }
 #else

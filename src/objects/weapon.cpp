@@ -111,6 +111,26 @@ int fire(ObjectManager& mgr, const Object& player,
     // robots, Triax, cannons) and player firing produce identical spawn
     // geometry.
     NPC::offset_child_from_parent(bullet, player);
+
+    // Pre-integration timing fix. In the 6502 the player slot integrates
+    // its position at &1ae3 BEFORE the per-type update at &1ca0 reaches
+    // create_projectile, so the bullet spawns at post-integration parent
+    // position. Our port runs apply_player_input (which calls Weapon::
+    // fire) BEFORE integrate_player_motion, so without this shift the
+    // spawn lands one frame's player motion short — a thrusting player
+    // catches up to the bullet on frame N+1 and the bullet explodes
+    // against them. Adding player.velocity here makes the spawn match
+    // the 6502's effective position.
+    {
+        int nx = int(bullet.x.whole) * 256 + int(bullet.x.fraction)
+               + int(player.velocity_x);
+        bullet.x.whole    = static_cast<uint8_t>((nx >> 8) & 0xff);
+        bullet.x.fraction = static_cast<uint8_t>(nx & 0xff);
+        int ny = int(bullet.y.whole) * 256 + int(bullet.y.fraction)
+               + int(player.velocity_y);
+        bullet.y.whole    = static_cast<uint8_t>((ny >> 8) & 0xff);
+        bullet.y.fraction = static_cast<uint8_t>(ny & 0xff);
+    }
     // Initial lifespan — common_bullet_update explodes the bullet the instant
     // its timer hits zero, and the icer/pistol updaters re-arm the timer
     // while the bullet is still moving. Starting at 0 (as init_object_from_type
