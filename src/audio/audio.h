@@ -51,4 +51,8 @@ void set_debug_tone(bool on);
 void set_enabled(bool on);
 bool is_enabled();
 
+// Enable the exile-audio.log file. Must be called before open() — gated
+// via [logs] enabled. Default off: the log file is never created.
+void set_log_enabled(bool on);
+
 }  // namespace Audio

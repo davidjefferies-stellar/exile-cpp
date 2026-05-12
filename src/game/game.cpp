@@ -28,9 +28,15 @@ Game::Game(std::unique_ptr<IRenderer> renderer)
 bool Game::init() {
     if (!renderer_->init()) return false;
 
+    // Load startup config first — Audio::set_log_enabled needs the
+    // [logs] flag before Audio::open() emits its first log line. The
+    // rest of init uses the same cfg.
+    StartupConfig cfg = load_startup_config("exile.ini");
+
     // Audio. Open lazily — if the platform refuses (no device, headless
     // CI, etc.) Audio::open() returns false and every call site below
     // becomes a silent no-op rather than blocking the game from running.
+    Audio::set_log_enabled(cfg.logs_enabled);
     Audio::open();
 
     // Initialize object manager. Hand it the landscape so its tertiary
@@ -43,11 +49,6 @@ bool Game::init() {
     // matches the 6502's &14d2 startup, regardless of any earlier game
     // having mutated the module-level table.
     Water::reset();
-
-    // Load startup config (player position, energy, weapon, pockets,
-    // weapon energies). Missing file -> defaults reproducing the original
-    // game's spawn state. See exile.ini in the project root.
-    StartupConfig cfg = load_startup_config("exile.ini");
 
     // Initialize player in slot 0
     Object& player = object_mgr_.player();
@@ -315,8 +316,13 @@ bool Game::init() {
     // Truncate + open the lifecycle log. Any previous session's data is
     // discarded — we only ever want the current run's churn record. Each
     // non-paused frame flushes its events here via flush_debug_log().
-    debug_log_.open("exile-debug.log",
-                    std::ios::out | std::ios::trunc);
+    // Gated on [logs] enabled so a normal run doesn't litter the cwd; all
+    // log call sites already check `is_open()` so the open() skip turns
+    // them into no-ops naturally.
+    if (cfg.logs_enabled) {
+        debug_log_.open("exile-debug.log",
+                        std::ios::out | std::ios::trunc);
+    }
     if (debug_log_.is_open()) {
         // Plumb the same stream into the renderer so its debug helpers
         // (events panel click trace, etc.) land in the same file rather

@@ -92,12 +92,15 @@ bool g_enabled = true;
 uint8_t g_listener_x = 0;
 uint8_t g_listener_y = 0;
 
-// exile-audio.log — lazy open, silently drops if open fails.
+// exile-audio.log — lazy open, silently drops if open fails. Disabled
+// by default; flipped on via Audio::set_log_enabled before open().
 // std::ofstream dodges MSVC C4996 on std::fopen.
 std::ofstream g_log;
-bool g_log_tried = false;
+bool g_log_tried   = false;
+bool g_log_enabled = false;
 
 void audio_log(const char* fmt, ...) {
+    if (!g_log_enabled) return;
     if (!g_log_tried) {
         g_log_tried = true;
         g_log.open("exile-audio.log",
@@ -610,5 +613,7 @@ void set_enabled(bool on) {
 }
 
 bool is_enabled() { return g_enabled; }
+
+void set_log_enabled(bool on) { g_log_enabled = on; }
 
 }  // namespace Audio

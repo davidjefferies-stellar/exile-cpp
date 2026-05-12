@@ -266,6 +266,11 @@ StartupConfig load_startup_config(const std::string& path) {
             if (key == "enabled" && parse_bool(value, b)) {
                 cfg.audio_enabled = b;
             }
+        } else if (section == "logs") {
+            bool b = false;
+            if (key == "enabled" && parse_bool(value, b)) {
+                cfg.logs_enabled = b;
+            }
         } else if (section == "debug") {
             bool b = false;
             if (key == "stress_test" && parse_bool(value, b)) {

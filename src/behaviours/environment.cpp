@@ -118,28 +118,14 @@ void update_door(Object& obj, UpdateContext& ctx) {
 
     // &4cbe-&4cd5: energy refill above colour threshold, else slow->destroy
     // ladder. Door re-spawns from tertiary entry once explosion slot is reaped.
-    uint8_t energy_pre  = obj.energy;
-    uint8_t threshold   = doors_energy_table[colour_pair];
-    const char* branch;
-    if (obj.energy >= threshold) {
+    if (obj.energy >= doors_energy_table[colour_pair]) {
         obj.energy = 0xff;
-        branch = "REFILL";
     } else if (slow) {
         obj.energy = 0;
-        branch = "DESTROY";
     } else {
         data |= DoorFlag::SLOW_OR_DESTROYED;
         slow = true;
-        branch = "SLOW_SET";
     }
-    ctx.mgr.log_diag(
-        "door @%u,%u pre_e=%u thresh=%u slow_in=%d -> %s post_e=%u",
-        obj.x.whole, obj.y.whole,
-        static_cast<unsigned>(energy_pre),
-        static_cast<unsigned>(threshold),
-        ((obj.tertiary_data_offset & DoorFlag::SLOW_OR_DESTROYED) != 0) ? 1 : 0,
-        branch,
-        static_cast<unsigned>(obj.energy));
 
     // &4cd7-&4cec: door speed. slow=1, opening=table, closing=halved &
     // negated, closing+touching=-1.

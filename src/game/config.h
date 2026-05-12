@@ -121,6 +121,20 @@ struct StartupConfig {
     // existing "no [audio] section means full audio" behaviour.
     bool audio_enabled = true;
 
+    // [logs] enabled — master switch for the two diagnostic log files
+    // (exile-debug.log and exile-audio.log). When false the files are
+    // never opened, so every log call site becomes a no-op (they all
+    // gate on the stream being open). Default depends on build: ON in
+    // Debug (so devs always have a log when chasing a bug) and OFF in
+    // Release (so an end-user run leaves the cwd clean). The ini key
+    // overrides either default, so Release users can flip logs on with
+    // `[logs] enabled = true` when filing a bug report.
+#ifdef NDEBUG
+    bool logs_enabled = false;
+#else
+    bool logs_enabled = true;
+#endif
+
     // [startup_spawns] — list of primary objects to drop into the world
     // during Game::init, after the landscape is baked. Each entry maps a
     // unique key (slot0..slotN, or any other distinct name) to a tuple
