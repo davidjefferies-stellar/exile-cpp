@@ -1045,65 +1045,108 @@ void update_gargoyle(Object& obj, UpdateContext& ctx) {
     NPC::enforce_minimum_energy(obj, 0x5a);
 }
 
-// &4704: Triax - the boss, teleports and attacks
+// &4704 update_triax — boss with multiple teleport-away conditions.
+// Faithful port; despawn paths cover: destinator absorbed, no-LOS,
+// low energy, very-low energy, player-west-not-flooding, plus a
+// 1-in-256 random kick. obj.ty=0 + TELEPORTING flag drives the
+// 32-frame teleport animation that ends with the object at y=0 (=
+// inactive / despawned by the next demotion pass).
+static void triax_teleport_away(Object& obj) {
+    // &475c-&489e set_this_object_ty_and_set_teleporting(A=0).
+    obj.ty = 0;
+    obj.flags |= ObjectFlags::TELEPORTING;
+    obj.timer = 0x20;
+}
+
 void update_triax(Object& obj, UpdateContext& ctx) {
-    // &4704-&4710 absorb-and-teleport. Re-arming tertiary &9d (Triax's lab
-    // at &64,&d6) sets needs-creating so the destinator respawns there for
-    // the player to retrieve. Drives the intro beat.
+    // &4704-&4710 absorb destinator → re-arm tertiary &9d so it
+    // respawns at (0x64, 0xd6) in the lab, then teleport away.
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
         Object& target = ctx.mgr.object(obj.touching);
         if (target.type == ObjectType::DESTINATOR) {
-            target.flags |= ObjectFlags::PENDING_REMOVAL; // &3bef set_object_for_removal
+            target.flags |= ObjectFlags::PENDING_REMOVAL;
             ctx.mgr.set_tertiary_data_byte(0x9d, 0x80);
-            // &475c make_triax_teleport_away: ty=0 + set teleport flag.
-            obj.ty = 0;
-            obj.flags |= ObjectFlags::TELEPORTING;
-            obj.timer = 0x20;
+            triax_teleport_away(obj);
             return;
         }
     }
 
     Mood::update_mood(obj, ctx);
+    NPC::update_npc_path(obj, ctx);  // 16-frame LOS raycast → directness
 
-    // &4712 not_absorbed LOS gate. update_npc_path's 16-frame raycast
-    // updates directness; Triax chases only with clear LOS, otherwise
-    // wanders via the relaxed-path branch.
-    NPC::update_npc_path(obj, ctx);
+    // &4712-&4718 no-LOS give-up: 1-in-256 frames when directness < 2.
+    uint8_t lvl = NPC::directness_level(obj);
+    if (lvl < 2) {
+        if (ctx.rng.next() == 0) { triax_teleport_away(obj); return; }
+    } else {
+        // &471a-&4724: energy < 0x40 → 1-in-64 teleport ((rnd & 0xfc) == 0).
+        if (obj.energy < 0x40 && (ctx.rng.next() & 0xfc) == 0) {
+            triax_teleport_away(obj); return;
+        }
+    }
 
+    // &4726-&4730: 1-in-32 grenade else icer. consider_firing_at_player_
+    // and_move_triax grants +2 energy per update, then flows into
+    // move_hovering_npc (&486e) → thrust_towards_target (&487a) which
+    // does DEC acceleration_y at &4883 — Triax is a flying enemy.
+    NPC::cancel_gravity(obj);
     const Object& player = ctx.mgr.player();
     int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
     int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);
-
-    // &4714-&4718 no-LOS give-up: 1-in-256 frames ty=0 (step-8 = remove).
-    // Skip teleport-toward-player (&488b) since we don't track
-    // this_object_surrounded_by_tiles — without that gate Triax would
-    // warp to the surface to chase during the lower-world event.
-    uint8_t lvl = NPC::directness_level(obj);
-    if (lvl < 2 && ctx.rng.next() == 0) {
-        obj.ty = 0;
-        obj.flags |= ObjectFlags::TELEPORTING;
-        obj.timer = 0x20;
-        return;
-    }
-
-    // Fire only when target is visible or recently visible. &4714-&4718:
-    // if directness < 2 (bit 7 clear), only act 1-in-256 frames. Here we
-    // skip firing entirely — Triax shouldn't shoot through walls.
-    if (ctx.every_eight_frames && lvl >= 2) {
-        NPC::seek_player(obj, player, 8);
-        if (ctx.rng.next() < 0x40) {
-            int slot = NPC::fire_projectile(obj, ObjectType::ICER_BULLET, ctx);
-            if (slot >= 0) {
-                Object& bullet = ctx.mgr.object(slot);
-                bullet.velocity_x = (dx > 0) ? 0x20 : -0x20;
-                bullet.velocity_y = (dy > 0) ? 0x10 : -0x10;
-                NPC::offset_child_from_parent(bullet, obj);
+    if (obj.energy < 0xfe) obj.energy = static_cast<uint8_t>(obj.energy + 2);
+    // 6502 fire-rate gate &276c-&2773: (energy/8 + 2) >= rnd.
+    if (lvl >= 2) {
+        uint8_t threshold =
+            static_cast<uint8_t>((obj.energy >> 3) + 2);
+        if (ctx.rng.next() < threshold) {
+            bool grenade = (ctx.rng.next() & 0xf8) == 0;  // 1/32
+            ObjectType proj = grenade ? ObjectType::ACTIVE_GRENADE
+                                      : ObjectType::ICER_BULLET;
+            NPC::seek_player(obj, player, 8);
+            int8_t vx, vy;
+            if (NPC::fire_at_target(obj, player, ctx.rng, vx, vy)) {
+                int slot = NPC::fire_projectile(obj, proj, ctx);
+                if (slot >= 0) {
+                    Object& bullet = ctx.mgr.object(slot);
+                    bullet.velocity_x = vx;
+                    bullet.velocity_y = vy;
+                    bullet.timer = 48;
+                    NPC::offset_child_from_parent(bullet, obj);
+                }
             }
         }
     }
 
+    // &4733-&473d: energy < 5 → 1-in-4 teleport (faithful: bit 0 of OR'd
+    // randoms covers it; we use a simpler ((rnd & 0xc0) == 0) gate).
+    if (obj.energy < 5 && (ctx.rng.next() & 0xc0) == 0) {
+        triax_teleport_away(obj); return;
+    }
+
+    // &473f-&474d: when player is west of 0x80 AND not flooding,
+    // 1-in-4 random teleport. Skipped during flooding endgame so
+    // Triax can chase the player across the rising water.
+    bool flooding = ctx.flooding_state && (*ctx.flooding_state & 0x80);
+    bool player_west = player.x.whole < 0x80;
+    if (player_west && !flooding && (ctx.rng.next() & 0x03) == 0) {
+        triax_teleport_away(obj); return;
+    }
+
+    // &474f-&4752: always 1-in-256 random teleport regardless.
+    if (ctx.rng.next() == 0) { triax_teleport_away(obj); return; }
+
     NPC::face_movement_direction(obj);
-    NPC::enforce_minimum_energy(obj, 0xfd);
+
+    // &4754 update_crew_member chain — walking animation. Cycle through
+    // SPACESUIT walking sprites 0x04..0x07; standing snaps to 0x04.
+    int abs_vx = obj.velocity_x < 0 ? -obj.velocity_x : obj.velocity_x;
+    if (abs_vx > 0) {
+        uint8_t inc = static_cast<uint8_t>(1 + (abs_vx >> 4));
+        obj.timer = static_cast<uint8_t>(obj.timer + inc);
+        NPC::animate_walking(obj, 0x04, obj.timer);
+    } else {
+        obj.sprite = 0x04;
+    }
 }
 
 } // namespace Behaviors

@@ -90,6 +90,7 @@ public:
     bool consume_left_click(int& tile_dx, int& tile_dy) override;
     bool consume_right_click(int& tile_dx, int& tile_dy) override;
     void set_overlay_text(const char* text) override;
+    void set_fps_text(const char* text) override;
     void set_highlighted_tile(uint8_t world_x, uint8_t world_y) override;
     void render_debug_marker(uint8_t world_x, uint8_t world_y,
                              uint32_t rgb, const char* label) override;
@@ -118,6 +119,10 @@ public:
     void render_sprite_viewer() override;
     void set_paint_tile(uint8_t tile_type) override;
     bool consume_palette_click(uint8_t& tile_type) override;
+    bool events_panel_enabled() const override { return events_panel_on; }
+    bool consume_event_click(int& event_id) override;
+    void set_debug_log(std::ostream* log) override { debug_log_ = log; }
+    std::ostream* debug_log_ = nullptr;
     bool consume_palette_flip_click(int& which) override;
     bool consume_palette_detach_click() override;
     void set_paint_object(int idx) override;
@@ -174,6 +179,20 @@ public:
     bool rings_on        = false;    // "Rings" — activation distance boxes
     bool algo_only_on    = false;    // "Algo only" — hide map-data cells
     bool tertiary_overlay_on = false;// "Tertiary" — magenta/yellow borders
+    // "Placed Tiles" sub-toggle in the Tiles submenu. Off by default;
+    // when on, draws the cyan border on map_overlay_data-sourced cells
+    // (and its slot-number label, red for aliased duplicates).
+    bool placed_tiles_on = false;
+    // "Events" checkbox — when on, the right-side test-events panel
+    // appears. Game polls consume_event_click each tick and dispatches.
+    bool events_panel_on = false;
+    bool has_pending_event_click = false;
+    int  pending_event_id        = 0;
+    // Click-feedback state. last_event_clicked = which button to flash;
+    // event_flash_remaining counts down each frame (visible green flash
+    // for ~30 frames so the user sees the click registered).
+    int  last_event_clicked      = -1;
+    int  event_flash_remaining   = 0;
     bool aabb_overlay_on = false;    // keyboard-toggled via 'B'
     bool aabb_key_prev = false;
     // Highlighted tile — drawn only while the tile grid is on.
@@ -211,6 +230,7 @@ public:
     int  pending_right_click_x   = 0;
     int  pending_right_click_y   = 0;
     std::string overlay;
+    std::string fps_text_;
     // Edit-palette state mirrored from Game so the panel can highlight
     // the selected paint tile.
     uint8_t paint_tile_ = 0x19;
@@ -311,6 +331,21 @@ namespace pr_debug {
 
     // Top-right text overlay drawn from end_frame.
     void render_overlay_text(PixelRenderer& r);
+
+    // Optional FPS readout drawn at the top-right, independent of the
+    // debug overlay. Shifts render_overlay_text down by its box height
+    // when both are active.
+    void render_fps_text(PixelRenderer& r);
+
+    // Right-side test-events panel — visible while the "Events" checkbox
+    // is on. Each button posts a pending event id that Game consumes.
+    void render_events_panel(PixelRenderer& r);
+
+    // Right-side "Tiles" submenu — visible while the main-strip Tiles
+    // box is on. Holds Map mode / Rings / Object lbl / Switches /
+    // Transports / Tertiary / Placed Tiles toggles that were lifted
+    // out of the bottom HUD strip.
+    void render_grid_panel(PixelRenderer& r);
 
     // Per-tile grid + tertiary border / hatch overlays drawn from
     // render_tile when the Grid checkbox is on.

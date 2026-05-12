@@ -287,9 +287,15 @@ namespace GameConstants {
     // Wind center
     constexpr uint8_t WIND_CENTER_X = 0x9B;
 
-    // Frame timing (original runs at 50Hz PAL)
-    constexpr int TARGET_FPS = 50;
-    constexpr int FRAME_TIME_MS = 1000 / TARGET_FPS; // 20ms
+    // Game logic + render tick rate. BBC original ran the main loop at
+    // 25 Hz (every other PAL frame); per-tick velocities, timers, AI
+    // dispatch periods and audio envelopes are calibrated against that.
+    // Runtime override via [debug] target_fps in exile.ini — allowed
+    // values 25/50/75/100. Higher = correspondingly faster gameplay
+    // (logic and render advance together).
+    constexpr int TARGET_FPS_DEFAULT = 25;
+    constexpr int TARGET_FPS_MAX     = 100;
+    constexpr int TARGET_FPS_MIN     = 25;
 }
 
 // ============================================================================

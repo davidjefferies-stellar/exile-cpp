@@ -1,5 +1,6 @@
 #include "game/game.h"
 #include "rendering/debug_names.h"
+#include "world/water.h"
 #include <fstream>
 #include <sstream>
 #include <iomanip>
@@ -183,6 +184,15 @@ bool Game::save_game(const std::string& path) const {
     for (int i = 0; i < 4; i++) f << " " << hex_byte(clawed_robot_teleport_energy_[i]);
     f << "\n";
     f << "door_timer "        << hex_byte(object_mgr_.door_timer_) << "\n";
+    f << "waterline_y";
+    for (int i = 0; i < 4; i++) f << " " << hex_byte(Water::get_y(i));
+    f << "\n";
+    f << "waterline_y_frac";
+    for (int i = 0; i < 4; i++) f << " " << hex_byte(Water::get_y_fraction(i));
+    f << "\n";
+    f << "waterline_desired_y";
+    for (int i = 0; i < 4; i++) f << " " << hex_byte(Water::get_desired_y(i));
+    f << "\n";
     f << "\n";
 
     // -------- primary objects --------------------------------------------
@@ -345,6 +355,19 @@ bool Game::load_game(const std::string& path) {
                     clawed_robot_teleport_energy_[i] = parse_u8(t[i + 1]);
             }
             else if (k == "door_timer")  object_mgr_.door_timer_ = parse_u8(t[1]);
+            else if (k == "waterline_y") {
+                for (int i = 0; i < 4 && i + 1 < (int)t.size(); i++)
+                    Water::set_y(i, parse_u8(t[i + 1]),
+                                 Water::get_y_fraction(i));
+            }
+            else if (k == "waterline_y_frac") {
+                for (int i = 0; i < 4 && i + 1 < (int)t.size(); i++)
+                    Water::set_y(i, Water::get_y(i), parse_u8(t[i + 1]));
+            }
+            else if (k == "waterline_desired_y") {
+                for (int i = 0; i < 4 && i + 1 < (int)t.size(); i++)
+                    Water::set_desired_y(i, parse_u8(t[i + 1]));
+            }
             continue;
         }
 

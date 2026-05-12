@@ -95,6 +95,19 @@ struct StartupConfig {
     // and visual regression testing.
     bool stress_test = false;
 
+    // [debug] show_fps — when true, render a measured frames-per-second
+    // value in the top-right corner of the window. Sampled over a 30-
+    // frame rolling window in Game::run, so the number reflects actual
+    // wall-clock cadence (including the per-frame sleep), not just work
+    // time. Defaults off; orthogonal to the bottom-HUD Debug checkbox.
+    bool show_fps = false;
+
+    // [debug] target_fps — game tick rate. BBC original was 25 Hz; this
+    // sets both the logic update and render rate to the same value, so
+    // gameplay speed scales linearly: 50 = 2x, 75 = 3x, 100 = 4x. Audio
+    // samples-per-tick is realigned automatically. Allowed: 25/50/75/100.
+    int target_fps = GameConstants::TARGET_FPS_DEFAULT;
+
     // [audio] — master enable for the synthesised sound. When false,
     // Audio::play / play_at become no-ops; the device still opens so
     // toggling at runtime stays cheap. Defaults to true to match the

@@ -115,6 +115,17 @@ private:
     // radiation). Set from cfg.invincible at startup.
     bool invincible_ = false;
 
+    // [debug] show_fps — top-right FPS readout. Measured in Game::run
+    // over a 30-frame rolling window (actual wall-clock cadence,
+    // includes the per-frame sleep). Set from cfg.show_fps at startup.
+    bool   show_fps_  = false;
+    double fps_value_ = 0.0;
+
+    // [debug] target_fps — locked logic + render tick rate. 25 = BBC
+    // original speed; 50/75/100 fast-forward. Audio sample count is
+    // realigned via Audio::set_logic_rate in Game::init.
+    int target_fps_ = GameConstants::TARGET_FPS_DEFAULT;
+
     // Per-frame damage log for the "Damage" debug overlay. Updated only
     // when the renderer's checkbox is on. Cleared at the top of every
     // tick so the overlay reflects exactly what happened this frame.
@@ -362,6 +373,42 @@ private:
     // Port of &2c3c handle_remembering_position. Record the player's
     // current centre into the teleport tables (if energy >= 8).
     void handle_remembering_position(Object& player);
+
+    // Port of &25a1-&25df update_triax_lab. Feeds maggot machine,
+    // opens/closes lab bottom door based on waterline range 1, and
+    // rewrites Water::desired_y[1] to drain/fill accordingly. Pauses
+    // when flooding_state_'s bit 7 is set (lab fully floods to 0x67).
+    void update_triax_lab();
+
+    // Test-events panel triggers (port-only). IDs match the kEventButtons
+    // table in src/rendering/pixel_renderer_debug.cpp; keep both in sync.
+    enum class EventId : int {
+        SPAWN_TRIAX         = 0,
+        SPAWN_MAGGOT        = 1,
+        SPAWN_CLAWED_ROBOT  = 2,
+        TOGGLE_FLOOD        = 3,
+        TOGGLE_EARTHQUAKE   = 4,
+        DAMAGE_PLAYER       = 5,
+        HEAL_PLAYER         = 6,
+    };
+    void trigger_event(int event_id);
+
+    // Port-only camera shake — armed by the Earthquake test trigger
+    // (6502 CRTC R2 line-shudder isn't available on a framebuffer).
+    // Decrements each frame; when > 0, render() perturbs the camera
+    // sub-tile fraction by a random ±0x40 in x/y.
+    uint8_t test_shake_frames_ = 0;
+
+    // Port-only smooth flood — runs alongside the 6502 integrator so
+    // the visible waterline moves at 1 tile / second. The 6502's
+    // integrator advances g_y[1] by ~1 tile every 128 frames; we use
+    // a 50-frame subframe counter to drive 1 tile / 50 frames (50fps =
+    // 1 tile / second) for the test event.
+    // direction is -1 to flood (y decreasing = water rising on screen),
+    // +1 to drain.
+    int     test_flood_steps_remaining_ = 0;
+    int8_t  test_flood_direction_       = 0;
+    uint8_t test_flood_subframe_        = 0;
 
     // Save / restore. Human-readable text format — see save_load.cpp for
     // the schema. The landscape is regenerated from seed on load, so the

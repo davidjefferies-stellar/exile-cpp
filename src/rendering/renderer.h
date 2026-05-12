@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <iosfwd>
 #include "core/types.h"
 #include "core/damage_visual.h"
 #include <vector>
@@ -151,6 +152,10 @@ public:
     // Set overlay text drawn in the top-right corner.
     virtual void set_overlay_text(const char* /*text*/) {}
 
+    // Optional FPS readout in the top-right corner, independent of the
+    // debug-overlay toggle. Empty / null hides it.
+    virtual void set_fps_text(const char* /*text*/) {}
+
     // Drives &1f97 update_background_flash: 6502 randomises palette
     // colour 0 during cooldown. Default 0=black; any 0xRRGGBB flashes.
     virtual void set_clear_colour(uint32_t /*rgb*/) {}
@@ -242,6 +247,22 @@ public:
         tile_type = 0;
         return false;
     }
+
+    // "Events" panel — right-side test triggers (spawn Triax, flood,
+    // earthquake, etc.). Game polls consume_event_click each tick and
+    // dispatches to the relevant Game::trigger_event handler.
+    virtual bool events_panel_enabled() const { return false; }
+    virtual bool consume_event_click(int& event_id) {
+        event_id = 0;
+        return false;
+    }
+
+    // Wire Game's debug_log_ into the renderer so renderer-side
+    // diagnostics land in the same exile-debug.log Game writes to.
+    // Default no-op; PixelRenderer stores the pointer for use by its
+    // pr_debug:: helpers. Avoids two parallel ofstreams fighting for
+    // the same file on Windows (where MSVC opens it deny-write).
+    virtual void set_debug_log(std::ostream* /*log*/) {}
 
     // Pop a pending FlipX / FlipY toggle click from the palette panel.
     // `which` = 0 for FlipX (bit 7), 1 for FlipY (bit 6). Game XORs the

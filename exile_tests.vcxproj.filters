@@ -49,6 +49,7 @@
     <ClCompile Include="tests\random_test.cpp">                   <Filter>Tests</Filter> </ClCompile>
     <ClCompile Include="tests\fixed_point_test.cpp">              <Filter>Tests</Filter> </ClCompile>
     <ClCompile Include="tests\weapons_test.cpp">                  <Filter>Tests</Filter> </ClCompile>
+    <ClCompile Include="tests\npc_combat_test.cpp">               <Filter>Tests</Filter> </ClCompile>
 
     <!-- Game / core -->
     <ClCompile Include="src\core\random.cpp">                     <Filter>Game\core</Filter> </ClCompile>

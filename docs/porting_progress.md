@@ -193,9 +193,9 @@ object types via `behavior_dispatch.cpp`. Quality varies per routine:
 
 | System | Status | 6502 range | Notes |
 |---|---|---|---|
-| `update_events` top-level | Partial | &259a-&2742 | Star-field spawn, Triax summoning, clawed-robot respawn ticked; earthquake progression flag ticked but no screen-shudder; **no waterline tick**, **no Triax-lab door / maggot-machine hookup**. |
-| `update_triax_lab` | **Missing** | &25a1-&25df | Closes / opens bottom door based on waterline, feeds maggot machine every 64 frames. |
-| Waterline updates (`update_waterlines_loop` &2626-&265b) | **Missing** | — | `waterline_x_ranges_y/y_fraction/desired_y` never advance. Water is static. |
+| `update_events` top-level | Partial | &259a-&2742 | Star-field spawn, Triax-lab door + maggot machine, waterline tick, Triax summoning, clawed-robot respawn ticked; earthquake progression flag ticked but no screen-shudder. |
+| `update_triax_lab` | Done | &25a1-&25df | `Game::update_triax_lab` — every-frame maggot count refill, every-64-frame maggot spawn at the transporter tile, every-32-frame door drive from Water::get_y(1), desired_y[1] = 0xe2 (drain) / 0xd2 (fill) / 0x67 (flooding). |
+| Waterline updates (`update_waterlines_loop` &2626-&265b) | Done | &2626-&265b | `Water::update_waterlines` — 4 ranges, step (y, y_fraction) toward desired_y by ±2 per frame with the 32-of-64-frames cyclic ripple. State + getters/setters live in `src/world/water.cpp`; save/load persists all three arrays. |
 | `consider_emerging_worm_or_maggot` | **Missing** | &2660-&26c5 | Random tile pick + earth-tile gate + biome-preferred type; spawn_object_in_event chain. |
 | Earthquake shudder (CRTC R2 writes) | **Missing** | &2604-&260a | State variable `earthquake_state_` ticks, but no visible effect. |
 | Flooding end-game trigger | **Missing** | &081e / &259a early path | `flooding_state_` exists but nothing in the port sets it. |
@@ -269,12 +269,12 @@ object types via `behavior_dispatch.cpp`. Quality varies per routine:
 
 Ranked roughly by player-visible impact / porting cost:
 
-1. **Waterline dynamics + Triax-lab hookup** — static water level breaks
-   the end-game flooding sequence, the bottom-door-gates-water puzzle, and
-   the maggot-machine cadence.
-2. **Full NPC walking / pathfinding / line-of-sight** — simplified
+1. **Full NPC walking / pathfinding / line-of-sight** — simplified
    `seek_player` means creatures pour through walls, don't climb slopes,
    can't use `directness` levels, and can't see/avoid targets.
+2. **Flooding end-game trigger** — `flooding_state_` is wired into the
+   waterline integrator (sets desired_y[1] to 0x67 when bit 7 is set),
+   but nothing in gameplay yet flips that bit; the flood never starts.
 3. **Copy-protection / demo-mode** — no startup prompt, no demo-mode
    hang. Save / load are present (text format) but don't reproduce the
    6502's encrypted on-disc layout.

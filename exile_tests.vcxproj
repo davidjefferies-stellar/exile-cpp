@@ -142,6 +142,7 @@
     <ClCompile Include="tests\random_test.cpp" />
     <ClCompile Include="tests\fixed_point_test.cpp" />
     <ClCompile Include="tests\weapons_test.cpp" />
+    <ClCompile Include="tests\npc_combat_test.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\rendering\null_renderer.h" />

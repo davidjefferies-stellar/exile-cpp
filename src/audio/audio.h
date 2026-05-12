@@ -16,6 +16,11 @@ constexpr int CH_ANY      = 1;
 bool open();
 void close();
 
+// Tick rate in Hz (25/50/75/100). Samples-per-tick = 44100/hz; called
+// after open() to align audio cadence with [debug] target_fps. Default
+// is the slowest supported rate (25 Hz) if never called.
+void set_logic_rate(int hz);
+
 // 6502 JSR play_sound 4-byte block: [0]=vol env id, [1]=hi:vol/lo:dur,
 // [2]=freq env id, [3]=hi:freq/lo:dur. Player-attached sounds (zero
 // distance attenuation).

@@ -39,6 +39,11 @@ bool Game::init() {
     object_mgr_.set_landscape(landscape_);
     object_mgr_.init();
 
+    // Waterline state — reset to ROM initial values so a fresh launch
+    // matches the 6502's &14d2 startup, regardless of any earlier game
+    // having mutated the module-level table.
+    Water::reset();
+
     // Load startup config (player position, energy, weapon, pockets,
     // weapon energies). Missing file → defaults reproducing the original
     // game's spawn state. See exile.ini in the project root.
@@ -72,7 +77,10 @@ bool Game::init() {
         weapon_energy_[i] = cfg.weapon_energy[i];
     }
     if (cfg.give_protection_suit) weapon_energy_[5] = 0xffff;
-    invincible_ = cfg.invincible;
+    invincible_   = cfg.invincible;
+    show_fps_     = cfg.show_fps;
+    target_fps_   = cfg.target_fps;
+    Audio::set_logic_rate(target_fps_);
     player_weapon_ = cfg.weapon;
 
     // [audio] enabled gates Audio::play / play_at. The device is already
@@ -308,6 +316,10 @@ bool Game::init() {
     debug_log_.open("exile-debug.log",
                     std::ios::out | std::ios::trunc);
     if (debug_log_.is_open()) {
+        // Plumb the same stream into the renderer so its debug helpers
+        // (events panel click trace, etc.) land in the same file rather
+        // than fighting MSVC's deny-write share on a second handle.
+        renderer_->set_debug_log(&debug_log_);
         debug_log_ << "# exile-cpp lifecycle log\n"
                    << "# cols: frame kind p<slot> TYPE @x,y anchor=ax,ay dx=DX dy=DY\n";
 
@@ -607,11 +619,29 @@ void Game::flush_debug_log() {
 
 void Game::run() {
     using clock = std::chrono::steady_clock;
-    auto frame_duration = std::chrono::milliseconds(GameConstants::FRAME_TIME_MS);
+    // Locked logic+render rate from [debug] target_fps. Logic and render
+    // tick together so motion is judder-free; higher rates fast-forward
+    // the game (audio aligned via Audio::set_logic_rate in init).
+    auto frame_duration = std::chrono::microseconds(1'000'000 / target_fps_);
+
+    // 30-frame rolling FPS window — fed by actual frame_start deltas so
+    // the per-frame sleep counts. Game::render reads fps_value_.
+    auto fps_window_start = clock::now();
+    int  fps_frame_count  = 0;
 
     while (running_) {
         auto frame_start = clock::now();
         tick();
+        if (show_fps_) {
+            fps_frame_count++;
+            if (fps_frame_count >= 30) {
+                double ms = std::chrono::duration<double, std::milli>(
+                    clock::now() - fps_window_start).count();
+                if (ms > 0.0) fps_value_ = 1000.0 * fps_frame_count / ms;
+                fps_window_start = clock::now();
+                fps_frame_count  = 0;
+            }
+        }
         auto frame_end = clock::now();
         auto elapsed = frame_end - frame_start;
         if (elapsed < frame_duration) {
@@ -896,11 +926,136 @@ void Game::process_input() {
         load_game("exile.sav");
     }
     load_key_prev_ = load_down;
+
+    // Test-events panel: poll the renderer for clicks each tick.
+    int event_id;
+    if (renderer_->consume_event_click(event_id)) {
+        trigger_event(event_id);
+    }
+}
+
+// Port-only test triggers. Wired into the right-side Events panel —
+// each branch corresponds to one button in kEventButtons. Effects are
+// deliberately over-driven beyond the 6502's per-frame slope so the
+// dev sees a clear visual response within a couple of frames.
+void Game::trigger_event(int event_id) {
+    Object& player = object_mgr_.player();
+    // Spawn 4 tiles above the player — visible immediately. The 6502's
+    // y=0xfe / "teleport-to-player on first tick" recipe relies on the
+    // per-type teleport step which isn't fully ported for these types.
+    uint8_t spawn_x = player.x.whole;
+    uint8_t spawn_y = (player.y.whole > 4) ? (player.y.whole - 4) : 0;
+    switch (static_cast<EventId>(event_id)) {
+        case EventId::SPAWN_TRIAX: {
+            int slot = object_mgr_.create_object(
+                ObjectType::TRIAX, /*min_free_slots=*/4,
+                spawn_x, 0x80, spawn_y, 0x80);
+            if (slot > 0) object_mgr_.object(slot).target_and_flags = 0xc0;
+            break;
+        }
+        case EventId::SPAWN_MAGGOT:
+            // Spawn near the player so it's immediately visible. The
+            // 6502 spawns at the Triax-lab maggot machine (0x61, 0xd9);
+            // for a test trigger we want the maggot to be where the dev
+            // is looking, not 80 tiles away.
+            object_mgr_.create_object(ObjectType::MAGGOT, 4,
+                                       spawn_x, 0x80, spawn_y, 0x80);
+            break;
+        case EventId::SPAWN_CLAWED_ROBOT: {
+            int slot = object_mgr_.create_object(
+                ObjectType::MAGENTA_CLAWED_ROBOT, /*min_free_slots=*/4,
+                spawn_x, 0x80, spawn_y, 0x80);
+            if (slot > 0) object_mgr_.object(slot).target_and_flags = 0xc0;
+            break;
+        }
+        case EventId::TOGGLE_FLOOD: {
+            // Flip the flooding bit and arm the test fast-flood
+            // counter so the waterline moves at 1 tile/frame for the
+            // next 0x78 tiles. The 6502's slow integrator runs in
+            // parallel — once test progression finishes, the integrator
+            // takes over (and is a no-op since we're at desired_y).
+            flooding_state_ ^= 0x80;
+            test_flood_steps_remaining_ = 0x78;
+            test_flood_direction_ = (flooding_state_ & 0x80) ? -1 : +1;
+            break;
+        }
+        case EventId::TOGGLE_EARTHQUAKE:
+            // Bit 7 flip drives the existing state-advance code. Also
+            // arm the port-only camera-shake counter for a visible
+            // 60-frame jitter (CRTC R2 writes the 6502 used aren't
+            // available on a framebuffer renderer).
+            earthquake_state_ ^= 0x80;
+            test_shake_frames_ = (earthquake_state_ & 0x80) ? 60 : 0;
+            break;
+        case EventId::DAMAGE_PLAYER:
+            player.energy = (player.energy > 10) ? (player.energy - 10) : 0;
+            break;
+        case EventId::HEAL_PLAYER:
+            player.energy = (player.energy < 0xff - 0x40)
+                            ? (player.energy + 0x40) : 0xff;
+            break;
+    }
+}
+
+// Port of &25a1-&25df update_triax_lab. Maggot count refill, periodic
+// maggot spawn, door drive from the lab waterline, desired_y rewrite.
+// Also drains the port-only test fast-flood counter (1 tile/frame).
+void Game::update_triax_lab() {
+    if (test_flood_steps_remaining_ > 0) {
+        // 1 tile / 50 frames at 50fps == 1 tile / second.
+        if (++test_flood_subframe_ >= 50) {
+            test_flood_subframe_ = 0;
+            uint8_t y = Water::get_y(1);
+            int ny = int(y) + int(test_flood_direction_);
+            if (ny < 0)    ny = 0;
+            if (ny > 0xff) ny = 0xff;
+            Water::set_y(1, static_cast<uint8_t>(ny), 0);
+            test_flood_steps_remaining_--;
+        }
+    }
+
+    // &259a-&259f: when flooding_state bit 7 is set, desired_y[1] jumps
+    // to 0x67 (above the upper world) and the lab work is skipped.
+    if (flooding_state_ & 0x80) {
+        Water::set_desired_y(1, 0x67);
+        return;
+    }
+
+    // &25a1-&25a3: maggot machine never runs out while operational.
+    object_mgr_.set_tertiary_data_byte(0x02, 0x60);
+
+    // &25a6-&25c3: every 64 frames spawn one maggot at the machine's
+    // transporter tile (0x61, 0xd9) with a 0x70 y-fraction.
+    if (every_sixty_four_frames_) {
+        int slot = object_mgr_.create_object(
+            ObjectType::MAGGOT, /*min_free_slots=*/4,
+            0x61, 0x61, 0xd9, 0x70);
+        (void)slot;  // 6502 BCS-skips on failure; matches our no-op-on-fail.
+    }
+
+    // &25c3-&25dd: every 32 frames re-evaluate the bottom-of-lab door
+    // (tertiary entry 0xc2) — open if Triax-lab waterline sits above
+    // 0xe0, else close. Drives desired_y[1] to 0xe2 (drain) or 0xd2 (fill).
+    uint8_t door_data = object_mgr_.tertiary_data_byte(0xc2);
+    if (every_thirty_two_frames_) {
+        door_data &= 0xfd;  // clear DOOR_FLAG_OPENING
+        if (Water::get_y(1) < 0xe0) door_data |= 0x02;
+        object_mgr_.set_tertiary_data_byte(0xc2, door_data);
+    }
+    Water::set_desired_y(1, (door_data & 0x02) ? 0xe2 : 0xd2);
 }
 
 // Port of update_events (&259a-&2742): stars, Triax summoning, earthquake,
-// clawed-robot respawns. Waterline + Triax-lab maggots TODO.
+// clawed-robot respawns. Now also runs Triax-lab + waterline tick.
 void Game::update_events() {
+    // &25a1-&25df: Triax lab door / maggot machine. Always run; this
+    // sets desired_y[1] which drives the waterline integrator below.
+    update_triax_lab();
+
+    // &2626-&265b update_waterlines_loop. Steps all 4 waterline ranges
+    // toward their desired_y values once per frame.
+    Water::update_waterlines(frame_counter_);
+
     const Object& player = object_mgr_.player();
 
     // Random-tile star-field spawn (&26c8-&26e6). Port-only: sample across

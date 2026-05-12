@@ -308,23 +308,26 @@ void update_clawed_robot(Object& obj, UpdateContext& ctx) {
 
     uint8_t lvl = NPC::directness_level(obj);
 
-    // Fire LOS-gated via &3cb5 randomised-cap variant. Directness alone
-    // latches (3→2 only via &3d1d), letting robots shoot through a door
-    // that closed after first sighting — fire path needs its own raycast
-    // (matches 6502 find_a_target_and_fire_at_it at &4868).
-    if (ctx.every_eight_frames && lvl >= 2 &&
+    // &485f-&486b find_a_target_and_fire_at_it. 6502 fire rate scales
+    // with energy via &276c-&2773: fire iff (energy/8 + 2) >= rnd. At
+    // max energy ~13% / frame; at min-energy floor ~3-5% / frame.
+    if (lvl >= 2 &&
         NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
-        const Object& player = ctx.mgr.player();
-        int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
-        int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);
-        if (std::abs(dx) < 10 && std::abs(dy) < 10) {
-            int slot = NPC::fire_projectile(obj, ObjectType::ICER_BULLET, ctx);
-            if (slot >= 0) {
-                Object& b = ctx.mgr.object(slot);
-                b.velocity_x = (dx > 0) ? 0x20 : -0x20;
-                b.velocity_y = (dy > 0) ? 0x10 : -0x10;
-                NPC::offset_child_from_parent(b, obj);
-                b.timer = 48;
+        uint8_t threshold =
+            static_cast<uint8_t>((obj.energy >> 3) + 2);
+        if (ctx.rng.next() < threshold) {
+            const Object& player = ctx.mgr.player();
+            int8_t vx, vy;
+            if (NPC::fire_at_target(obj, player, ctx.rng, vx, vy)) {
+                int slot = NPC::fire_projectile(
+                    obj, ObjectType::ICER_BULLET, ctx);
+                if (slot >= 0) {
+                    Object& b = ctx.mgr.object(slot);
+                    b.velocity_x = vx;
+                    b.velocity_y = vy;
+                    NPC::offset_child_from_parent(b, obj);
+                    b.timer = 48;
+                }
             }
         }
     }

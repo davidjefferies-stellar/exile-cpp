@@ -110,8 +110,19 @@ void Game::render() {
     camera_.follow_player(player_obj.x.whole, player_obj.y.whole,
                           vp_w_half, vp_h_half);
 
-    renderer_->set_viewport(camera_.center_x, camera_.center_y,
-                            player_obj.x.fraction, player_obj.y.fraction);
+    // Earthquake test-event shake (port-only). Perturb the fractional
+    // viewport centre with each call; when test_shake_frames_ hits 0
+    // the perturbation stops and the camera returns to player.
+    uint8_t vp_fx = player_obj.x.fraction;
+    uint8_t vp_fy = player_obj.y.fraction;
+    if (test_shake_frames_ > 0) {
+        int8_t dx = static_cast<int8_t>((rng_.next() & 0x7f) - 0x40);
+        int8_t dy = static_cast<int8_t>((rng_.next() & 0x7f) - 0x40);
+        vp_fx = static_cast<uint8_t>(vp_fx + dx);
+        vp_fy = static_cast<uint8_t>(vp_fy + dy);
+        test_shake_frames_--;
+    }
+    renderer_->set_viewport(camera_.center_x, camera_.center_y, vp_fx, vp_fy);
 
     // Mirror the current paint tile to the renderer so the editor
     // palette panel can highlight the selected cell, and pull any
@@ -352,6 +363,16 @@ void Game::render() {
     }
     overlay += selected_tile_info_;
     renderer_->set_overlay_text(overlay.c_str());
+
+    // FPS readout, independent of the debug overlay toggle. Empty when
+    // [debug] show_fps is off so the renderer's box is suppressed.
+    if (show_fps_) {
+        char fps_buf[24];
+        std::snprintf(fps_buf, sizeof(fps_buf), "%.1f fps", fps_value_);
+        renderer_->set_fps_text(fps_buf);
+    } else {
+        renderer_->set_fps_text("");
+    }
 
     int vp_w = renderer_->viewport_width_tiles();
     int vp_h = renderer_->viewport_height_tiles();

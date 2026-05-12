@@ -6,11 +6,67 @@
 
 namespace Water {
 
-// Port of &2cbc-&2cdb: get_waterline_for_x.
-// Searches x-ranges from high to low, returns the waterline Y for that range.
-// Also clamps to the Triax lab waterline (range 1) if it's lower.
+namespace {
+// Initial waterline Y values from &14d2. Range 0 main sea, 1 Triax lab,
+// 2 / 3 upper reservoirs.
+constexpr uint8_t kInitialY[4] = { 0xce, 0xdf, 0xc1, 0xc1 };
+
+uint8_t g_y[4]          = { 0xce, 0xdf, 0xc1, 0xc1 };
+uint8_t g_y_fraction[4] = { 0, 0, 0, 0 };
+uint8_t g_desired_y[4]  = { 0xce, 0xdf, 0xc1, 0xc1 };
+}  // namespace
+
+void reset() {
+    for (int i = 0; i < 4; i++) {
+        g_y[i]          = kInitialY[i];
+        g_y_fraction[i] = 0;
+        g_desired_y[i]  = kInitialY[i];
+    }
+}
+
+uint8_t get_y(int range)           { return g_y[range & 3]; }
+uint8_t get_y_fraction(int range)  { return g_y_fraction[range & 3]; }
+uint8_t get_desired_y(int range)   { return g_desired_y[range & 3]; }
+
+void set_y(int range, uint8_t y, uint8_t fraction) {
+    g_y[range & 3]          = y;
+    g_y_fraction[range & 3] = fraction;
+}
+
+void set_desired_y(int range, uint8_t y) {
+    g_desired_y[range & 3] = y;
+}
+
+// Port of &2626-&265b. For each range, compute the signed step toward
+// desired_y (high byte of a 16-bit SBC of (desired, 0x18) - (y, frac)),
+// add the ±2 cycle, clamp to ±2 via keep_within_range, then ADC into
+// y_fraction with carry → INC y, pre-clamp negative → DEC y.
+void update_waterlines(uint8_t frame_counter) {
+    uint8_t delta = (frame_counter & 0x20) ? 0xfe : 0x02;  // signed ±2
+    for (int x = 0; x < 4; x++) {
+        // 6502 ALU chain: low SBC of 0x18 - y_fraction sets carry; hi
+        // SBC propagates it into desired - y - borrow; ADC delta uses
+        // the hi-byte carry.
+        int lo_carry = (0x18 >= int(g_y_fraction[x])) ? 1 : 0;
+        int hi = int(g_desired_y[x]) - int(g_y[x]) - (1 - lo_carry);
+        int hi_carry = (hi >= 0) ? 1 : 0;
+        int s = int(uint8_t(hi & 0xff)) + int(delta) + hi_carry;
+        bool n_pre_clamp = (uint8_t(s) & 0x80) != 0;
+        // keep_within_range Y=2: clamp signed A to [-2, +2].
+        int8_t step = int8_t(uint8_t(s));
+        if (step >  2) step =  2;
+        if (step < -2) step = -2;
+        // ADC y_fraction; carry → INC y. PLP+BPL: pre-clamp N → DEC y.
+        int sum = int(uint8_t(step)) + int(g_y_fraction[x]);
+        g_y_fraction[x] = uint8_t(sum & 0xff);
+        if (sum > 0xff)   g_y[x]++;
+        if (n_pre_clamp)  g_y[x]--;
+    }
+}
+
+// Port of &2cbc-&2cdb. Range 1 (Triax lab) acts as a ceiling so the
+// lab's drain/fill state pulls every connected region with it.
 uint8_t get_waterline_y(uint8_t x) {
-    // Find which x-range this position falls into
     int range = 0;
     for (int i = 3; i >= 0; i--) {
         if (x >= waterline_x_ranges_x[i]) {
@@ -18,17 +74,8 @@ uint8_t get_waterline_y(uint8_t x) {
             break;
         }
     }
-
-    uint8_t waterline = waterline_initial_y[range];
-
-    // Clamp: if the waterline is deeper (higher Y) than Triax's lab (range 1),
-    // use Triax's lab level instead. This prevents water from being too deep
-    // in areas connected to the lab.
-    uint8_t lab_waterline = waterline_initial_y[1];
-    if (waterline > lab_waterline) {
-        waterline = lab_waterline;
-    }
-
+    uint8_t waterline = g_y[range];
+    if (waterline > g_y[1]) waterline = g_y[1];
     return waterline;
 }
 

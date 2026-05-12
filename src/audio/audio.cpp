@@ -30,13 +30,15 @@
 
 namespace {
 
-// fenster_audio.h uses float PCM at 44100 Hz mono. At 50 fps that
-// gives us 882 samples per game tick. (If you tweak the game tick rate
-// or the audio device's rate, update both — they need to stay in sync
-// or the device will glitch.)
-constexpr int kSampleRate     = 44100;
-constexpr int kSamplesPerTick = 882;
-constexpr int kNumChannels    = 4;
+// fenster_audio.h uses float PCM at 44100 Hz mono. Audio::tick fires
+// once per game tick; samples/tick = kSampleRate / target_fps. Buffers
+// are sized for the SLOWEST supported tick rate (25 Hz = 1764 samples)
+// so any allowed rate fits; the live count is g_samples_per_tick.
+constexpr int kSampleRate         = 44100;
+constexpr int kMinLogicHz         = 25;
+constexpr int kSamplesPerTickMax  = kSampleRate / kMinLogicHz; // 1764
+constexpr int kNumChannels        = 4;
+int g_samples_per_tick = kSamplesPerTickMax;
 
 // Per-channel state. Mirrors 6502 sound_channels_* arrays at &11ac.
 // Each channel runs two parallel envelopes (volume + frequency).
@@ -126,7 +128,7 @@ constexpr uint32_t kDebugToneInc =
     // WHDR_DONE set, fills it, and queues it back.
     HWAVEOUT g_wo = nullptr;
     WAVEHDR  g_hdr[2] = {};
-    int16_t  g_buf[2][kSamplesPerTick] = {};
+    int16_t  g_buf[2][kSamplesPerTickMax] = {};
   #else
     // fenster_audio.h declares this as a C struct. In C++ the bare
     // name works as a type, but `struct fenster_audio` is unambiguous.
@@ -343,8 +345,8 @@ bool open() {
         g_hdr[i].dwFlags |= WHDR_DONE;
     }
     g_open = true;
-    audio_log("open ok: %d Hz, 16-bit mono, %d-sample buffer (waveOut)\n",
-              kSampleRate, kSamplesPerTick);
+    audio_log("open ok: %d Hz, 16-bit mono, up to %d-sample buffer (waveOut)\n",
+              kSampleRate, kSamplesPerTickMax);
     return true;
 #else
     std::memset(&g_fa, 0, sizeof(g_fa));
@@ -456,6 +458,16 @@ void set_listener(uint8_t x, uint8_t y) {
     g_listener_y = y;
 }
 
+void set_logic_rate(int hz) {
+    if (hz < kMinLogicHz) hz = kMinLogicHz;
+    const int n = kSampleRate / hz;
+    if (n < 1)                  g_samples_per_tick = 1;
+    else if (n > kSamplesPerTickMax) g_samples_per_tick = kSamplesPerTickMax;
+    else                        g_samples_per_tick = n;
+    audio_log("logic rate set to %d Hz (%d samples/tick)\n",
+              hz, g_samples_per_tick);
+}
+
 void tick() {
     if (!g_open) return;
 
@@ -474,11 +486,13 @@ void tick() {
         }
     }
 
-    // Render kSamplesPerTick float samples and push. Each channel
-    // contributes (square × volume/0xf0) × headroom; four channels at
-    // full volume sum to ±1.0.
-    float buf[kSamplesPerTick];
-    for (int i = 0; i < kSamplesPerTick; i++) {
+    // Render g_samples_per_tick float samples and push. Buffer sized
+    // for the slowest supported tick rate (kSamplesPerTickMax = 1764).
+    // Each channel contributes (square × volume/0xf0) × headroom; four
+    // channels at full volume sum to ±1.0.
+    float buf[kSamplesPerTickMax];
+    const int n = g_samples_per_tick;
+    for (int i = 0; i < n; i++) {
         float mix = 0.0f;
         if (g_debug_tone) {
             // Constant 440 Hz square wave at half scale. Bypasses the
@@ -540,12 +554,16 @@ void tick() {
     // float[-1, +1] samples into int16, queue it, mark not-done.
     for (int i = 0; i < 2; i++) {
         if (g_hdr[i].dwFlags & WHDR_DONE) {
-            for (int j = 0; j < kSamplesPerTick; j++) {
+            for (int j = 0; j < n; j++) {
                 int v = static_cast<int>(buf[j] * 32767.0f);
                 if (v >  32767) v =  32767;
                 if (v < -32768) v = -32768;
                 g_buf[i][j] = static_cast<int16_t>(v);
             }
+            // Per-write size: bytes = samples * sizeof(int16_t). The
+            // device plays exactly dwBufferLength bytes; mismatch with
+            // g_samples_per_tick would leave a stale tail clicking.
+            g_hdr[i].dwBufferLength = static_cast<DWORD>(n * sizeof(int16_t));
             g_hdr[i].dwFlags &= ~WHDR_DONE;
             waveOutWrite(g_wo, &g_hdr[i], sizeof(WAVEHDR));
             wrote_to_slot = i;
@@ -553,7 +571,7 @@ void tick() {
         }
     }
 #else
-    fenster_audio_write(&g_fa, buf, kSamplesPerTick);
+    fenster_audio_write(&g_fa, buf, n);
     wrote_to_slot = 0;
 #endif
 
@@ -564,7 +582,7 @@ void tick() {
     static bool logged_first_tick = false;
     if (!logged_first_tick) {
         audio_log("first tick: pushed %d samples to slot %d (debug_tone=%d)\n",
-                  kSamplesPerTick, wrote_to_slot, g_debug_tone ? 1 : 0);
+                  n, wrote_to_slot, g_debug_tone ? 1 : 0);
         logged_first_tick = true;
     }
 #endif

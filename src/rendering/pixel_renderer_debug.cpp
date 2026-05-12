@@ -11,6 +11,7 @@
 #include "world/tile_data.h"
 #include "objects/object_data.h"
 #include <cstdio>
+#include <ostream>
 
 // Debug HUD-strip checkboxes — geometry constants shared between
 // render_hud_panels and consume_left_click to keep hit-test in sync.
@@ -281,26 +282,32 @@ void PixelRenderer::blit_tile_preview(int dst_x, int dst_y,
 // =============================================================================
 namespace pr_debug {
 
+static bool try_events_panel_click(PixelRenderer& r);
+static bool try_grid_panel_click  (PixelRenderer& r);
+
 bool consume_left_click(PixelRenderer& r) {
-    DebugCheckbox boxes[15] = {
-        { "Grid",       &r.tile_outline_on },
-        { "Map mode",   &r.map_mode_on     },
-        { "Debug",      &r.debug_text_on   },
-        { "Object lbl", &r.object_tiers_on },
-        { "Switches",   &r.switches_on     },
-        { "Transports", &r.transports_on   },
-        { "Collision",  &r.collision_on    },
-        { "Edit",       &r.editor_on       },
-        { "Rings",      &r.rings_on        },
-        { "Algo only",  &r.algo_only_on    },
-        { "Tertiary",   &r.tertiary_overlay_on },
-        { "Sprites",    &r.sprite_viewer_on },
-        { "Health",     &r.health_bars_on  },
+    // Side panels first — both sit over the world so the buttons
+    // must claim the click before tile-select gets a chance.
+    if (try_events_panel_click(r)) return true;
+    if (try_grid_panel_click(r))   return true;
+
+    // Main bottom-strip checkboxes. Map mode, Object lbl, Switches,
+    // Transports, Rings, Tertiary and Placed Tiles all live in the
+    // Tiles submenu (see render_grid_panel) — keep them out of here.
+    DebugCheckbox boxes[10] = {
+        { "Tiles",      &r.tile_outline_on   },
+        { "Debug",      &r.debug_text_on     },
+        { "Collision",  &r.collision_on      },
+        { "Edit",       &r.editor_on         },
+        { "Algo only",  &r.algo_only_on      },
+        { "Sprites",    &r.sprite_viewer_on  },
+        { "Health",     &r.health_bars_on    },
         { "Damage",     &r.damage_overlay_on },
-        { "Mood",       &r.mood_overlay_on },
+        { "Mood",       &r.mood_overlay_on   },
+        { "Events",     &r.events_panel_on   },
     };
     int hud_y = r.hud_y_px();
-    for (int i = 0; i < 15; i++) {
+    for (int i = 0; i < 10; i++) {
         int cx = checkbox_slot_x(i);
         // Generous hit-area: the whole label's slot width so users
         // can click the text too.
@@ -431,10 +438,214 @@ void handle_keys(PixelRenderer& r) {
     r.aabb_key_prev = b_down;
 }
 
+// ---------------------------------------------------------------------
+// Grid submenu layout (constants + height helper only). The full
+// implementation lives further down; these are forward-hoisted so the
+// Events panel can sit immediately below the Grid panel on the right
+// edge without referencing forward-declared functions.
+// ---------------------------------------------------------------------
+static constexpr int kGridSubCount      = 7;
+static constexpr int GRID_PANEL_W       = 150;
+static constexpr int GRID_PANEL_PAD     = 4;
+static constexpr int GRID_BUTTON_H      = 16;
+static constexpr int GRID_BUTTON_GAP    = 2;
+static constexpr int GRID_PANEL_TOP     = 80;   // below the overlay text
+
+static int grid_panel_height() {
+    return GRID_PANEL_PAD * 2 +
+           kGridSubCount * (GRID_BUTTON_H + GRID_BUTTON_GAP) -
+           GRID_BUTTON_GAP;
+}
+
+// ---------------------------------------------------------------------
+// Events panel — right-side test triggers. Labels here match the
+// EventId enum in game.h; Game::trigger_event dispatches each click.
+// Keep the table dense enough that adding a new event is a one-line
+// change in two places (this table + the enum + the dispatch).
+// ---------------------------------------------------------------------
+struct EventButton {
+    const char* label;
+};
+static constexpr EventButton kEventButtons[] = {
+    { "Spawn Triax"        },
+    { "Spawn Maggot"       },
+    { "Spawn Clawed Robot" },
+    { "Flood (toggle)"     },
+    { "Earthquake (toggle)"},
+    { "Damage Player -10"  },
+    { "Heal Player +0x40"  },
+};
+static constexpr int kEventCount =
+    sizeof(kEventButtons) / sizeof(kEventButtons[0]);
+
+static constexpr int EVENTS_PANEL_W      = 150;
+static constexpr int EVENTS_PANEL_PAD    = 4;
+static constexpr int EVENTS_BUTTON_H     = 16;
+static constexpr int EVENTS_BUTTON_GAP   = 2;
+static constexpr int EVENTS_PANEL_GAP    = 6;   // vertical gap below Grid panel
+
+static int events_panel_x(const PixelRenderer& r) {
+    return r.f.width - EVENTS_PANEL_W - EVENTS_PANEL_PAD;
+}
+// Events panel sits directly under the Grid submenu on the right edge.
+// Grid panel always-allocates its slot at the top of the right column,
+// so events_panel_top is offset by Grid's full height + gap whether or
+// not the Grid checkbox is on (avoids the events panel jumping up and
+// down as the user toggles Grid).
+static int events_panel_top() {
+    return GRID_PANEL_TOP + grid_panel_height() + EVENTS_PANEL_GAP;
+}
+static int events_button_y(int idx) {
+    return events_panel_top() + EVENTS_PANEL_PAD +
+           idx * (EVENTS_BUTTON_H + EVENTS_BUTTON_GAP);
+}
+
+void render_events_panel(PixelRenderer& r) {
+    if (!r.events_panel_on) return;
+    int x = events_panel_x(r);
+    int y = events_panel_top();
+    int h = EVENTS_PANEL_PAD * 2 +
+            kEventCount * (EVENTS_BUTTON_H + EVENTS_BUTTON_GAP) -
+            EVENTS_BUTTON_GAP;
+    r.fill_rect  (x, y, EVENTS_PANEL_W, h, 0x101018);
+    r.stroke_rect(x, y, EVENTS_PANEL_W, h, 0x4488cc);
+    r.draw_text  (x + EVENTS_PANEL_PAD, y + 2,
+                  "Test events", 0xcceeff, 0x101018);
+    bool flashing = (r.event_flash_remaining > 0);
+    for (int i = 0; i < kEventCount; i++) {
+        int by = events_button_y(i);
+        int bx = x + EVENTS_PANEL_PAD;
+        int bw = EVENTS_PANEL_W - EVENTS_PANEL_PAD * 2;
+        bool pressed = flashing && (i == r.last_event_clicked);
+        uint32_t fill   = pressed ? 0x44cc44 : 0x222a33;
+        uint32_t border = pressed ? 0xffffff : 0x4488cc;
+        r.fill_rect  (bx, by, bw, EVENTS_BUTTON_H, fill);
+        r.stroke_rect(bx, by, bw, EVENTS_BUTTON_H, border);
+        r.draw_text  (bx + 4, by + (EVENTS_BUTTON_H - 8) / 2,
+                      kEventButtons[i].label,
+                      pressed ? 0x000000 : 0xffffff, fill);
+    }
+    // Tick the flash counter once per render-frame so the green pulse
+    // fades automatically without needing a per-frame game callback.
+    if (r.event_flash_remaining > 0) r.event_flash_remaining--;
+}
+
+// Write one line to Game's debug_log_ via the plumbed pointer. No-op if
+// Game hasn't wired it yet — keeps tests and headless renderers safe.
+static void debug_log_line(const PixelRenderer& r, const char* msg) {
+    if (r.debug_log_) {
+        *r.debug_log_ << msg << "\n";
+        r.debug_log_->flush();
+    }
+}
+
+// Called from consume_left_click — returns true if the click hit a
+// panel button (so the caller doesn't fall through to tile-select).
+static bool try_events_panel_click(PixelRenderer& r) {
+    if (!r.events_panel_on) return false;
+    int x = events_panel_x(r);
+    int bw = EVENTS_PANEL_W - EVENTS_PANEL_PAD * 2;
+    int bx = x + EVENTS_PANEL_PAD;
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+        "[events] click f=(%d,%d) panel=[%d..%d] width=%d on=%d",
+        r.f.x, r.f.y, bx, bx + bw, r.f.width, r.events_panel_on ? 1 : 0);
+    debug_log_line(r, buf);
+    if (r.f.x < bx || r.f.x >= bx + bw) return false;
+    for (int i = 0; i < kEventCount; i++) {
+        int by = events_button_y(i);
+        if (r.f.y >= by && r.f.y < by + EVENTS_BUTTON_H) {
+            std::snprintf(buf, sizeof(buf), "[events] HIT button %d", i);
+            debug_log_line(r, buf);
+            r.has_pending_event_click = true;
+            r.pending_event_id        = i;
+            r.last_event_clicked      = i;
+            r.event_flash_remaining   = 30;  // ~0.6s @ 50fps
+            return true;
+        }
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------
+// Tiles submenu — right-side panel of click-to-toggle checkboxes that
+// were lifted out of the main HUD strip. Visible only while the
+// main-strip Tiles box is on. Mirrors the events-panel layout so users
+// see one consistent "expanded panel" idiom.
+// ---------------------------------------------------------------------
+struct GridSubItem {
+    const char* label;
+    bool*       state;
+};
+static GridSubItem grid_sub_items(PixelRenderer& r, int i) {
+    static const char* kLabels[kGridSubCount] = {
+        "Map mode", "Rings", "Object lbl",
+        "Switches", "Transports",
+        "Tertiary", "Placed Tiles",
+    };
+    bool* states[kGridSubCount] = {
+        &r.map_mode_on, &r.rings_on, &r.object_tiers_on,
+        &r.switches_on, &r.transports_on,
+        &r.tertiary_overlay_on, &r.placed_tiles_on,
+    };
+    return { kLabels[i], states[i] };
+}
+
+static int grid_panel_x(const PixelRenderer& r) {
+    return r.f.width - GRID_PANEL_W - GRID_PANEL_PAD;
+}
+static int grid_button_y(int idx) {
+    return GRID_PANEL_TOP + GRID_PANEL_PAD +
+           idx * (GRID_BUTTON_H + GRID_BUTTON_GAP);
+}
+
+void render_grid_panel(PixelRenderer& r) {
+    if (!r.tile_outline_on) return;
+    int x = grid_panel_x(r);
+    int y = GRID_PANEL_TOP;
+    int h = grid_panel_height();
+    r.fill_rect  (x, y, GRID_PANEL_W, h, 0x101018);
+    r.stroke_rect(x, y, GRID_PANEL_W, h, 0x4488cc);
+    r.draw_text  (x + GRID_PANEL_PAD, y + 2,
+                  "Tiles", 0xcceeff, 0x101018);
+    for (int i = 0; i < kGridSubCount; i++) {
+        GridSubItem item = grid_sub_items(r, i);
+        int by = grid_button_y(i);
+        int bx = x + GRID_PANEL_PAD;
+        int bw = GRID_PANEL_W - GRID_PANEL_PAD * 2;
+        bool on = *item.state;
+        uint32_t fill   = on ? 0x44cc44 : 0x222a33;
+        uint32_t border = on ? 0xffffff : 0x4488cc;
+        r.fill_rect  (bx, by, bw, GRID_BUTTON_H, fill);
+        r.stroke_rect(bx, by, bw, GRID_BUTTON_H, border);
+        r.draw_text  (bx + 4, by + (GRID_BUTTON_H - 8) / 2,
+                      item.label, on ? 0x000000 : 0xffffff, fill);
+    }
+}
+
+static bool try_grid_panel_click(PixelRenderer& r) {
+    if (!r.tile_outline_on) return false;
+    int x = grid_panel_x(r);
+    int bw = GRID_PANEL_W - GRID_PANEL_PAD * 2;
+    int bx = x + GRID_PANEL_PAD;
+    if (r.f.x < bx || r.f.x >= bx + bw) return false;
+    for (int i = 0; i < kGridSubCount; i++) {
+        int by = grid_button_y(i);
+        if (r.f.y >= by && r.f.y < by + GRID_BUTTON_H) {
+            GridSubItem item = grid_sub_items(r, i);
+            *item.state = !*item.state;
+            return true;
+        }
+    }
+    return false;
+}
+
 void render_overlay_text(PixelRenderer& r) {
-    // Top-right corner overlay text — Game still feeds strings via
-    // set_overlay_text but they only render when the Debug box is on.
-    if (!r.debug_text_on || r.overlay.empty()) return;
+    // Top-right corner overlay text — visible whenever Grid or Debug is
+    // on. Grid alone draws the cell outlines + tile-tier swatches, and
+    // having the tile-info banner alongside is almost always what you
+    // want for "what is this tile?" inspection.
+    if ((!r.debug_text_on && !r.tile_outline_on) || r.overlay.empty()) return;
 
     int line_count = 1;
     int max_line_w = 0;
@@ -449,7 +660,9 @@ void render_overlay_text(PixelRenderer& r) {
     max_line_w = std::max(max_line_w, cur_w);
     int pad = 4;
     int bx = r.f.width - max_line_w - pad * 2;
-    int by = 2;
+    // Shift down past the FPS readout when both are active so they
+    // don't collide in the corner. FPS box = 9 px text + 2*pad + 2 gap.
+    int by = r.fps_text_.empty() ? 2 : (2 + 9 + pad * 2 + 2);
     int bh = line_count * 9 + pad;
     r.fill_rect(bx, by, max_line_w + pad * 2, bh, 0x000000);
     for (int x = bx; x < bx + max_line_w + pad * 2; ++x) {
@@ -464,6 +677,26 @@ void render_overlay_text(PixelRenderer& r) {
                 0xFFFFFF, 0xFF000000);
 }
 
+void render_fps_text(PixelRenderer& r) {
+    if (r.fps_text_.empty()) return;
+    const int text_w = static_cast<int>(r.fps_text_.size()) * 8;
+    const int pad = 4;
+    const int bx = r.f.width - text_w - pad * 2;
+    const int by = 2;
+    const int bh = 9 + pad;
+    r.fill_rect(bx, by, text_w + pad * 2, bh, 0x000000);
+    for (int x = bx; x < bx + text_w + pad * 2; ++x) {
+        r.put_pixel(x, by, 0x666666);
+        r.put_pixel(x, by + bh - 1, 0x666666);
+    }
+    for (int y = by; y < by + bh; ++y) {
+        r.put_pixel(bx, y, 0x666666);
+        r.put_pixel(bx + text_w + pad * 2 - 1, y, 0x666666);
+    }
+    r.draw_text(bx + pad, by + pad, r.fps_text_.c_str(),
+                0xFFFFFF, 0xFF000000);
+}
+
 void render_tile_overlay(PixelRenderer& r,
                          int sx, int sy,
                          uint8_t world_x, uint8_t world_y,
@@ -475,16 +708,17 @@ void render_tile_overlay(PixelRenderer& r,
     bool highlighted = r.has_highlight
                        && r.highlight_x == world_x
                        && r.highlight_y == world_y;
-    // Tertiary visuals (magenta/yellow/hatches) require Tertiary on.
-    // Map-data colours (cyan/red) and grey grid render on Grid alone —
-    // they're structural, not tertiary state.
-    bool show_tert = r.tertiary_overlay_on;
+    // Tertiary visuals (magenta/yellow/hatches) gated on Tertiary
+    // sub-toggle. Map-data colours (cyan/red) gated on Placed Tiles —
+    // when off, those cells just render with the default grey grid.
+    bool show_tert  = r.tertiary_overlay_on;
+    bool show_place = r.placed_tiles_on;
     uint32_t map_data_rgb = info.map_data_aliased ? 0xCC3333 : 0x33CCCC;
-    uint32_t base = info.map_data_aliased    ? 0xCC3333
-                  : (show_tert && info.is_switch)    ? 0xFFEE33
-                  : (show_tert && info.has_tertiary) ? 0xCC44CC
-                  : info.from_map_data       ? map_data_rgb
-                                             : 0x404040;
+    uint32_t base = (show_place && info.map_data_aliased)   ? 0xCC3333
+                  : (show_tert  && info.is_switch)          ? 0xFFEE33
+                  : (show_tert  && info.has_tertiary)       ? 0xCC44CC
+                  : (show_place && info.from_map_data)      ? map_data_rgb
+                                                            : 0x404040;
     if (show_tert && info.tertiary_source_aliased) {
         r.hatch_rect(sx, sy, tpx, tpy, 0xCC3333, 3);
     }
@@ -500,7 +734,7 @@ void render_tile_overlay(PixelRenderer& r,
     // For map-data cells, label the cell with its slot in the
     // 1024-byte map_overlay_data table. Only worth showing when the
     // cell is big enough that the 8×8 font is legible.
-    if (info.from_map_data && tpx >= 24 && tpy >= 12) {
+    if (show_place && info.from_map_data && tpx >= 24 && tpy >= 12) {
         char buf[8];
         std::snprintf(buf, sizeof(buf), "%u",
                       static_cast<unsigned>(info.map_data_offset));
@@ -511,27 +745,25 @@ void render_tile_overlay(PixelRenderer& r,
 bool render_hud_panels(PixelRenderer& r) {
     int hud_y = r.hud_y_px();
 
-    // Bottom-strip checkboxes — 13-up row of click-to-toggle boxes.
+    // Bottom-strip checkboxes. Map mode / Object lbl / Switches /
+    // Transports / Rings / Tertiary / Placed Tiles all live in the
+    // Tiles submenu (render_grid_panel) — keep this in sync with the
+    // hit-test array in consume_left_click.
     r.fill_rect(0, hud_y, r.f.width, 16, 0x151515);
-    DebugCheckbox boxes[15] = {
-        { "Grid",       &r.tile_outline_on },
-        { "Map mode",   &r.map_mode_on     },
-        { "Debug",      &r.debug_text_on   },
-        { "Object lbl", &r.object_tiers_on },
-        { "Switches",   &r.switches_on     },
-        { "Transports", &r.transports_on   },
-        { "Collision",  &r.collision_on    },
-        { "Edit",       &r.editor_on       },
-        { "Rings",      &r.rings_on        },
-        { "Algo only",  &r.algo_only_on    },
-        { "Tertiary",   &r.tertiary_overlay_on },
-        { "Sprites",    &r.sprite_viewer_on },
-        { "Health",     &r.health_bars_on  },
+    DebugCheckbox boxes[10] = {
+        { "Tiles",      &r.tile_outline_on   },
+        { "Debug",      &r.debug_text_on     },
+        { "Collision",  &r.collision_on      },
+        { "Edit",       &r.editor_on         },
+        { "Algo only",  &r.algo_only_on      },
+        { "Sprites",    &r.sprite_viewer_on  },
+        { "Health",     &r.health_bars_on    },
         { "Damage",     &r.damage_overlay_on },
-        { "Mood",       &r.mood_overlay_on },
+        { "Mood",       &r.mood_overlay_on   },
+        { "Events",     &r.events_panel_on   },
     };
     int cy = checkbox_slot_y(hud_y);
-    for (int i = 0; i < 15; i++) {
+    for (int i = 0; i < 10; i++) {
         int cx = checkbox_slot_x(i);
         uint32_t border = *boxes[i].state ? 0xffffff : 0x666666;
         r.stroke_rect(cx, cy, CHECKBOX_SIZE, CHECKBOX_SIZE, border);
@@ -653,6 +885,10 @@ bool render_hud_panels(PixelRenderer& r) {
 
 void PixelRenderer::set_overlay_text(const char* text) {
     overlay = text ? text : "";
+}
+
+void PixelRenderer::set_fps_text(const char* text) {
+    fps_text_ = text ? text : "";
 }
 
 void PixelRenderer::set_highlighted_tile(uint8_t world_x, uint8_t world_y) {
@@ -1057,6 +1293,13 @@ bool PixelRenderer::consume_palette_click(uint8_t& tile_type) {
     if (!has_pending_palette_click) { tile_type = 0; return false; }
     tile_type = pending_palette_click_type;
     has_pending_palette_click = false;
+    return true;
+}
+
+bool PixelRenderer::consume_event_click(int& event_id) {
+    if (!has_pending_event_click) { event_id = 0; return false; }
+    event_id = pending_event_id;
+    has_pending_event_click = false;
     return true;
 }
 

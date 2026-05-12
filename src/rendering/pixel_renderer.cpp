@@ -428,6 +428,9 @@ void PixelRenderer::begin_frame() {
 
 void PixelRenderer::end_frame() {
     pr_debug::render_overlay_text(*this);
+    pr_debug::render_fps_text(*this);
+    pr_debug::render_events_panel(*this);
+    pr_debug::render_grid_panel(*this);
     InvalidateRect(f.hwnd, NULL, FALSE);
     UpdateWindow(f.hwnd);
 }

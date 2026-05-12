@@ -268,6 +268,17 @@ StartupConfig load_startup_config(const std::string& path) {
             bool b = false;
             if (key == "stress_test" && parse_bool(value, b)) {
                 cfg.stress_test = b;
+            } else if (key == "show_fps" && parse_bool(value, b)) {
+                cfg.show_fps = b;
+            } else if (key == "target_fps") {
+                // Accept 25/50/75/100. Anything else silently snaps to
+                // the nearest valid rate so a typo doesn't desync audio.
+                int n = std::atoi(value.c_str());
+                if      (n <= 25) n = 25;
+                else if (n <= 50) n = 50;
+                else if (n <= 75) n = 75;
+                else              n = 100;
+                cfg.target_fps = n;
             }
         } else if (section == "startup_spawns") {
             // Format: <key> = <type>, <tile_x>, <tile_y>[, <x_frac>][, <y_frac>]
