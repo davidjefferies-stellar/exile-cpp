@@ -4,7 +4,7 @@
 
 A C++ port of the BBC Micro masterpiece **Exile** (Peter Irvin & Jeremy Smith, 1988),
 working from the original 6502 disassembly. The goal of the project is educational -
-to re-author the 6502 in C++ for easier study and to preserve its groundbreaking its 
+to re-author the 6502 in C++ for easier study and to preserve its groundbreaking 
 concepts and techniques for a future where people no longer know 6502.
 
 The disassembly used as the spec is the superb effort by Level7 and lives at 
