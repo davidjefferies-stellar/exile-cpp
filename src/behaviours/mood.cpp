@@ -29,7 +29,7 @@ constexpr uint8_t kPhobia[10] = {
 };
 // &3175 npc_stimuli_types_target_table. Values >=0x80 are
 // OBJECT_RANGE_* categories the 6502 resolves via &2db0; not yet ported
-// → those targets contribute nothing on this side.
+// -> those targets contribute nothing on this side.
 constexpr uint8_t kTarget[10] = {
     0x29, 0x29, 0x55, 0x37, 0x86, 0x86, 0x86, 0x86, 0x86, 0x0f
 };
@@ -48,7 +48,7 @@ constexpr uint8_t kResponse[10] = {
     0xcc, 0xf6, 0x8c, 0x72, 0xf2, 0x76, 0x88, 0xa4, 0x1a, 0x0e
 };
 
-// 6502 ranges (object_type → category). Returns -1 for object types
+// 6502 ranges (object_type -> category). Returns -1 for object types
 // outside any stimuli range.
 int category_for_type(uint8_t t) {
     switch (t) {
@@ -66,7 +66,7 @@ int category_for_type(uint8_t t) {
     }
 }
 
-// &3bfe find_a_target → &3c2a find_object. Reduced: Chebyshev scan,
+// &3bfe find_a_target -> &3c2a find_object. Reduced: Chebyshev scan,
 // no range-category resolution (target_byte >=0x80 skipped).
 // phobia_byte bit 7 includes player. Outputs phobia/player match flags.
 int find_target(const Object& npc, UpdateContext& ctx, int self_slot,

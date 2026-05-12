@@ -307,7 +307,7 @@ bool overlaps_solid_object(const Object& obj, int self_slot,
         uint8_t tflags = (tidx < static_cast<uint8_t>(ObjectType::COUNT))
                          ? object_types_flags[tidx] : 0;
         uint8_t other_weight = tflags & ObjectTypeFlags::WEIGHT_MASK;
-        if (other_weight <= self_weight) continue;   // lighter or equal → no block
+        if (other_weight <= self_weight) continue;   // lighter or equal -> no block
         if (tflags & ObjectTypeFlags::INTANGIBLE) continue;
 
         // Doors: OPENING set means the sprite has slid far enough out of
@@ -423,8 +423,8 @@ uint8_t substitute_door_for_obstruction(
     }
 
     // &3e91-&3e94 door_tiles_table + &3ea1-&3ea7 orientation = fh XOR fv.
-    // Horizontal closed → SPACESHIP_WALL_HORIZONTAL_QUARTER (thin top slab
-    // the player walks on); vertical closed → STONE_SLOPE_78 (left
+    // Horizontal closed -> SPACESHIP_WALL_HORIZONTAL_QUARTER (thin top slab
+    // the player walks on); vertical closed -> STONE_SLOPE_78 (left
     // quarter solid). Both-set / neither-set means horizontal.
     bool opening   = (data & 0x02) != 0;
     bool destroyed = (data & 0x08) != 0; // DoorFlag::SLOW_OR_DESTROYED

@@ -116,7 +116,7 @@ void update_door(Object& obj, UpdateContext& ctx) {
     uint8_t colour      = (data >> 4) & 0x07;
     uint8_t colour_pair = colour & 0x03;
 
-    // &4cbe-&4cd5: energy refill above colour threshold, else slow→destroy
+    // &4cbe-&4cd5: energy refill above colour threshold, else slow->destroy
     // ladder. Door re-spawns from tertiary entry once explosion slot is reaped.
     uint8_t energy_pre  = obj.energy;
     uint8_t threshold   = doors_energy_table[colour_pair];
@@ -346,7 +346,7 @@ static void process_switch_effects(ObjectManager& mgr,
         }
         if (zeros_seen != required) continue;  // in an earlier group
 
-        // Resolve target data_offset → list of per-cell entry indices
+        // Resolve target data_offset -> list of per-cell entry indices
         // sharing that source row. 16 fits the worst-case "many cells of
         // the same raw type at one X" without overflow on Option-B
         // worlds.
@@ -551,7 +551,7 @@ void update_transporter_beam(Object& obj, UpdateContext& ctx) {
                 touched.timer = 0x20;
                 touched.velocity_x = obj.velocity_x;
                 touched.velocity_y = obj.velocity_y;
-                // &4daa play_sound_for_teleporting (&440d → JSR
+                // &4daa play_sound_for_teleporting (&440d -> JSR
                 // play_sound, params 29 c2 37 f3).
                 static constexpr uint8_t kSoundTeleport[4] = { 0x29, 0xc2, 0x37, 0xf3 };
                 Audio::play_at(Audio::CH_ANY, kSoundTeleport, obj.x.whole, obj.y.whole);
@@ -640,7 +640,7 @@ void update_hive(Object& obj, UpdateContext& ctx) {
     Audio::play_at(Audio::CH_ANY, kSoundHiveSpawn, obj.x.whole, obj.y.whole);
 
     Object& spawn = ctx.mgr.object(slot);
-    // angle &80 = leftward, &00 = rightward. Magnitude 0x20 → translate
+    // angle &80 = leftward, &00 = rightward. Magnitude 0x20 -> translate
     // to velocity_x ≈ ±0x20 with no y component (calculate_vector_from_
     // magnitude_and_angle returns a vector whose x-axis component is
     // +magnitude for angle 0 and -magnitude for angle 0x80).
@@ -690,7 +690,7 @@ void update_dense_nest(Object& obj, UpdateContext& ctx) {
 }
 
 // &4E37 sucking_nests_trigger_table — object type that activates each
-// variant. 0xff means "activates on any object" (bit 7 → always active).
+// variant. 0xff means "activates on any object" (bit 7 -> always active).
 // The nest variant is stored in the tertiary data byte.
 static constexpr uint8_t sucking_nests_trigger[9] = {
     0xff, // 0: all
@@ -728,7 +728,7 @@ static constexpr uint8_t sucking_nests_direction[9] = {
 };
 
 // &4DED-&4E34 update_sucking_nest. Port-only simplifications: drops the
-// &4dfd-&4e01 coronium-boulder → yellow-slime alias, and the &3c99 random
+// &4dfd-&4e01 coronium-boulder -> yellow-slime alias, and the &3c99 random
 // per-attempt probability gate (we accept any matching candidate).
 // Random-flip (&4e1f) and 1/256 high-damage roll (&4e23) preserved.
 void update_sucking_nest(Object& obj, UpdateContext& ctx) {
@@ -808,7 +808,7 @@ void update_sucking_nest(Object& obj, UpdateContext& ctx) {
             if (is_static) continue;
 
             // Velocity nudge toward / away from nest. `dx > 0` means the
-            // nest is east of the candidate → attract pulls the
+            // nest is east of the candidate -> attract pulls the
             // candidate east (velocity_x++). Repel flips the sign.
             int8_t step_x = 0, step_y = 0;
             if (dx > 0) step_x = attract ?  1 : -1;
@@ -904,7 +904,7 @@ void update_maggot_machine(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4C15-&4C82 update_engine_fire. state = burn timer (hits 0x80 → inactive);
+// &4C15-&4C82 update_engine_fire. state = burn timer (hits 0x80 -> inactive);
 // tertiary_data_offset bits 0/1 = engine-inactive flag (port simplification
 // of the 6502's full data field).
 void update_engine_fire(Object& obj, UpdateContext& ctx) {

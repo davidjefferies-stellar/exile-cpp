@@ -78,7 +78,7 @@ inline constexpr uint8_t BBC_SPRITE_SHEET_Y[BBC_SPRITE_COUNT] = {
 // Callers are expected to have clamped x to [0, 128) and y to [0, 81).
 inline uint8_t bbc_sprite_pixel(int x, int y) {
     uint8_t byte = BBC_SPRITE_DATA[y * BBC_SHEET_BYTES_PER_ROW + (x >> 2)];
-    // x % 4 == 0 → leftmost pixel (bits 3/7); x % 4 == 3 → rightmost (bits 0/4).
+    // x % 4 == 0 -> leftmost pixel (bits 3/7); x % 4 == 3 -> rightmost (bits 0/4).
     int k = 3 - (x & 3);
     uint8_t low  = (byte >> k)       & 1;
     uint8_t high = (byte >> (k + 4)) & 1;

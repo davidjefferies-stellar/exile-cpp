@@ -514,4 +514,50 @@ void move_towards_target_with_probability(Object& obj, UpdateContext& ctx,
                                  static_cast<int8_t>(desired_y), max_accel);
 }
 
+// &3235 calculate_seven_eighths: v - sign(v) * ((|v| + 7) >> 3). Used
+// by dampen_this_object_velocity_y to bleed off ~12.5% of |vy| per call
+// while preserving the sign.
+static int8_t calculate_seven_eighths(int8_t v) {
+    int abs_v = v < 0 ? -int(v) : int(v);
+    int eighth = (abs_v + 7) >> 3;
+    if (v < 0) eighth = -eighth;
+    int r = int(v) - eighth;
+    if (r >  127) r =  127;
+    if (r < -128) r = -128;
+    return static_cast<int8_t>(r);
+}
+
+void consider_hovering_over_ground(Object& obj, UpdateContext& ctx) {
+    // &3a1e: BIT every_four_frames; BPL leave. Runs once every four ticks.
+    if (!ctx.every_four_frames) return;
+
+    // 6502 measures unobstructed space below via check_for_space_below_
+    // object then branches on three cases:
+    //   space == 0xff (≥ 1 full tile clear)  : DEC accel_y once + dampen
+    //   space in (half_height, 0xff)         : leave (mid-air, no thrust)
+    //   space < half_height, rnd carry       : DEC accel_y twice + dampen
+    //   space < half_height, no rnd carry    : DEC accel_y three times + dampen
+    // Our port lacks the per-pixel space measurement, so we collapse to
+    // a binary proxy: SUPPORTED flag = "near ground" path; else = the
+    // gentle "≥ 1 tile clear" path. cancel_gravity already sits on top,
+    // so this just adds the ADDITIONAL upward thrust from &3a3d-&3a41
+    // (1, 2, or 3 DECs of accel_y, which translate to subtracting from
+    // vy directly in our model).
+    int thrust;
+    if (obj.is_supported()) {
+        // Near-ground path. 50/50 split between -2 and -3 (rnd carry).
+        thrust = ((ctx.rng.next() & 0x80) != 0) ? -2 : -3;
+    } else {
+        // ≥ 1 tile clear path: -1 vy.
+        thrust = -1;
+    }
+    int vy = int(obj.velocity_y) + thrust;
+    if (vy >  127) vy =  127;
+    if (vy < -128) vy = -128;
+    obj.velocity_y = static_cast<int8_t>(vy);
+
+    // &3a43 JMP dampen_this_object_velocity_y.
+    obj.velocity_y = calculate_seven_eighths(obj.velocity_y);
+}
+
 } // namespace NPC

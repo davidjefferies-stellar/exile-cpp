@@ -273,7 +273,7 @@ void PixelRenderer::process_mouse() {
         int adx = dx < 0 ? -dx : dx;
         int ady = dy < 0 ? -dy : dy;
         right_motion += adx + ady;
-        // Dragging right → world slides right → camera centre LEFT.
+        // Dragging right -> world slides right -> camera centre LEFT.
         pan_px_x += dx;
         pan_px_y += dy;
         int tpx = tile_px_x();
@@ -311,7 +311,7 @@ void PixelRenderer::process_mouse() {
     prev_mouse_y = f.y;
 }
 
-// Tile (0..0x3f) → sprite_id. &04ab tiles_sprite_and_y_flip_table; bit 7
+// Tile (0..0x3f) -> sprite_id. &04ab tiles_sprite_and_y_flip_table; bit 7
 // XORs flip_v (obstruction-at-bottom flag for collision &2477).
 // 0xff = transparent (sprite 0x46) — skip blit entirely.
 const uint8_t TILE_SPRITE_ID[64] = {
@@ -420,7 +420,6 @@ void PixelRenderer::begin_frame() {
     }
 
     process_mouse();
-    pr_debug::handle_keys(*this);
 
     std::fill(buf.begin(), buf.end(), clear_colour_);
     std::fill(fg_mask.begin(), fg_mask.end(), 0u);
@@ -508,7 +507,7 @@ void PixelRenderer::render_water_column(uint8_t world_x,
     if (top_sx + tpx <= 0 || top_sx >= f.width) return;
 
     if (delta_from_top < 0) {
-        // Waterline above screen top → entire column submerged → blue.
+        // Waterline above screen top -> entire column submerged -> blue.
         fill_rect(top_sx, 0, tpx, hud_y, BLUE);
     } else if (delta_from_top < vp_h) {
         // Waterline inside viewport. Cyan on the waterline row's top
@@ -522,7 +521,7 @@ void PixelRenderer::render_water_column(uint8_t world_x,
             fill_rect(top_sx, top_sy, tpx, 1, CYAN);
         }
     }
-    // else: entire column above waterline → leave black.
+    // else: entire column above waterline -> leave black.
 }
 
 void PixelRenderer::render_object(Fixed8_8 world_x, Fixed8_8 world_y,
@@ -683,7 +682,7 @@ void PixelRenderer::render_particle(uint8_t wx, uint8_t wx_frac,
     // Particles use the same 16-slot logical palette as sprites/tiles,
     // keyed by their low 3 bits (BBC background colour group).
     uint32_t col = LOGICAL_TO_RGB[colour & 0x07];
-    if (col == 0) return; // black → invisible
+    if (col == 0) return; // black -> invisible
 
     int sx, sy;
     if (!world_to_screen(wx, wy, sx, sy, wx_frac, wy_frac)) return;

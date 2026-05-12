@@ -22,7 +22,7 @@ TEST(fixed_point_positive_velocity_within_fraction) {
 }
 
 TEST(fixed_point_positive_velocity_carries_into_whole) {
-    // fraction overflows from 0xf0 + 0x20 = 0x110 → carry bumps whole.
+    // fraction overflows from 0xf0 + 0x20 = 0x110 -> carry bumps whole.
     Fixed8_8 p(0x40, 0xf0);
     p.add_velocity(0x20);
     EXPECT_EQ(p.whole, 0x41);

@@ -9,7 +9,7 @@ namespace Weapon {
 
 // Fire the player's current weapon. Returns bullet slot or -1.
 // weapon_type: 0=jetpack, 1=pistol, 2=icer, 3=blaster, 4=plasma, 5=suit.
-// Blaster discharges via blaster_timer (&2d4f STA -5 → ticks to 0,
+// Blaster discharges via blaster_timer (&2d4f STA -5 -> ticks to 0,
 // radius-10 explosion at player) rather than spawning a primary.
 int fire(ObjectManager& mgr, const Object& player,
          uint8_t weapon_type, uint8_t aim_angle,

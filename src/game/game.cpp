@@ -45,7 +45,7 @@ bool Game::init() {
     Water::reset();
 
     // Load startup config (player position, energy, weapon, pockets,
-    // weapon energies). Missing file → defaults reproducing the original
+    // weapon energies). Missing file -> defaults reproducing the original
     // game's spawn state. See exile.ini in the project root.
     StartupConfig cfg = load_startup_config("exile.ini");
 
@@ -95,7 +95,7 @@ bool Game::init() {
 
     // Key-collected bitmask (port of &0806 player_keys_collected). Each
     // entry is 0x80 when the corresponding key has been picked up; the
-    // door-unlock path (update_door's &4c9e RCD hit → consider_toggling_
+    // door-unlock path (update_door's &4c9e RCD hit -> consider_toggling_
     // lock at &31bb) will read this array to decide whether the matching
     // coloured door can be toggled. exile.ini's [keys] section pre-sets
     // entries for testing without having to wander to each key in-world.
@@ -107,7 +107,7 @@ bool Game::init() {
 
     // Cache-range radii. object_manager.cpp's check_demotion picks one of
     // the three demote_distances_ values based on an object's type flags;
-    // promote_distance_ governs secondary → primary re-promotion; and
+    // promote_distance_ governs secondary -> primary re-promotion; and
     // spawn_tertiary_distance_ gates render-time tertiary-to-primary
     // spawns. All live in exile.ini's [distances] section.
     object_mgr_.set_demote_distances(cfg.demote_tertiary,
@@ -143,8 +143,10 @@ bool Game::init() {
 
     // &0860-&08b4 initial object table: Triax pre-placed at (&99, &3b)
     // adjacent to the destinator tertiary, so frame-1 update_triax fires
-    // the absorb + teleport beat without any scripted cutscene.
-    {
+    // the absorb + teleport beat without any scripted cutscene. Skipped
+    // when [creatures] spawn_initial_triax = false so the upper world
+    // can be explored without the frame-1 grab.
+    if (cfg.spawn_initial_triax) {
         Object& triax = object_mgr_.object(1);
         object_mgr_.init_object_from_type(triax, ObjectType::TRIAX);
         triax.x = {0x99, 0x64};
@@ -179,8 +181,8 @@ bool Game::init() {
     }
 
     // Test setup: 2 red slime drops onto door at (80, 96). Each deals 100
-    // dmg (&47b1 LDA #&64); same-frame total 200 drops door (255→55) below
-    // pair-3 threshold 128 → SLOW_OR_DESTROYED. Stagger x_frac to avoid
+    // dmg (&47b1 LDA #&64); same-frame total 200 drops door (255->55) below
+    // pair-3 threshold 128 -> SLOW_OR_DESTROYED. Stagger x_frac to avoid
     // mutual AABB overlap before reaching the door.
     {
         constexpr uint8_t kStartTileX = 80;
@@ -653,7 +655,7 @@ void Game::run() {
 void Game::tick() {
     {
         // Main game loop sequence (matching &19b6). Order inside the
-        // frame is: input → toggles → anchor → world updates → render.
+        // frame is: input -> toggles -> anchor -> world updates -> render.
         // While paused the world-update block is skipped so the current
         // state snapshot can be inspected in the banner without values
         // changing every frame.
@@ -917,7 +919,7 @@ void Game::process_input() {
     }
 
     // Save / load edge detection. Holding ';' would otherwise overwrite the
-    // save every frame and thrash the disk; only fire on the 0→1 transition.
+    // save every frame and thrash the disk; only fire on the 0->1 transition.
     bool save_down = input_.state().save_game;
     if (save_down && !save_key_prev_) {
         save_game("exile.sav");
@@ -1145,7 +1147,7 @@ void Game::update_events() {
             uint8_t ttype = res.tile_and_flip & TileFlip::TYPE_MASK;
             if (ttype != static_cast<uint8_t>(TileType::NEST) &&
                 ttype != static_cast<uint8_t>(TileType::PIPE)) continue;
-            // One spawn roll per tile per frame: 1-in-256 → ~0.2 spawns/sec
+            // One spawn roll per tile per frame: 1-in-256 -> ~0.2 spawns/sec
             // per nearby nest/pipe, or roughly one every five seconds.
             if (rng_.next() < 0xff) continue;
 
@@ -1177,26 +1179,18 @@ void Game::update_events() {
                 sprite_h_byte = static_cast<uint8_t>((h > 0 ? (h - 1) : 0) * 8);
             }
 
-            // &4075-&407e set y_fraction to the EMPTY edge of the nest tile
-            // (top if v-flipped, bottom otherwise) so the spawn doesn't drop
-            // into the tile's solid pattern. &3e72-&3e74 then force flags to
-            // 0x05 — nest birds intentionally don't inherit tile flip.
+            // Place the spawn so its sprite CENTRE sits on the tile's
+            // boundary opposite the pipe / nest opening — i.e. half of
+            // the sprite is in the pipe tile, half emerges into the next
+            // tile down (or up if v-flipped). The 6502 default at
+            // &4075-&407e is bottom-flush (sprite bottom at tile bottom);
+            // the visual we want is the creature partially poking out of
+            // the opening, so we shift by an extra h/2.
             bool v_flipped = (res.tile_and_flip & TileFlip::VERTICAL) != 0;
+            uint8_t half_h = static_cast<uint8_t>(sprite_h_byte >> 1);
             spawn.y.fraction = v_flipped
-                ? 0x00
-                : static_cast<uint8_t>(~sprite_h_byte & 0xff);
-
-            // PIPE: the 6502 formula's "tile edge" lands inside the
-            // pipe's solid band (y_offset 0x8f / 0xcf), unlike NEST.
-            // Lift into the opening with an 8-frac margin.
-            if (ttype == static_cast<uint8_t>(TileType::PIPE)) {
-                if (v_flipped) {
-                    spawn.y.fraction =
-                        static_cast<uint8_t>(0xf8 - sprite_h_byte);
-                } else {
-                    spawn.y.fraction = 0x08;
-                }
-            }
+                ? static_cast<uint8_t>(0u - half_h)            // centred on tile TOP edge
+                : static_cast<uint8_t>(0xff - half_h);          // centred on tile BOTTOM edge
 
             // &3e7d-&3e83 centre the spawn horizontally within the tile.
             // This overrides whatever &4072 set.
@@ -1277,7 +1271,7 @@ void Game::update_events() {
         int8_t avail = static_cast<int8_t>(clawed_robot_availability_[r]);
         if (avail == 0) {
             // &2725-&2728: INC teleport_energy ; BPL leave. Only spawn
-            // once the counter overflows past 0x7f (signed positive →
+            // once the counter overflows past 0x7f (signed positive ->
             // signed negative); a still-positive byte means "recharging".
             clawed_robot_teleport_energy_[r]++;
             if (static_cast<int8_t>(clawed_robot_teleport_energy_[r]) < 0) {
@@ -1298,7 +1292,7 @@ void Game::update_events() {
     }
 }
 
-// Three-phase player update: read input → integrate motion → pick sprite.
+// Three-phase player update: read input -> integrate motion -> pick sprite.
 // The two halves live in player_actions.cpp / player_motion.cpp so the
 // input and physics concerns can evolve independently.
 void Game::update_player() {

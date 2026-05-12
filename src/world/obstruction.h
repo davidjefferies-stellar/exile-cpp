@@ -4,7 +4,7 @@
 
 // &0100-&01a0 obstruction patterns: 8 Y-thresholds per pattern, indexed
 // by x-section (sub_x >> 5). Point obstructed when threshold < y_frac
-// for non-flipped. All-0xff → whole tile clear; also via y_offset overflow.
+// for non-flipped. All-0xff -> whole tile clear; also via y_offset overflow.
 namespace Obstruction {
 
 static constexpr std::array<std::array<uint8_t, 8>, 21> patterns = {{
@@ -33,7 +33,7 @@ static constexpr std::array<std::array<uint8_t, 8>, 21> patterns = {{
 
 // Port of &39dd-&39f5. Returns true iff (x_frac, y_frac) within the tile is
 // obstructed by the pattern. y_offset is added to the pattern threshold (with
-// overflow → 0xFF, meaning "whole tile clear" for non-flipped).
+// overflow -> 0xFF, meaning "whole tile clear" for non-flipped).
 inline bool is_obstructed(int pattern_index, uint8_t x_frac, uint8_t y_frac,
                           uint8_t y_offset, bool flip_v) {
     if (pattern_index < 0 ||

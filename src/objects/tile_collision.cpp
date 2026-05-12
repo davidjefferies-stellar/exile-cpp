@@ -168,7 +168,7 @@ static uint8_t check_top_bot_section(const Ctx& ctx, uint8_t y_section) {
         uint8_t A = (sum > 0xff) ? 0xff : static_cast<uint8_t>(sum);
 
         // &2e99 SEC; SBC top_y_rounded
-        // BCC: borrow → object_top above obstruction → no obstr depth (for
+        // BCC: borrow -> object_top above obstruction -> no obstr depth (for
         // unflipped the &2ed5 path inverts; for flipped just stays 0).
         if (A >= ctx.top_y_rounded) {
             uint8_t depth = static_cast<uint8_t>(A - ctx.top_y_rounded);
@@ -204,7 +204,7 @@ static uint8_t check_top_bot_section(const Ctx& ctx, uint8_t y_section) {
 
     // Top-tile flipped/unflipped tweak (&2ec9-&2ed5). CRITICAL: entering
     // A depends on path — crossing-Y uses 0-top_y_rounded (&2ec9-&2ecd),
-    // not-crossing keeps `height` from &2ea6. Wrong value → multi-pixel
+    // not-crossing keeps `height` from &2ea6. Wrong value -> multi-pixel
     // upward push every frame on flat ground.
     {
         uint8_t A = ctx.crosses_y
@@ -286,7 +286,7 @@ static void count_top_and_bottom(Ctx& ctx) {
             // Above is XOR of bit 7 of (CMP-result-bit-shift) vs sprite flip.
             // BMI on result==1 means "skip if bit 7 set". Bit 7 of CMP-result
             // shifted via ROR: ROR A has bit 7 = C. So CMP setting C=1 (A>=B)
-            // → ROR result bit 7 = 1 → BMI taken when EOR with flip yields 1.
+            // -> ROR result bit 7 = 1 -> BMI taken when EOR with flip yields 1.
             // i.e. not obstructed iff (C XOR flip-bit) == 1 — same as `ge != flip`.
             if (!not_obstr) {
                 ctx.top_obstr = static_cast<int8_t>(ctx.top_obstr - 1);
@@ -316,7 +316,7 @@ static void count_top_and_bottom(Ctx& ctx) {
 
         // Refresh tile data for next column. 6502 keeps tile_y on the
         // BOTTOM tile when AABB crosses Y (INC'd at &2f1e), TOP otherwise.
-        // Wrong choice probes the wrong row → player can't walk on flat
+        // Wrong choice probes the wrong row -> player can't walk on flat
         // ground when sprite_h < tile_h.
         uint8_t bot_ty = ctx.crosses_y
             ? static_cast<uint8_t>(ctx.tile_y + 1)
@@ -394,12 +394,12 @@ static void apply_tile_collision(Ctx& ctx) {
     int8_t vector_x = static_cast<int8_t>(ctx.top_obstr   - ctx.bottom_obstr);
     int8_t vector_y = static_cast<int8_t>(ctx.right_obstr - ctx.left_obstr);
 
-    // &306c JSR calculate_angle_from_vector → A = tile_collision_angle.
+    // &306c JSR calculate_angle_from_vector -> A = tile_collision_angle.
     uint8_t tile_collision_angle = angle_from_vector(vector_x, vector_y);
 
     // &3071: A = angle - 0x60 (rotate -135°).
     uint8_t A = static_cast<uint8_t>(tile_collision_angle - 0x60);
-    // &3074: AND #&c0 → top→0x00, right→0x40, bottom→0x80, left→0xc0.
+    // &3074: AND #&c0 -> top->0x00, right->0x40, bottom->0x80, left->0xc0.
     A &= 0xc0;
     // &3076-&3078: ASL; ROL; ROL — shift &c0 into &03.
     bool c = (A & 0x80) != 0; A = static_cast<uint8_t>(A << 1);
@@ -408,7 +408,7 @@ static void apply_tile_collision(Ctx& ctx) {
     r = static_cast<uint8_t>((r << 1) | (c2 ? 1 : 0));
     // After the three shifts, low 2 bits hold the direction index 0..3.
     uint8_t Y = r & 0x03;
-    // &307a EOR #&02 → opposite direction in X.
+    // &307a EOR #&02 -> opposite direction in X.
     uint8_t X = Y ^ 0x02;
 
     // 6502 indexed access: &0077,Y where the four obstr live in order
@@ -435,15 +435,15 @@ static void apply_tile_collision(Ctx& ctx) {
 
     // &308f-&3094: determine which axis. Y values: 0=top, 1=right, 2=bottom,
     // 3=left. After DEY: 0xff, 0, 1, 2. AND #&01: 1, 0, 1, 0. ASL: 2, 0, 2, 0.
-    // X = 2 → axis = Y (vertical), X = 0 → axis = X (horizontal).
+    // X = 2 -> axis = Y (vertical), X = 0 -> axis = X (horizontal).
     uint8_t axis_x_byte = static_cast<uint8_t>(((Y - 1) & 0x01) << 1);
     bool axis_is_y = (axis_x_byte != 0);
 
-    // &3095-&309e: if axis_is_y → not_x branch; else round X up to next pixel.
+    // &3095-&309e: if axis_is_y -> not_x branch; else round X up to next pixel.
     if (!axis_is_y) {
         uint16_t s = static_cast<uint16_t>(move_amt) + 0x0f;
         if (s > 0xff) {
-            // BCC skip_ceiling — taken iff no carry; if carry (s>0xff) → fe.
+            // BCC skip_ceiling — taken iff no carry; if carry (s>0xff) -> fe.
             move_amt = 0xfe;
         } else {
             move_amt = static_cast<uint8_t>(s);
@@ -481,9 +481,9 @@ static void apply_tile_collision(Ctx& ctx) {
     uint8_t angle_rel = static_cast<uint8_t>(velocity_angle - tile_collision_angle);
     if ((angle_rel & 0x80) == 0) {
         // was_moving_towards_obstruction: bounce.
-        // &30d2-&30df: SEC; SBC #&3f → angle relative to head-on.
+        // &30d2-&30df: SEC; SBC #&3f -> angle relative to head-on.
         //   divide_by_eight; ADC angle (the relative); EOR #&ff; CLC;
-        //   ADC tile_collision_angle → bounce angle.
+        //   ADC tile_collision_angle -> bounce angle.
         uint8_t rel = static_cast<uint8_t>(angle_rel - 0x3f);
         uint8_t reduced = divide_by_eight(rel);
         uint8_t bounce_angle = static_cast<uint8_t>(reduced + angle_rel);
@@ -493,8 +493,8 @@ static void apply_tile_collision(Ctx& ctx) {
         //   CMP #&20 (BCC skip; LDA #&20)
         //   SBC #&02
         //   BCS skip; LDA #&00
-        // For mag >= 0x20: CMP sets C=1, cap to 0x20, SBC with C=1 → 0x1e.
-        // For mag <  0x20: CMP sets C=0 (borrow), SBC with C=0 → mag - 3.
+        // For mag >= 0x20: CMP sets C=1, cap to 0x20, SBC with C=1 -> 0x1e.
+        // For mag <  0x20: CMP sets C=0 (borrow), SBC with C=0 -> mag - 3.
         // For mag <  3:    SBC borrows again, BCC's LDA #&00 zeros it.
         if (magnitude >= 0x20) {
             magnitude = 0x1e;
@@ -513,7 +513,7 @@ static void apply_tile_collision(Ctx& ctx) {
         uint8_t graze = static_cast<uint8_t>(angle_rel - 0xc0);
         graze = invert_if_negative(graze);
         if (graze >= 0x2a) return; // not grazing
-        if (magnitude < 0x40) return; // moving slowly → leave
+        if (magnitude < 0x40) return; // moving slowly -> leave
         halve_velocities_and_revert(ctx);
     }
 }
@@ -611,7 +611,7 @@ Result resolve(Object& obj,
     {
         uint8_t v = static_cast<uint8_t>(ctx.top_obstr - ctx.bottom_obstr);
         ctx.tile_collision_y_flags = static_cast<uint8_t>((v ^ 0xff) + 1);
-        // &302b-&3031: top_or_bottom_collision = (top|bottom) ≥ 1 → bit 7.
+        // &302b-&3031: top_or_bottom_collision = (top|bottom) ≥ 1 -> bit 7.
         uint8_t any_tb = static_cast<uint8_t>(static_cast<uint8_t>(ctx.top_obstr) |
                                                 static_cast<uint8_t>(ctx.bottom_obstr));
         ctx.top_or_bottom_collision = (any_tb != 0); // ROR turns ≥1 into bit-7 set
@@ -625,7 +625,7 @@ Result resolve(Object& obj,
             left_or_right_edge_depth(ctx, right_edge_xf, right_edge_x));
     }
 
-    // &303d-&303f: vector_x | vector_y; if any nonzero → apply collision.
+    // &303d-&303f: vector_x | vector_y; if any nonzero -> apply collision.
     int8_t vec_x = static_cast<int8_t>(ctx.top_obstr   - ctx.bottom_obstr);
     int8_t vec_y = static_cast<int8_t>(ctx.right_obstr - ctx.left_obstr);
 

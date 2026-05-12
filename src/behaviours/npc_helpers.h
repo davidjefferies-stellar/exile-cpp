@@ -38,7 +38,7 @@ struct UpdateContext {
     // Index of the slot the player is currently holding, or 0x80+ if no
     // object is held. Mirrors the 6502's &dd player_object_held byte.
     // update_collectable consults this to know "the player is carrying me
-    // right now → mark me collected and remove" (port of &4b88).
+    // right now -> mark me collected and remove" (port of &4b88).
     uint8_t held_object_slot;
     // &29d7 player_object_fired (0xff = nothing fired). Read by
     // &4351, &4c9e, &4dc8 via check_if_object_hit_by_remote_control.
@@ -125,7 +125,7 @@ int fire_projectile(Object& obj, ObjectType bullet_type, UpdateContext& ctx);
 void offset_child_from_parent(Object& child, const Object& parent);
 
 // Diamond-metric firing velocity (|vx|+|vy|≈speed). Approximates &2357
-// via the from→target angle, cheaper than the full &3355 chain.
+// via the from->target angle, cheaper than the full &3355 chain.
 void aim_toward(int8_t& vel_x, int8_t& vel_y,
                 const Object& from, const Object& target, uint8_t speed);
 
@@ -182,7 +182,7 @@ void consider_absorbing_object_touched(Object& obj, ObjectType prey_type,
 
 // &3bf8 consider_finding_target reduced (Y=0 / no range gate). Stamps
 // nearest prey_type slot with DIRECTNESS_ONE; only runs every 16
-// frames. Used by birds→wasps and big fish→piranhas.
+// frames. Used by birds->wasps and big fish->piranhas.
 void consider_finding_target(Object& obj, ObjectType prey_type,
                              UpdateContext& ctx);
 
@@ -193,5 +193,16 @@ void move_towards_target_with_probability(Object& obj, UpdateContext& ctx,
                                           uint8_t magnitude,
                                           uint8_t max_accel,
                                           uint8_t prob_threshold);
+
+// &3a1e consider_hovering_over_ground (every-4-frames). Adds upward
+// thrust scaled by proximity to ground, then dampens vy by 7/8 so the
+// ball settles instead of oscillating. Approximation: 6502 walks tiles
+// down via check_for_space_below_object and picks one of three thrust
+// magnitudes; we use is_supported() as a proxy for "near ground" and
+// rng for the 2-or-3 split. Mid-air (1+ tile clear, < half-height
+// clear) is treated as the "1+ tile clear" case since we lack the
+// fine-grained measurement — empirically this keeps hover NPCs from
+// drifting onto the ground without making them climb the ceiling.
+void consider_hovering_over_ground(Object& obj, UpdateContext& ctx);
 
 } // namespace NPC

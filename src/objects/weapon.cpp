@@ -19,10 +19,10 @@ static void diamond_vector(uint8_t angle, int magnitude,
     int a = std::min<int>(magnitude, rel);
     int b = std::min<int>(magnitude, 0x40 - rel);
     switch (quad) {
-        case 0: vx =  static_cast<int8_t>(b); vy =  static_cast<int8_t>(a); break; // right → down
-        case 1: vx = -static_cast<int8_t>(a); vy =  static_cast<int8_t>(b); break; // down  → left
-        case 2: vx = -static_cast<int8_t>(b); vy = -static_cast<int8_t>(a); break; // left  → up
-        case 3: vx =  static_cast<int8_t>(a); vy = -static_cast<int8_t>(b); break; // up    → right
+        case 0: vx =  static_cast<int8_t>(b); vy =  static_cast<int8_t>(a); break; // right -> down
+        case 1: vx = -static_cast<int8_t>(a); vy =  static_cast<int8_t>(b); break; // down  -> left
+        case 2: vx = -static_cast<int8_t>(b); vy = -static_cast<int8_t>(a); break; // left  -> up
+        case 3: vx =  static_cast<int8_t>(a); vy = -static_cast<int8_t>(b); break; // up    -> right
     }
 }
 
@@ -138,7 +138,7 @@ int fire(ObjectManager& mgr, const Object& player,
     bullet.timer = 0x30;
 
     // &2d58-&2d72: per-weapon firing sound. The 6502 dispatch is
-    //   weapon_type-1 == 0 → pistol, == 1 → icer, else plasma.
+    //   weapon_type-1 == 0 -> pistol, == 1 -> icer, else plasma.
     // Our weapon enum splits plasma and blaster, both of which use the
     // 6502's plasma path (play_low_beep at &14ad).
     static constexpr uint8_t kSoundPistol[4]  = { 0x3d, 0x04, 0x3d, 0x04 };  // &2d72

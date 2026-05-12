@@ -166,10 +166,10 @@ void Game::render() {
     }
 
     // Two-button editor model:
-    //   * LEFT-click  → SELECT. Highlights a cell, captures it as the
+    //   * LEFT-click  -> SELECT. Highlights a cell, captures it as the
     //                   paint source, refreshes the info overlay. Works
     //                   whether or not Edit is on.
-    //   * RIGHT-click → PAINT. When Edit is on, stamps the current paint
+    //   * RIGHT-click -> PAINT. When Edit is on, stamps the current paint
     //                   tile at the clicked cell. Distinguished from
     //                   right-drag (camera pan) by a small motion
     //                   threshold inside pixel_renderer.
@@ -422,7 +422,8 @@ void Game::render() {
             if (res.tertiary_index >= 0) {
                 spawn_tertiary_object(tile_type, tile_flip,
                                       wx, wy,
-                                      res.data_offset, res.type_offset);
+                                      res.data_offset, res.type_offset,
+                                      res.raw_tile_type);
             }
 
             // Door tiles (METAL_DOOR &03, STONE_DOOR &04) are declared
@@ -512,12 +513,12 @@ void Game::render() {
                     uint8_t y0, h;
                     bool    has_fill;
                     if (coll_fv) {
-                        // Solid when y_frac <= threshold → fill 0..threshold.
+                        // Solid when y_frac <= threshold -> fill 0..threshold.
                         has_fill = (threshold != 0);
                         y0 = 0;
                         h  = threshold;
                     } else {
-                        // Solid when y_frac > threshold → fill threshold+1..0xff.
+                        // Solid when y_frac > threshold -> fill threshold+1..0xff.
                         has_fill = (threshold < 0xff);
                         y0 = static_cast<uint8_t>(threshold + 1);
                         h  = static_cast<uint8_t>(0xff - threshold);
@@ -529,7 +530,7 @@ void Game::render() {
                             0x20, h, 0xCC2222);
                     }
                     // Surface line + risers gated on has_fill. Empty section's
-                    // threshold sits on the tile edge → drawing produces stray
+                    // threshold sits on the tile edge -> drawing produces stray
                     // horizontal stripes. Fully-solid sections keep the line
                     // (rock block floor/ceiling).
                     bool has_surface = has_fill;
@@ -599,7 +600,7 @@ void Game::render() {
             int outer_w_frac = sprite_w_frac + BAR_PAD_X * 2;
             // Collectables 0x4a..0x64 store undisturbed pin in energy bit 7;
             // mask it off and use 0x7f as full. Doors use full 8 bits — else
-            // 0x80→0x7f looked like wrap back to full instead of near-zero.
+            // 0x80->0x7f looked like wrap back to full instead of near-zero.
             uint8_t tidx = static_cast<uint8_t>(obj.type);
             bool collectable_pin = (tidx >= 0x4a && tidx <= 0x64);
             uint8_t energy = collectable_pin ? (obj.energy & 0x7f) : obj.energy;
@@ -758,16 +759,20 @@ void Game::render() {
     }
 
     // Debug AABB overlay — pixel boxes used by object-object collision
-    // (see collision.cpp sprite_*_units). Toggle 'B' or Collision checkbox.
-    // Player cyan, weight-7 statics red, else yellow.
-    if (renderer_->aabb_overlay_enabled() || renderer_->collision_enabled()) {
+    // (see collision.cpp sprite_*_units). Toggled by the "Collision"
+    // HUD checkbox. Player cyan, weight-7 statics red, else yellow.
+    if (renderer_->collision_enabled()) {
         for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
             const Object& obj = object_mgr_.object(i);
             if (!obj.is_active()) continue;
             if (obj.sprite > 0x80) continue;
             const SpriteAtlasEntry& e = sprite_atlas[obj.sprite];
-            int w_u = (e.w > 0 ? e.w - 1 : 0) * 16;
-            int h_u = (e.h > 0 ? e.h - 1 : 0) * 8;
+            // Visual extent: W*16 / H*8 covers all atlas pixels. The 6502
+            // collision math uses (W-1)*16 / (H-1)*8 (distance between
+            // first and last pixel centres), which leaves the last column
+            // / row outside the drawn box.
+            int w_u = e.w * 16;
+            int h_u = e.h * 8;
             uint32_t col = (i == 0) ? 0x33CCFF : 0xFFDD33;
             uint8_t idx = static_cast<uint8_t>(obj.type);
             if (idx < static_cast<uint8_t>(ObjectType::COUNT)) {
@@ -885,7 +890,7 @@ void Game::render() {
                 }
                 // Nests and pipes carry their remaining-creature count
                 // in bits 6..2 of the tertiary data byte (port of &3e54-
-                // &3e6f spawn check: ASL; CMP #8 → ≥1 creature; SBC #4
+                // &3e6f spawn check: ASL; CMP #8 -> ≥1 creature; SBC #4
                 // per spawn). Append it to the label so the overlay
                 // shows e.g. "PIPE x7" or "NEST x0".
                 if (ttype == static_cast<uint8_t>(TileType::NEST) ||
@@ -903,7 +908,7 @@ void Game::render() {
 
     // Wiring overlay: switch/transporter sources from active primaries
     // (live pos) AND tertiary entries (recover tile_y by column scan).
-    // Green = switch→door, cyan = transporter→destination. O(n*256), gated
+    // Green = switch->door, cyan = transporter->destination. O(n*256), gated
     // on the checkbox.
     {
         bool show_switches   = renderer_->switches_enabled();

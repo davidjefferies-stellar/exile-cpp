@@ -214,10 +214,10 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
         return;
     }
 
-    // &4439: tile collision → explode. The 6502's SBC #&14 / distance check
+    // &4439: tile collision -> explode. The 6502's SBC #&14 / distance check
     // isn't ported yet; we just explode on any solid-tile collision.
     if (obj.tile_collision) {
-        // Port-only: tile-collision-vs-door-substitute tile → damage door
+        // Port-only: tile-collision-vs-door-substitute tile -> damage door
         // primary. Substituted obstruction sits above the primary AABB so
         // object-vs-object touching never fires; we resolve manually.
         int sprite_h = (obj.sprite <= 0x80)
@@ -274,14 +274,14 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
     orient_bullet_to_angle(obj, angle);
 }
 
-// &42F7 update_active_grenade. Destroyed (energy==0) → duration 10;
-// fuse expiry (timer==0x60) → duration 16; else tick palette through
+// &42F7 update_active_grenade. Destroyed (energy==0) -> duration 10;
+// fuse expiry (timer==0x60) -> duration 16; else tick palette through
 // &4dd4 table and play tick sound. Player-cancel via &0bbf is TODO.
 void update_active_grenade(Object& obj, UpdateContext& ctx) {
-    // &4305-&4309: destroyed → quick explosion (duration 10).
+    // &4305-&4309: destroyed -> quick explosion (duration 10).
     if (obj.energy == 0) {
         ctx.mgr.log_diag(
-            "grenade p%d DESTROYED (fuse cut) timer=%u → duration 10",
+            "grenade p%d DESTROYED (fuse cut) timer=%u -> duration 10",
             ctx.this_slot, static_cast<unsigned>(obj.timer));
         explode_object_with_duration(obj, 0x0a);
         // Immediately seed the explosion with its first burst of
@@ -292,10 +292,10 @@ void update_active_grenade(Object& obj, UpdateContext& ctx) {
         return;
     }
 
-    // &430d-&4311: fuse expired → full explosion (duration 16).
+    // &430d-&4311: fuse expired -> full explosion (duration 16).
     if (obj.timer >= 0x60) {
         ctx.mgr.log_diag(
-            "grenade p%d FUSE_EXPIRED timer=%u → duration 16",
+            "grenade p%d FUSE_EXPIRED timer=%u -> duration 16",
             ctx.this_slot, static_cast<unsigned>(obj.timer));
         explode_object_with_duration(obj, 0x10);
         if (ctx.particles) {
@@ -421,8 +421,8 @@ void update_pistol_bullet(Object& obj, UpdateContext& ctx) {
     emit_projectile_trail(obj, ctx);
 }
 
-// &4A88 update_plasma_ball. On contact → fireball; underwater 1-in-4
-// removal; energy=0 → explode. Falls under main-loop gravity (6502
+// &4A88 update_plasma_ball. On contact -> fireball; underwater 1-in-4
+// removal; energy=0 -> explode. Falls under main-loop gravity (6502
 // doesn't touch acceleration_y here). TODO: &4aa7 particles, &4a8d
 // fireball type-match.
 void update_plasma_ball(Object& obj, UpdateContext& ctx) {
@@ -448,7 +448,7 @@ void update_plasma_ball(Object& obj, UpdateContext& ctx) {
         }
     }
 
-    // &4a9a: reduce_energy_by_one. If it reaches 0 → remove (explode).
+    // &4a9a: reduce_energy_by_one. If it reaches 0 -> remove (explode).
     if (obj.energy > 0) obj.energy--;
     if (obj.energy == 0) {
         // &4ac8 remove_plasma_ball_or_fireball adds a burst of particles.
@@ -461,7 +461,7 @@ void update_plasma_ball(Object& obj, UpdateContext& ctx) {
 }
 
 // &4101-&4154 lightning. state = signed size in [-4,+4] (pos grow, neg
-// shrink → remove at 0); timer counts down, at -25 (&412b CMP #&e7)
+// shrink -> remove at 0); timer counts down, at -25 (&412b CMP #&e7)
 // flips growth to shrink.
 void update_lightning(Object& obj, UpdateContext& ctx) {
     auto s8 = [](uint8_t u) { return static_cast<int8_t>(u); };
@@ -515,13 +515,13 @@ void update_lightning(Object& obj, UpdateContext& ctx) {
     } else {
         size = static_cast<int8_t>(size + 1);
         if (size == 0) {
-            // &4130 BEQ → remove lightning at zero size.
+            // &4130 BEQ -> remove lightning at zero size.
             obj.energy = 0;
             return;
         }
     }
 
-    // &4133-&4138: keep_within_range Y=4 → clamp to [-4, +4].
+    // &4133-&4138: keep_within_range Y=4 -> clamp to [-4, +4].
     if (size >  4) size =  4;
     if (size < -4) size = -4;
     obj.state = static_cast<uint8_t>(size);
@@ -544,11 +544,11 @@ void update_lightning(Object& obj, UpdateContext& ctx) {
     // fields are part of Object.
 }
 
-// &4698 mushroom balls. Fireball touch → coronium crystal. Touch or
-// timer-end → 1-in-2 explode and add 0x3f to red/blue mushroom timer
+// &4698 mushroom balls. Fireball touch -> coronium crystal. Touch or
+// timer-end -> 1-in-2 explode and add 0x3f to red/blue mushroom timer
 // (palette parity selects which).
 void update_red_mushroom_ball(Object& obj, UpdateContext& ctx) {
-    // &4698-&46a3: touching a fireball → convert to coronium crystal.
+    // &4698-&46a3: touching a fireball -> convert to coronium crystal.
     bool touching = (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS);
     if (touching) {
         Object& touched = ctx.mgr.object(obj.touching);
@@ -559,7 +559,7 @@ void update_red_mushroom_ball(Object& obj, UpdateContext& ctx) {
         }
     }
 
-    // &46a6-&46a9: not touching → reduce energy; return if still alive.
+    // &46a6-&46a9: not touching -> reduce energy; return if still alive.
     if (!touching) {
         if (obj.energy > 0) obj.energy--;
         if (obj.energy != 0) return;
@@ -568,7 +568,7 @@ void update_red_mushroom_ball(Object& obj, UpdateContext& ctx) {
     // &46ab-&46ad: 1-in-2 chance of exploding now.
     if (ctx.rng.next() & 0x80) return;
 
-    // &46af-&46b2: palette LSR → low bit selects red (0) or blue (1) timer.
+    // &46af-&46b2: palette LSR -> low bit selects red (0) or blue (1) timer.
     // The LSR's carry-out is the low bit of palette; passed as the +1 extra
     // to add_to_player_mushroom_timer (via ADC #&00 in play_sound_for_mushrooms).
     bool blue = (obj.palette & 0x01) != 0;
@@ -630,7 +630,7 @@ void update_red_drop(Object& obj, UpdateContext& ctx) {
     } else if (obj.tile_collision) {
         // Port-only door-tile redirect (same as common_bullet_update).
         // Substituted obstruction catches drop above the primary AABB
-        // → resolve the 100-damage hit manually.
+        // -> resolve the 100-damage hit manually.
         int sprite_h = (obj.sprite <= 0x80)
                        ? sprite_atlas[obj.sprite].h : 1;
         int sprite_h_frac = (sprite_h > 0 ? sprite_h - 1 : 0) * 8;

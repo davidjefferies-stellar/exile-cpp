@@ -428,16 +428,6 @@ bool consume_left_click(PixelRenderer& r) {
     return false;
 }
 
-void handle_keys(PixelRenderer& r) {
-    // 'B' rising-edge — toggle the AABB pixel-precise bounding box
-    // overlay drawn over each primary.
-    bool b_down = r.f.keys['B'] != 0;
-    if (b_down && !r.aabb_key_prev) {
-        r.aabb_overlay_on = !r.aabb_overlay_on;
-    }
-    r.aabb_key_prev = b_down;
-}
-
 // ---------------------------------------------------------------------
 // Grid submenu layout (constants + height helper only). The full
 // implementation lives further down; these are forward-hoisted so the
@@ -931,7 +921,6 @@ void PixelRenderer::render_activation_overlay(uint8_t anchor_x,
     fill_rect(sx_anchor, sy_anchor + tpy / 2 - 1, tpx, 2, 0xFFFFFF);
 }
 
-bool PixelRenderer::aabb_overlay_enabled() const { return aabb_overlay_on; }
 bool PixelRenderer::tile_grid_enabled()    const { return tile_outline_on; }
 bool PixelRenderer::object_tiers_enabled() const { return object_tiers_on; }
 bool PixelRenderer::map_mode_enabled()     const { return map_mode_on;     }

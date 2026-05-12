@@ -101,7 +101,7 @@ public:
 
     // Activation anchor: world point lifecycle checks measure against.
     // 6502 uses the player; Game::run optionally follows the camera in
-    // map mode. Defaults to player → matches the original.
+    // map mode. Defaults to player -> matches the original.
     void set_activation_anchor(uint8_t x, uint8_t y) {
         activation_anchor_x_ = x;
         activation_anchor_y_ = y;
@@ -140,7 +140,7 @@ public:
 
     // Tertiary data byte access. The "offset" parameter is a tertiary
     // entry index (0..n_tertiary_entries-1) post Option-B. Null landscape
-    // → read=0, write=no-op for safe pre-init access.
+    // -> read=0, write=no-op for safe pre-init access.
     void set_landscape(class Landscape& l) { landscape_ = &l; }
 
     uint8_t tertiary_data_byte(int idx) const;

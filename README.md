@@ -73,7 +73,6 @@ flags, key bindings, and the landscape-generator A/B toggle.
 | Esc            | pause                                     |
 | `;` / `'`      | save game state / load game state         |
 | `\`            | save current landscape to `exile.map`     |
-| `B`            | toggle pixel-AABB overlay                 |
 | mouse wheel    | zoom                                      |
 | right-drag     | pan camera (map mode)                     |
 | left-click     | tile info / toggle bottom-HUD checkbox    |

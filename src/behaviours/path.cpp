@@ -97,7 +97,7 @@ bool has_line_of_sight_randomized(const Object& obj,
                                   const UpdateContext& ctx,
                                   uint8_t nearest_object_distance) {
     // &3cb2-&3cba inside find_object. 6502 uses &20-fractions (1/8 tile),
-    // ours uses 1/256 tile → multiply by 0x20 to convert the cap.
+    // ours uses 1/256 tile -> multiply by 0x20 to convert the cap.
     uint8_t r = ctx.rng.next();
     uint8_t max_distance_6502 =
         static_cast<uint8_t>((r & 0x4f) ^ nearest_object_distance);
@@ -131,7 +131,7 @@ void update_target_directness(Object& obj, UpdateContext& ctx) {
 
     bool los = has_line_of_sight(obj, target_slot, /*max_tiles=*/16, ctx);
     if (los) {
-        // &3d04-&3d08: target visible → snap to DIRECTNESS_THREE.
+        // &3d04-&3d08: target visible -> snap to DIRECTNESS_THREE.
         obj.target_and_flags = static_cast<uint8_t>(
             (obj.target_and_flags & ~TargetFlags::DIRECTNESS_MASK)
             | TargetFlags::DIRECTNESS_THREE);
@@ -146,8 +146,8 @@ void update_target_directness(Object& obj, UpdateContext& ctx) {
             obj.ty = target.y.whole;
         }
     } else {
-        // &3d1d-&3d23: LOS blocked → if DIRECTNESS_TWO was set, drop
-        // DIRECTNESS_ONE (level 3 → 2). Otherwise no change this tick.
+        // &3d1d-&3d23: LOS blocked -> if DIRECTNESS_TWO was set, drop
+        // DIRECTNESS_ONE (level 3 -> 2). Otherwise no change this tick.
         if (obj.target_and_flags & TargetFlags::DIRECTNESS_TWO) {
             obj.target_and_flags = static_cast<uint8_t>(
                 obj.target_and_flags & ~TargetFlags::DIRECTNESS_ONE);

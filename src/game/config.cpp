@@ -43,7 +43,7 @@ bool parse_uint(const std::string& s, unsigned long& out) {
     }
 }
 
-// Named weapon → slot index (0..5). Keep this list tight; numeric
+// Named weapon -> slot index (0..5). Keep this list tight; numeric
 // fallback covers anything we haven't bothered to name.
 int parse_weapon(const std::string& raw) {
     std::string s = to_lower(raw);
@@ -68,7 +68,7 @@ bool parse_bool(const std::string& raw, bool& out) {
     return false;
 }
 
-// Named object type → uint8_t. We reuse object_type_name's spelling
+// Named object type -> uint8_t. We reuse object_type_name's spelling
 // (uppercase with underscores) but match case-insensitively. Unknown
 // strings fall through to a short alias table (longer/friendlier names
 // for a few types with terse debug spellings — notably the keys, which
@@ -258,6 +258,8 @@ StartupConfig load_startup_config(const std::string& path) {
             bool b = false;
             if (key == "pipe_198_190_crab" && parse_bool(value, b)) {
                 cfg.pipe_198_190_crab = b;
+            } else if (key == "spawn_initial_triax" && parse_bool(value, b)) {
+                cfg.spawn_initial_triax = b;
             }
         } else if (section == "audio") {
             bool b = false;

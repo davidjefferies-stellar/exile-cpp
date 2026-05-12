@@ -94,7 +94,7 @@ static constexpr uint8_t object_types_palette_and_pickup[] = {
 // Per-type high byte from &0446-&04aa object_types_update_routine_
 // addresses_high_table. Step 12 (&1ce3-&1cf3) reads bits 6-7 for the
 // energy=0 dispatch: 0x00 indestructible, 0x40 explode loud, 0x80
-// fireball, 0xc0 explode + squeal. Flasks are 0x05 → indestructible.
+// fireball, 0xc0 explode + squeal. Flasks are 0x05 -> indestructible.
 static constexpr uint8_t object_types_update_routine_addresses_high[] = {
     // &00-&0f
     0x0b, 0x0a, 0x88, 0x84, 0xcd, 0xcd, 0x86, 0x86,

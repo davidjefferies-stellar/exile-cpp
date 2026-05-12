@@ -24,7 +24,7 @@ ResolvedTile resolve_tile_with_tertiary(const Landscape& landscape,
     // Per-cell tertiary index, populated by Landscape::bake_tertiary_lookup
     // or loaded from the map file. The editor will eventually route
     // mutations through Landscape::set_tertiary_index_at, so this is
-    // the single authoritative mapping from (x, y) → entry index.
+    // the single authoritative mapping from (x, y) -> entry index.
     uint16_t cell_idx = landscape.tertiary_index_at(tile_x, tile_y);
     if (cell_idx == Landscape::NO_TERTIARY) {
         r.tile_and_flip = feature_tiles_table[tile_type] | (raw & TileFlip::MASK);

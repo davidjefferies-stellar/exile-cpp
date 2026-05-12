@@ -3,8 +3,8 @@
 // Decoded &0b79 colours_1_and_2_pixel_values_table.
 // Raw bytes: ca c9 e3 e9 eb ce f8 e6 cc ee 30 de ef cb fb fe.
 // Each byte interleaves two 4-bit logical colours in BBC MODE 2 layout:
-//   c1 (right pixel) = bits 0,2,4,6 → colour-value bits 0..3
-//   c2 (left pixel)  = bits 1,3,5,7 → colour-value bits 0..3
+//   c1 (right pixel) = bits 0,2,4,6 -> colour-value bits 0..3
+//   c2 (left pixel)  = bits 1,3,5,7 -> colour-value bits 0..3
 // Values below are the raw logical colours 0..15; resolve_palette applies the
 // &0b78 foreground/background mask when building the final LUT.
 const ColourPair COLOURS_1_AND_2[16] = {

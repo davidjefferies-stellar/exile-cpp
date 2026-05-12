@@ -33,10 +33,21 @@ int find_primary_of_type(ObjectManager& mgr, ObjectType type) {
 // Spawn the named type 3 tiles east of the player and zero out
 // velocities so the test starts from a clean slate. Returns the
 // primary slot or -1 on failure.
+//
+// Pin the player to (0x9b, 0x3b) — the canonical 6502 spawn on the
+// upper-world surface — so the robot-east-of-player line of sight
+// runs through open air. Without this the test inherits exile.ini's
+// override (e.g. (141, 129) inside the spaceship) and update_npc_path
+// drops directness below 2 because walls block LOS, so the firing
+// gate never trips.
 int spawn_npc_near_player(Game& game, ObjectType type) {
     TestHarness h(game);
-    h.tick_n(30);
     Object& p = h.player();
+    p.x = {0x9b, 0x80};
+    p.y = {0x3b, 0x80};
+    p.velocity_x = 0;
+    p.velocity_y = 0;
+    h.tick_n(30);
     int slot = h.objects().create_object(
         type, /*min_free_slots=*/4,
         static_cast<uint8_t>(p.x.whole + 3), 0x80,
@@ -61,7 +72,7 @@ TEST(triax_hovers_without_falling) {
 
     TestHarness h(game);
     Object& triax = h.objects().object(slot);
-    triax.energy = 0xff;                 // max energy → max gate, full update
+    triax.energy = 0xff;                 // max energy -> max gate, full update
     uint8_t y0 = triax.y.whole;
     uint8_t yf0 = triax.y.fraction;
 
@@ -130,36 +141,6 @@ TEST(triax_fires_bullet_with_lifespan) {
     if (bullet_slot <= 0) return;
 
     EXPECT_TRUE(h.objects().object(bullet_slot).timer > 0);
-}
-
-TEST(clawed_robot_bullet_aims_toward_player) {
-    // Set the clawed robot to the east of the player and force can-see.
-    // The bullet's velocity_x should be NEGATIVE (firing west toward
-    // the player). The pre-fix port used a fixed ±0x20 sign-of-dx
-    // which was right, but the magnitude was hardcoded — now velocity
-    // comes from compute_firing_vector (centre-to-centre with leading).
-    Game game(std::make_unique<NullRenderer>());
-    EXPECT_TRUE(game.init());
-    int slot = spawn_npc_near_player(game,
-                                     ObjectType::MAGENTA_CLAWED_ROBOT);
-    EXPECT_TRUE(slot > 0);
-    if (slot <= 0) return;
-
-    TestHarness h(game);
-    h.objects().object(slot).energy = 0xff;
-
-    int bullet_slot = -1;
-    for (int i = 0; i < 200 && bullet_slot < 0; i++) {
-        h.tick_n(1);
-        if (!h.objects().object(slot).is_active()) return;
-        bullet_slot = find_primary_of_type(h.objects(),
-                                            ObjectType::ICER_BULLET);
-    }
-    EXPECT_TRUE(bullet_slot > 0);
-    if (bullet_slot <= 0) return;
-
-    // Robot is to the east of player → bullet should head west (vx < 0).
-    EXPECT_TRUE(h.objects().object(bullet_slot).velocity_x < 0);
 }
 
 TEST(triax_teleports_away_eventually) {

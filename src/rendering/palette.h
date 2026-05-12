@@ -16,7 +16,7 @@ extern const ColourPair COLOURS_1_AND_2[16];
 extern const uint32_t LOGICAL_TO_RGB[16];
 
 // 4-entry LUT: lut[0]=transparent (0), lut[1..3] = c1/c2/c3 RGB.
-// is_tile true → full 16-colour range; false → low nibble masked to 0..7.
+// is_tile true -> full 16-colour range; false -> low nibble masked to 0..7.
 void resolve_palette(uint8_t palette_byte, bool is_tile, uint32_t lut[4]);
 
 // fg flag = "pixel drawn with BBC logical colour >=8". 6502 leaves bit 7

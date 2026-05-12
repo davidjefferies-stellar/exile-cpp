@@ -255,7 +255,7 @@ object types via `behavior_dispatch.cpp`. Quality varies per routine:
 | Pause toggle (`P` key) | Freeze updates without halting input/render. |
 | Map-mode HUD banner (tiers, switch presses, spawn counters) | Debug / inspection overlay, toggled via the bottom-HUD "Map mode" checkbox. |
 | Tile-click overlay (left-click) | Prints tile type, flips, obstruction, tertiary data, anchor distance. |
-| Tile grid / object-tier swatches / AABB overlay (`G`, `T`, `B`) | Visual debugging. |
+| Tile grid / object-tier swatches / AABB overlay (HUD checkboxes) | Visual debugging. |
 | Zoom + right-drag pan | Scrollable / zoomable viewport beyond the 6502's fixed 8-tile window. |
 | Viewport-width-aware spawn gate (`spawn_tertiary_object` 4-tile limit) | Compensates for our wider viewport so off-screen tertiary objects aren't thrash-spawned. |
 | Duplicate-secondary guard in `demote_to_secondary` | Prevents pool pollution from wider-viewport re-spawning loops. |

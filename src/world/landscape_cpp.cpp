@@ -56,7 +56,7 @@ static uint8_t earth_or_stone(uint8_t f1) {
 }
 
 // &1946-&19a6 slope detection. y=0 passage centre; y in [2,5] = slope
-// edge index. is_passage=false → solid tile.
+// edge index. is_passage=false -> solid tile.
 struct SlopeResult { bool is_passage; uint8_t y; };
 
 static SlopeResult slope_function(uint8_t tile_x, uint8_t tile_y) {
@@ -208,8 +208,8 @@ static uint8_t get_tile_from_algorithm_cpp(uint8_t tile_x, uint8_t tile_y, uint8
 
     // ---- &1852: vertical shafts ----
     //
-    // Six-step bit-mash: f1 → mask → halve → +x → halve → ^x → halve →
-    // ^x → +x (with the carry from the second halve).
+    // Six-step bit-mash: f1 -> mask -> halve -> +x -> halve -> ^x -> halve ->
+    // ^x -> +x (with the carry from the second halve).
     {
         const uint8_t  m0   = (f1 >> 2) & 0x30;          // f1 >> 2, mask
         const uint8_t  m1   = m0 >> 1;                    // halve (carry = 0, low bit cleared)

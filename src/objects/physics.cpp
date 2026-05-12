@@ -79,7 +79,7 @@ void apply_acceleration(Object& obj, int8_t accel_x, int8_t accel_y,
         // already past the cap — wind, explosions, etc).
         if (want_limit && make_positive(old_vel) < 0x40) {
             // &1f22-&1f29: clamp to ±0x40 with sign of OLD velocity (CPY #&00
-            // followed by invert_if_negative on A=0x40). old_vel==0 → positive.
+            // followed by invert_if_negative on A=0x40). old_vel==0 -> positive.
             new_vel = (old_vel < 0) ? -0x40 : 0x40;
         }
 

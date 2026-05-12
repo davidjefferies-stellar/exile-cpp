@@ -188,11 +188,11 @@ private:
     // Per-variant remaining-gift counters for the imps' fed-then-home
     // gift drop (port of &083a..&083e). Decremented when a fed imp
     // returns to its pipe. Initial counts from the 6502 are:
-    //   red/magenta  → 4 power pods
-    //   red/yellow   → 10 active grenades
-    //   blue/cyan    → 1 alien weapon
-    //   cyan/yellow  → 1 alien weapon
-    //   red/cyan     → 10 active grenades
+    //   red/magenta  -> 4 power pods
+    //   red/yellow   -> 10 active grenades
+    //   blue/cyan    -> 1 alien weapon
+    //   cyan/yellow  -> 1 alien weapon
+    //   red/cyan     -> 10 active grenades
     uint8_t imp_gifts_remaining_[5] = {4, 10, 1, 1, 10};
 
     // Player teleport tables (&0821-&082c). Slots 0-3 are rewritten by
@@ -209,8 +209,8 @@ private:
     // Debug overlay: text displayed in top-right, set when left-click picks a tile.
     std::string selected_tile_info_;
 
-    // Activation anchor mode: false → player position drives distance-based
-    // lifecycle checks (matches the 6502). true → camera centre drives them
+    // Activation anchor mode: false -> player position drives distance-based
+    // lifecycle checks (matches the 6502). true -> camera centre drives them
     // so scrolling the viewport activates objects near the view, not the
     // player. Toggled by 'M' with rising-edge detection.
     bool activation_from_camera_ = false;
@@ -234,11 +234,11 @@ private:
     bool test_grenades_activated_ = false;
 
     // Rising-edge state for inventory keys. Without these, holding down
-    // ENTER / S / R for more than one frame causes a pickup → drop →
+    // ENTER / S / R for more than one frame causes a pickup -> drop ->
     // pickup oscillation that locks the player out of grabbing anything.
     // The 6502 polls a per-key "just-pressed" register at &126b which is
     // implicitly edge-triggered; we replicate by remembering last frame's
-    // raw key state and only acting on a 0→1 transition.
+    // raw key state and only acting on a 0->1 transition.
     bool pickup_drop_key_prev_ = false;
     bool pickup_key_prev_      = false;
     bool drop_key_prev_        = false;
@@ -257,8 +257,8 @@ private:
     bool player_lying_down_ = false;
     bool retrieve_key_prev_    = false;
     // Edge triggers for the 6502 teleport + remember keys.
-    //   R → handle_remembering_position (&2c3c)
-    //   T → handle_teleporting          (&0cc1)
+    //   R -> handle_remembering_position (&2c3c)
+    //   T -> handle_teleporting          (&0cc1)
     bool remember_key_prev_    = false;
     bool teleport_key_prev_    = false;
     bool save_map_key_prev_    = false;
@@ -303,7 +303,7 @@ private:
     std::ofstream debug_log_;
     void flush_debug_log();
 
-    // Tertiary → primary spawn-gate radius (in tiles). Set from
+    // Tertiary -> primary spawn-gate radius (in tiles). Set from
     // exile.ini [distances] spawn_tertiary during Game::init; default
     // 4 matches the KEEP_AS_PRIMARY_FOR_LONGER slow+supported demote
     // ring so settled tertiary objects don't oscillate between
@@ -439,5 +439,6 @@ private:
     // tile_with_object_from_type / tile_with_object_from_data).
     void spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
                                uint8_t tile_x, uint8_t tile_y,
-                               int data_offset, int type_offset);
+                               int data_offset, int type_offset,
+                               uint8_t raw_tile_type);
 };

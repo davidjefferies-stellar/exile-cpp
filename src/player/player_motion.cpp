@@ -202,8 +202,8 @@ static int find_lighter_overlap(const Object& player, ObjectManager& mgr,
 
 // Physics / integration half of the player update. Takes the frame's
 // acceleration vector produced by apply_player_input and runs the chain:
-// wind → acceleration → axis-separated integration with solid-tile revert
-// → water effects → object-object touching → camera follow. Deliberately
+// wind -> acceleration -> axis-separated integration with solid-tile revert
+// -> water effects -> object-object touching -> camera follow. Deliberately
 // does not touch inputs or actions — that's apply_player_input's job.
 void Game::integrate_player_motion(Object& player,
                                    int8_t accel_x, int8_t accel_y) {
@@ -241,7 +241,7 @@ void Game::integrate_player_motion(Object& player,
     int sprite_w_frac = (sprite_w > 0 ? sprite_w - 1 : 0) * 16;
 
     // Tile collision — &2f8c-&30df via TileCollision::resolve (walks AABB
-    // edges → depth-vector → push + velocity reflect). Object-object
+    // edges -> depth-vector -> push + velocity reflect). Object-object
     // collision is a separate axis-aware pass below (&2a64 + &2bb6).
     Fixed8_8 old_x = player.x;
     Fixed8_8 old_y = player.y;
@@ -369,15 +369,14 @@ void Game::integrate_player_motion(Object& player,
         player.flags |= ObjectFlags::SUPPORTED;
     } else if (was_supported && player.velocity_y > -4 && !any_top_collision) {
         // No fresh bottom collision but were supported last frame and
-        // not rising fast. Probe down up to ~half a tile in 8-frac
-        // steps; if any sample lands on a solid pattern, keep SUPPORTED.
-        // Needed because each landing parks the player ~46 frac above
-        // the floor (bounce gap accumulates), and a single 8-frac probe
-        // misses the actual floor when the player has drifted upward.
+        // not rising fast. Probe ~24 frac (3 pixels) below the feet —
+        // covers a single bounce gap without extending so far that
+        // walking off a ledge keeps SUPPORTED set. The vy-zero clamp
+        // below means the gap doesn't accumulate across frames.
         int feet_abs_y = static_cast<int>(player.y.whole) * 256 +
                          static_cast<int>(player.y.fraction) + sprite_h_frac;
         bool found_support = false;
-        for (int probe_dy = 8; probe_dy <= 128 && !found_support; probe_dy += 8) {
+        for (int probe_dy = 8; probe_dy <= 24 && !found_support; probe_dy += 8) {
             int probe_abs_y = feet_abs_y + probe_dy;
             uint8_t probe_ty = static_cast<uint8_t>((probe_abs_y >> 8) & 0xff);
             uint8_t probe_yf = static_cast<uint8_t>(probe_abs_y & 0xff);
@@ -506,12 +505,20 @@ void Game::integrate_player_motion(Object& player,
             int sum = static_cast<int>(player_mushroom_timers_[which]) + 0x3f;
             if (sum > 0xff) sum = 0xff;
             player_mushroom_timers_[which] = static_cast<uint8_t>(sum);
-            // &4000-&4002 emit STAR_OR_MUSHROOM. 6502 emits from the
-            // player's fixed-point position (&3f7f), not the mushroom
-            // tile — uses (whole+frac) + jitter. We skip the -0x40
-            // sub-tile offset at &3f83.
+            // &4000-&4002 emit STAR_OR_MUSHROOM via &3f7f. The 6502
+            // pre-shifts the base by -0x40 in both x and y so the
+            // (y_rand=0xff) jitter spreads around the head/above-head
+            // rows instead of head/below — without it the spray sits one
+            // tile too low.
+            Object src = player;
+            int yf = int(src.y.fraction) - 0x40;
+            if (yf < 0) { yf += 256; src.y.whole--; }
+            src.y.fraction = static_cast<uint8_t>(yf);
+            int xf = int(src.x.fraction) - 0x40;
+            if (xf < 0) { xf += 256; src.x.whole--; }
+            src.x.fraction = static_cast<uint8_t>(xf);
             particles_.emit(ParticleType::STAR_OR_MUSHROOM, 1,
-                            player, rng_);
+                            src, rng_);
             // &3ff9-&3ffc: mushroom contact sound — soft poof on top of
             // the spore puff.
             static constexpr uint8_t kSoundMushroomPoof[4] = { 0x33, 0xf3, 0x1d, 0x03 };

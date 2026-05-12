@@ -18,18 +18,18 @@ struct ResolvedTile {
 };
 
 // &1715 get_tile_and_check_for_tertiary_objects. Tiles 0x00-0x08 scan
-// tertiary x-data for matching tile_x; miss → feature_tiles_table fallback.
+// tertiary x-data for matching tile_x; miss -> feature_tiles_table fallback.
 ResolvedTile resolve_tile_with_tertiary(const Landscape& landscape,
                                         uint8_t tile_x, uint8_t tile_y);
 
-// Reverse: data_offset byte → (tile_x, tile_y). Inverts 6502 arithmetic
+// Reverse: data_offset byte -> (tile_x, tile_y). Inverts 6502 arithmetic
 // data_offset = (tertiary_index + tertiary_data_offset[type]) mod 256,
 // scans column for matching tile_type. Used by Wiring overlay.
 bool resolve_data_offset_to_tile(const Landscape& landscape,
                                  uint8_t data_offset,
                                  uint8_t& out_x, uint8_t& out_y);
 
-// (tile_type, tertiary_index) → world (x,y). Validates via the forward
+// (tile_type, tertiary_index) -> world (x,y). Validates via the forward
 // resolver so duplicate-x dead entries return false. Cheaper than
 // resolve_data_offset_to_tile when the pair is already known.
 bool find_tertiary_tile(const Landscape& landscape,

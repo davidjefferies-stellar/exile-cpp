@@ -5,6 +5,7 @@
 #include "particles/particle_system.h"
 #include "audio/audio.h"
 #include "core/types.h"
+#include <algorithm>
 #include <cstdlib>
 
 namespace Behaviors {
@@ -48,7 +49,7 @@ void update_turret(Object& obj, UpdateContext& ctx) {
     uint8_t threshold = static_cast<uint8_t>((obj.energy >> 3) + 2);
     if (ctx.rng.next() >= threshold) return;
 
-    // LOS via &4f0d → &3c2a randomised cap (&3cb5), not the fixed
+    // LOS via &4f0d -> &3c2a randomised cap (&3cb5), not the fixed
     // 16-tile _80 variant — same path the other robots use.
     if (!NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
         return;
@@ -62,7 +63,7 @@ void update_turret(Object& obj, UpdateContext& ctx) {
         return; // out of range / would exceed speed cap
     }
 
-    // &27a3-&27af pivot-to-face: shot behind turret → flip and wait a
+    // &27a3-&27af pivot-to-face: shot behind turret -> flip and wait a
     // frame. vector_x==0 treated as right-facing (6502 BMI/BPL split).
     bool facing_left = obj.is_flipped_h();
     bool want_left   = (aim_vx < 0);
@@ -144,7 +145,7 @@ void update_rolling_robot(Object& obj, UpdateContext& ctx) {
 }
 
 // &4EE2 update_blue_rolling_robot. Walking type 4 (max_angle=0x20,
-// max_accel=4, weight=1, turn_prob/jump_prob=0) → ground-walking only;
+// max_accel=4, weight=1, turn_prob/jump_prob=0) -> ground-walking only;
 // gravity owns velocity_y. Only set velocity_x.
 void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
     // &4ee4: check_for_npc_stimuli (mood / phobia / interest reactions).
@@ -259,6 +260,11 @@ void update_hovering_robot(Object& obj, UpdateContext& ctx) {
             }
         }
     }
+
+    // &4885 consider_hovering_over_ground — hover robots share &487a
+    // thrust_towards_target, which calls hover-over-ground after
+    // cancel_gravity. Without this they sink into the floor.
+    NPC::consider_hovering_over_ground(obj, ctx);
 }
 
 // &481F: Clawed robot (4 variants)
@@ -334,77 +340,122 @@ void update_clawed_robot(Object& obj, UpdateContext& ctx) {
 
     // Melee damage on contact
     NPC::damage_player_if_touching(obj, ctx.mgr.player(), 15, ctx.damage_events);
+
+    // &4885 consider_hovering_over_ground — clawed robots reach the
+    // shared &487a thrust_towards_target path via &4864 consider_
+    // firing_at_player_and_move_robot, so the hover thrust applies.
+    NPC::cancel_gravity(obj);
+    NPC::consider_hovering_over_ground(obj, ctx);
 }
 
 // &43E7 update_hovering_ball / &43EB update_invisible_hovering_ball.
-// energy &= 4 keeps bit 2 as alive-marker; timer 0 means teleport-home.
-// Port-only: set_object_as_far_away → PENDING_REMOVAL (no nest teleport
-// wired yet).
-void update_hovering_ball(Object& obj, UpdateContext& ctx) {
-    // &43e7: rotate colour by frame counter. The 6502's routine uses
-    // a 4-colour table indexed by `frame_counter >> 2 & 0x03`; we
-    // approximate with a palette cycle on the low nibble.
-    obj.palette = (obj.palette & 0xf0) | ((ctx.frame_counter >> 2) & 0x07);
+// Shared body factored to take a "is visible" flag matching the 6502's
+// fall-through (visible variant runs &4dd2 colour rotate then drops
+// into the invisible entry at &43eb).
+static void update_hovering_ball_common(Object& obj, UpdateContext& ctx,
+                                        bool visible) {
+    // &1a8d-&1a97 per-object frame counter: (slot<<4 | slot) + global.
+    // Desyncs hover-ball palette cycles + timers so a swarm doesn't
+    // strobe in unison.
+    uint8_t this_fc = static_cast<uint8_t>(
+        ((ctx.this_slot << 4) | (ctx.this_slot & 0x0f)) + ctx.frame_counter);
 
-    // &43eb-&43f6: damage non-hovering-ball colliders for 3. A ball
-    // touching another ball no-ops (so swarms don't self-destruct).
+    // &43e7-&43ea visible-only colour rotation through &4dd2's 4-entry
+    // transporter_beams_palette_table at &4d82.
+    if (visible) {
+        static constexpr uint8_t kPaletteTable[4] = { 0x52, 0x63, 0x35, 0x21 };
+        obj.palette = kPaletteTable[(this_fc >> 2) & 0x03];
+    }
+
+    // &43eb-&43f6 damage touched object by 3 iff its type differs (EOR
+    // / BEQ skip). Visible vs invisible balls have different types so
+    // they DO damage each other; only same-variant pairs skip. Port of
+    // damage_object inlined since the helper only targets the player.
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
-        const Object& other = ctx.mgr.object(obj.touching);
-        bool other_is_ball =
-            other.type == ObjectType::HOVERING_BALL ||
-            other.type == ObjectType::INVISIBLE_HOVERING_BALL;
-        if (!other_is_ball) {
-            NPC::damage_player_if_touching(obj, ctx.mgr.player(), 3, ctx.damage_events);
-            // Hovering-ball impact zap. Bytes follow JSR play_sound at &13fa.
+        Object& other = ctx.mgr.object(obj.touching);
+        if (other.type != obj.type) {
+            constexpr uint8_t kDamage = 3;
+            if (obj.touching == 0) {
+                Object& player = ctx.mgr.player();
+                uint16_t hurt = std::min<uint16_t>(kDamage, player.energy);
+                player.energy = (player.energy > kDamage)
+                              ? static_cast<uint8_t>(player.energy - kDamage)
+                              : 0;
+                if (ctx.damage_events && hurt > 0) {
+                    DamageVisual ev;
+                    ev.src_x = obj.x.whole;       ev.src_y = obj.y.whole;
+                    ev.src_x_frac = obj.x.fraction; ev.src_y_frac = obj.y.fraction;
+                    ev.tgt_x = player.x.whole;    ev.tgt_y = player.y.whole;
+                    ev.tgt_x_frac = player.x.fraction; ev.tgt_y_frac = player.y.fraction;
+                    ev.tgt_slot = 0;
+                    ev.amount  = static_cast<uint8_t>(hurt);
+                    ctx.damage_events->push_back(ev);
+                }
+            } else {
+                other.energy = (other.energy > kDamage)
+                             ? static_cast<uint8_t>(other.energy - kDamage)
+                             : 0;
+                // &24ed-&24f6 sets WAS_DAMAGED only when damage>=8; 3 < 8 so skip.
+            }
+            // &43f9-&43fc impact sound.
             static constexpr uint8_t kSoundBallZap[4] = { 0x33, 0x03, 0x85, 0x02 };
             Audio::play_at(Audio::CH_ANY, kSoundBallZap, obj.x.whole, obj.y.whole);
         }
     }
 
-    // &4400-&4404: energy &= 4 — any damage that clears bit 2 leaves
-    // energy zero, so the main loop's step 12 explodes it next frame.
+    // &4400-&4404 energy &= 4 — any damage that clears bit 2 leaves
+    // energy zero, so step 12 explodes the ball next frame.
     obj.energy = static_cast<uint8_t>(obj.energy & 0x04);
 
-    // &4406-&4408: DEC timer; BNE move (unconditional). First decrement
-    // wraps 0→0xff, giving a ~256 frame lifespan. Port-only: replace
-    // set_object_as_far_away with PENDING_REMOVAL (no nest return path).
+    // &4406-&440d DEC timer; on zero call set_object_as_far_away (return
+    // to nest) and play the teleport sound. Port simplification: mark
+    // PENDING_REMOVAL — the nest creature-count restore at &1d20-&1d21
+    // isn't wired up yet, but the &440d teleport sound IS faithful.
     obj.timer--;
     if (obj.timer == 0) {
+        static constexpr uint8_t kSoundTeleport[4] = { 0x29, 0xc2, 0x37, 0xf3 };
+        Audio::play_at(Audio::CH_ANY, kSoundTeleport,
+                       obj.x.whole, obj.y.whole);
         obj.flags |= ObjectFlags::PENDING_REMOVAL;
         return;
     }
 
-    // &4415 move_hovering_npc → target the player, run NPC path, with
-    // a 1-in-8 chance of flipping to face movement.
+    // &4415 move_hovering_npc: target = player (slot 0), then a 1-in-8
+    // gated flip-to-velocity (A=#&07 -> AND rnd, 3-bit mask).
+    obj.target_and_flags = (obj.target_and_flags & ~0x1fu);
     if ((ctx.rng.next() & 0x07) == 0) {
         NPC::face_movement_direction(obj);
     }
 
-    // &487a thrust_towards_target: magnitude 0x1c, max-accel 4,
-    // 1-in-2 probability (threshold 0x80). Hovering balls are called
-    // out in the 6502 as moving "twice as quickly as other flying
-    // NPCs" — that's what the 0x1c / 4 combo produces.
+    // &487a thrust_towards_target: magnitude 0x1c, max-accel 4, 1-in-2
+    // probability. Comment in the 6502 calls hover balls out as moving
+    // "twice as quickly as other flying NPCs" — the 0x1c/4 combo.
     NPC::move_towards_target_with_probability(obj, ctx, 0x1c, 4, 0x80);
 
-    // &4883: cancel gravity for hovering NPCs.
+    // &4883 DEC acceleration_y — cancel gravity for hovering NPCs.
     NPC::cancel_gravity(obj);
 
-    // &4888: emit a jetpack thrust particle under the ball so it looks
-    // like it's hovering on a puff of exhaust.
+    // &4885 consider_hovering_over_ground — every-4-frame upward thrust
+    // scaled by ground proximity, then dampens vy. Without this the
+    // ball would gradually settle onto tiles instead of hovering.
+    NPC::consider_hovering_over_ground(obj, ctx);
+
+    // &4888 add_jetpack_thrust_particles — visible exhaust puff.
     if (ctx.particles) {
         ctx.particles->emit(ParticleType::JETPACK, 1, obj, ctx.rng);
     }
 }
 
-// &43EB invisible variant. 6502 JMPs past &43ea rotate; we suppress
-// visibility by clearing palette bit 7 — still solid, drawn as SPRITE_NONE.
+void update_hovering_ball(Object& obj, UpdateContext& ctx) {
+    update_hovering_ball_common(obj, ctx, /*visible=*/true);
+}
+
+// &43EB entry point — invisible variant skips the &43e7 colour rotate
+// (JSR is at &43e7, the BMI gate sits at &43eb so the invisible entry
+// falls in past the rotate). Visibility bit 7 of palette stays clear
+// from init_object_from_type.
 void update_invisible_hovering_ball(Object& obj, UpdateContext& ctx) {
-    update_hovering_ball(obj, ctx);
-    // Skip the palette cycle that the visible variant does — keep the
-    // palette at whatever init_object_from_type gave it so
-    // this-object-visibility bit 7 stays clear.
-    obj.palette = object_types_palette_and_pickup[
-        static_cast<uint8_t>(ObjectType::INVISIBLE_HOVERING_BALL)] & 0x7f;
+    update_hovering_ball_common(obj, ctx, /*visible=*/false);
 }
 
 } // namespace Behaviors

@@ -61,8 +61,8 @@ inline PossibleLeafResult process_possible_leaf(uint8_t tile_y,
         r.tile_flip ^= TileFlip::VERTICAL;
     }
 
-    // 3) Palette. &23f6 BITs the ORIGINAL tile_flip: V clear → 0xb1
-    // (green); V set → 0xbb/0xbc depending on a y bit.
+    // 3) Palette. &23f6 BITs the ORIGINAL tile_flip: V clear -> 0xb1
+    // (green); V set -> 0xbb/0xbc depending on a y bit.
     if (tile_flip & TileFlip::VERTICAL) {
         r.palette = (tile_y & 1) ? 0xbc : 0xbb;
     } else {
@@ -73,7 +73,7 @@ inline PossibleLeafResult process_possible_leaf(uint8_t tile_y,
 
 // &239c calculate_palette_for_tile. Values 0..6 are procedural by (x,y,
 // flip); rest used as-is. Case 0x05 leaf mutates tile_type (POSSIBLE_LEAF
-// → SPACE when removed) and tile_flip — both by-ref.
+// -> SPACE when removed) and tile_flip — both by-ref.
 inline uint8_t resolve_tile_palette(uint8_t& tile_type, uint8_t tile_x,
                                     uint8_t tile_y, uint8_t& tile_flip) {
     uint8_t val = tiles_palette_table[tile_type & 0x3f];
@@ -109,11 +109,11 @@ inline uint8_t resolve_tile_palette(uint8_t& tile_type, uint8_t tile_x,
                 a = static_cast<uint8_t>((a << 1) | c);
                 c = new_c;
             }
-            // SBC tile_y: A = A - tile_y - (1 - c). Borrow → new c=0.
+            // SBC tile_y: A = A - tile_y - (1 - c). Borrow -> new c=0.
             int16_t sub = static_cast<int16_t>(a) - tile_y - (1 - c);
             a = static_cast<uint8_t>(sub);
             c = (sub < 0) ? 0 : 1;
-            // ROR A through carry: bit 0 → new c, old c → bit 7.
+            // ROR A through carry: bit 0 -> new c, old c -> bit 7.
             {
                 uint8_t new_c = a & 1;
                 a = static_cast<uint8_t>((a >> 1) | (c << 7));

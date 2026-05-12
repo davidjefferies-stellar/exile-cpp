@@ -193,8 +193,8 @@ public:
                                     uint32_t /*fg*/, uint32_t /*bg*/) {}
 
     // AABB overlay for object-object collision. Dimensions in 6502
-    // sub-tile units (1/256 tile = 1/8 sprite pixel). Gated by 'B'.
-    virtual bool aabb_overlay_enabled() const { return false; }
+    // sub-tile units (1/256 tile = 1/8 sprite pixel). Gated by the
+    // "Collision" HUD checkbox.
     virtual void render_aabb(Fixed8_8 /*world_x*/, Fixed8_8 /*world_y*/,
                              int /*w_units*/, int /*h_units*/,
                              uint32_t /*rgb*/) {}
@@ -223,7 +223,7 @@ public:
     virtual bool sprite_viewer_enabled() const { return false; }
     // "Health" checkbox — when on, Game draws a small horizontal bar
     // above every active primary (filled width = obj.energy / 0xff,
-    // green→red gradient) so creature HP and projectile lifespan are
+    // green->red gradient) so creature HP and projectile lifespan are
     // both visually inspectable.
     virtual bool health_bars_enabled() const { return false; }
     // Damage — floats damage amounts above victims and rings each

@@ -137,7 +137,7 @@ constexpr uint32_t kDebugToneInc =
 #endif
 bool g_open = false;
 
-// 8-bit freq envelope → phase increment. 5-octave geometric sweep over
+// 8-bit freq envelope -> phase increment. 5-octave geometric sweep over
 // SN76489 range: freq_hz(byte) = 125 * 2^(byte * 5 / 255).
 constexpr uint64_t phase_inc_for_byte(unsigned byte_value) {
     const uint64_t b = byte_value & 0xff;
@@ -166,7 +166,7 @@ struct PhaseTable {
 };
 constexpr PhaseTable kPhaseIncTable = PhaseTable{};
 
-// &1345-&135f freq envelope → SN76489 noise control register.
+// &1345-&135f freq envelope -> SN76489 noise control register.
 // Byte-for-byte port so bytes near 0xff hit slow/rumble mode.
 // Bottom 3 bits drive chip: bit2=white/periodic, bits1-0=rate.
 constexpr uint8_t noise_reg_for_byte(unsigned byte_value) {
@@ -413,7 +413,7 @@ void play(int channel_hint, const uint8_t params[4]) {
     ch.freq.loops_remaining = 0;
     ch.freq.loop_offset     = 0;
 
-    // play() (no source) → no distance attenuation.
+    // play() (no source) -> no distance attenuation.
     ch.volume_reduction = 0;
 
     ch.phase_inc = kPhaseIncTable.v[ch.freq.value];
@@ -434,7 +434,7 @@ void play_at(int channel_hint, const uint8_t params[4],
 
     // 6502 &1415-&141a get_object_distance_from_screen_centre + the
     // CMP #&10 / BCS leave gate. Chebyshev distance in tiles; bigger
-    // than 16 → don't play at all. The screen-centre / listener
+    // than 16 -> don't play at all. The screen-centre / listener
     // position tracks the player (camera follows).
     const int dx = static_cast<int8_t>(src_x - g_listener_x);
     const int dy = static_cast<int8_t>(src_y - g_listener_y);

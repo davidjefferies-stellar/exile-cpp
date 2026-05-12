@@ -60,7 +60,7 @@ void apply_surface_wind(Object& obj) {
         // invert_if_negative.
         int desired = negative ? strength : -strength;
 
-        // &3f94 → &31f6: delta = desired - current; |delta| >>= Y;
+        // &3f94 -> &31f6: delta = desired - current; |delta| >>= Y;
         // clamp to ±max_acceleration (0x0c); current += delta.
         int current = *axes[i].velocity;
         int delta = desired - current;
@@ -243,7 +243,7 @@ void apply_tile_environment(Object& obj,
     } else if (tile_type == static_cast<uint8_t>(TileType::WATER)) {
         // &3fa8-&3fb1: tile flip bits select the water-current vector.
         // The 6502 rolls the flip pair into the low 2 bits via ASL/ROL/ROL.
-        // Equivalent direct mapping: HORIZONTAL=0x80→2, VERTICAL=0x40→1, both→3.
+        // Equivalent direct mapping: HORIZONTAL=0x80->2, VERTICAL=0x40->1, both->3.
         int flip_idx = ((tile_flip & TileFlip::HORIZONTAL) ? 2 : 0) |
                        ((tile_flip & TileFlip::VERTICAL)   ? 1 : 0);
         uint8_t data = kWaterVelocitiesTable[flip_idx];
@@ -256,7 +256,7 @@ void apply_tile_environment(Object& obj,
 
     // 6502 distinguishes fully vs partially submerged via &20
     // this_object_waterline (0xff = fully). Approximate with >=4 tiles
-    // below waterline → +1 weight at &3f61.
+    // below waterline -> +1 weight at &3f61.
     uint8_t wy = Water::get_waterline_y(obj.x.whole);
     bool in_water    = obj.y.whole >= wy;
     bool fully_under = obj.y.whole >= static_cast<uint8_t>(wy + 4);

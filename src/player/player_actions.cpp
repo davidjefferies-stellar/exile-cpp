@@ -103,7 +103,7 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     bool wants_walk = inp.move_left || inp.move_right;
 
     // State-change log — only fires when one of the gate inputs flips
-    // so the log shows the timeline of grounded→airborne, walk→fly etc.
+    // so the log shows the timeline of grounded->airborne, walk->fly etc.
     bool any_change =
         supported    != walk_log_supported_prev_ ||
         walk_counter != walk_log_counter_prev_   ||
@@ -179,7 +179,7 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         int diff = target_vx - static_cast<int>(player.velocity_x);
         int sign = (diff < 0) ? -1 : 1;
         int abs_diff = (diff < 0) ? -diff : diff;
-        // &3208-&320c: LSR (weight+1) times, ROL once → divide by 2^weight.
+        // &3208-&320c: LSR (weight+1) times, ROL once -> divide by 2^weight.
         abs_diff >>= player_weight;
         if (abs_diff > max_accel) abs_diff = max_accel;
         int8_t signed_accel = static_cast<int8_t>(sign * abs_diff);
@@ -235,7 +235,7 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     }
 
     // Whistles: &2cac whistle_one (low note only) and &2c99 whistle_two
-    // (high note at &2c9e + shared low at &2cb4 → two-tone "tweet"). Both
+    // (high note at &2c9e + shared low at &2cb4 -> two-tone "tweet"). Both
     // gated on "_collected" flags. Whistle two also stamps whistle_two_
     // activating_object = player slot.
     static constexpr uint8_t kSoundWhistleHigh[4] = { 0xb0, 0x24, 0xb6, 0xe2 };
@@ -251,7 +251,7 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     }
 
     // Aim control — port of &30fc + the I/K/O handlers at &3120-&3129.
-    // Port deviation: fixed-step instead of the 6502's accel→velocity→
+    // Port deviation: fixed-step instead of the 6502's accel->velocity->
     // angle chain; clamped to ±0x3f.
     {
         constexpr int AIM_STEP = 2;
@@ -283,8 +283,8 @@ void Game::apply_player_input(Object& player, const InputState& inp,
                 : player;
             // emit_directed computes the particle's velocity FROM
             // player_aiming_angle_with_flip (port of &330f), matching
-            // the 6502's create_aim_particle (&312b → calculate_firing_
-            // vector_from_aiming_angle → add_particle) exactly.
+            // the 6502's create_aim_particle (&312b -> calculate_firing_
+            // vector_from_aiming_angle -> add_particle) exactly.
             uint8_t angle_with_flip = player.is_flipped_h()
                 ? static_cast<uint8_t>(0x80 - static_cast<int8_t>(player_aim_angle_))
                 : player_aim_angle_;
@@ -296,7 +296,7 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     // &2d33 handle_firing + &2d36-&2d3b branch: firing while holding sets
     // player_object_fired = held_slot (one-frame flag read by doors /
     // transporters / RCD) instead of launching a bullet. SPACE is
-    // repeat=no in the &0d action table — edge-gate on 0→1.
+    // repeat=no in the &0d action table — edge-gate on 0->1.
     bool fire_down = inp.fire;
     bool fire_edge = fire_down && !fire_key_prev_;
     fire_key_prev_ = fire_down;
@@ -411,8 +411,8 @@ void Game::apply_player_input(Object& player, const InputState& inp,
 
         // &311d player_aiming_angle_with_flip: mirror the aim angle
         // across the vertical axis when facing left. Bit 7 is preserved
-        // by the EOR #&7f (only bits 0-6 flip), then +1 so 0x00 → 0x80
-        // exactly (right → left).
+        // by the EOR #&7f (only bits 0-6 flip), then +1 so 0x00 -> 0x80
+        // exactly (right -> left).
         uint8_t angle = player_aim_angle_;
         if (player.is_flipped_h()) {
             angle = static_cast<uint8_t>((angle ^ 0x7f) + 1);
@@ -529,7 +529,7 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         }
     }
 
-    // R → handle_remembering_position (&2c3c). Records the player's
+    // R -> handle_remembering_position (&2c3c). Records the player's
     // current tile position into the next teleport slot and rotates the
     // cursor, so pressing R up to 4 times stores 4 recall points. Also
     // increments the remembered count (capped at 4).
@@ -540,7 +540,7 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         handle_remembering_position(player);
     }
 
-    // T → handle_teleporting (&0cc1). Pops the most recent remembered
+    // T -> handle_teleporting (&0cc1). Pops the most recent remembered
     // position (or the fallback at slot 4) and starts the 32-frame
     // teleport animation that step-8 of update_objects drives. The
     // method early-outs if the player is currently holding an object

@@ -33,12 +33,12 @@ bool has_line_of_sight_randomized(
     const UpdateContext& ctx,
     uint8_t nearest_object_distance = 0xff);
 
-// &3cf6 consider_if_npc_can_see_target. 16-frame cadence: LOS clear →
-// directness=3; blocked → -1 level. Updates tx/ty when target visible.
+// &3cf6 consider_if_npc_can_see_target. 16-frame cadence: LOS clear ->
+// directness=3; blocked -> -1 level. Updates tx/ty when target visible.
 void update_target_directness(Object& obj, UpdateContext& ctx);
 
 // &3d26 consider_updating_npc_path. Dispatches on directness level: 3/2
-// → exact target, 1 → jittered, 0 → wander. Combined with
+// -> exact target, 1 -> jittered, 0 -> wander. Combined with
 // move_towards_target_with_probability to produce per-axis velocity.
 void update_npc_path(Object& obj, UpdateContext& ctx);
 

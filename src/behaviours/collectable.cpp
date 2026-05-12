@@ -95,7 +95,7 @@ void update_inactive_grenade(Object& obj, UpdateContext& ctx) {
     // can pick up and pocket it safely.
     if (obj.state == 0) return;
 
-    // &416b-&416d: was held before, now dropped → promote to
+    // &416b-&416d: was held before, now dropped -> promote to
     // ACTIVE_GRENADE. change_object_type refreshes sprite + palette
     // from the per-type tables. update_active_grenade takes over from
     // here (countdown + explosion).
@@ -194,7 +194,7 @@ void update_full_flask(Object& obj, UpdateContext& ctx) {
     bool start_emptying = false;
 
     // &43b0-&43b5: touching something, and still moving fast enough
-    // (max(|vx|,|vy|) >= 0x0a) → disturbed.
+    // (max(|vx|,|vy|) >= 0x0a) -> disturbed.
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
         uint8_t max_vel = static_cast<uint8_t>(
             std::max(std::abs(static_cast<int>(obj.velocity_x)),
@@ -228,7 +228,7 @@ void update_full_flask(Object& obj, UpdateContext& ctx) {
     }
 
     // &43d3-&43db emit PARTICLE_FLASK upward (angle=&c0). Count reduced
-    // 8→2/frame: our 256-slot pool doesn't evict like the 6502's 32-slot
+    // 8->2/frame: our 256-slot pool doesn't evict like the 6502's 32-slot
     // one, so 2×16 matches the 6502's pool-capped peak of ~32 live.
     if (ctx.particles) {
         ctx.particles->emit(ParticleType::FLASK, 2, obj, ctx.rng,

@@ -55,7 +55,7 @@ inline int floor_div_256(int v) {
     return (v >= 0) ? (v >> 8) : -((-v + 255) >> 8);
 }
 
-// Tile type (0-0x3f) → atlas sprite_id. Bit 7 XORs flip_v (matches the
+// Tile type (0-0x3f) -> atlas sprite_id. Bit 7 XORs flip_v (matches the
 // original's tiles_sprite_and_y_flip_table at &04ab). Defined in
 // pixel_renderer.cpp; declared here so the debug TU can index it for
 // palette previews and the sprite-viewer cross-reference panel.
@@ -95,7 +95,6 @@ public:
     void render_debug_marker(uint8_t world_x, uint8_t world_y,
                              uint32_t rgb, const char* label) override;
     void render_activation_overlay(uint8_t anchor_x, uint8_t anchor_y) override;
-    bool aabb_overlay_enabled() const override;
     void render_aabb(Fixed8_8 world_x, Fixed8_8 world_y,
                      int w_units, int h_units, uint32_t rgb) override;
     bool tile_grid_enabled()    const override;
@@ -165,7 +164,7 @@ public:
     bool object_tiers_on = false;    // "Object tiers" checkbox
     bool map_mode_on     = false;    // "Map mode" checkbox
     bool debug_text_on   = false;    // "Debug" checkbox
-    bool switches_on     = false;    // "Switches" — green switch→door wires
+    bool switches_on     = false;    // "Switches" — green switch->door wires
     bool transports_on   = false;    // "Transports" — cyan transporter wires
     bool collision_on    = false;    // "Collision" — solid-region shading
     bool editor_on       = false;    // "Edit" — left-click paints tile
@@ -193,8 +192,6 @@ public:
     // for ~30 frames so the user sees the click registered).
     int  last_event_clicked      = -1;
     int  event_flash_remaining   = 0;
-    bool aabb_overlay_on = false;    // keyboard-toggled via 'B'
-    bool aabb_key_prev = false;
     // Highlighted tile — drawn only while the tile grid is on.
     bool has_highlight = false;
     uint8_t highlight_x = 0;
@@ -325,9 +322,6 @@ namespace pr_debug {
     // Returns true iff the click at (r.f.x, r.f.y) was absorbed by a
     // debug widget; caller forwards unconsumed clicks as a world click.
     bool consume_left_click(PixelRenderer& r);
-
-    // 'B' rising-edge toggle for the AABB overlay.
-    void handle_keys(PixelRenderer& r);
 
     // Top-right text overlay drawn from end_frame.
     void render_overlay_text(PixelRenderer& r);

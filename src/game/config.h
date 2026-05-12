@@ -78,7 +78,7 @@ struct StartupConfig {
     // The pseudo-6502 reference (landscape.cpp) and the native C++
     // rewrite (landscape_cpp.cpp) are intended to produce byte-identical
     // maps; this toggle exists for A/B testing and as a safety net while
-    // the rewrite settles. Default false → reference implementation.
+    // the rewrite settles. Default false -> reference implementation.
     bool use_cpp_landscape = false;
 
     // [creatures] — pre-release crab swap. Default true re-types the
@@ -86,6 +86,13 @@ struct StartupConfig {
     // EXILE1 sprite is reachable in-game. Set false to keep the original
     // imp spawn.
     bool pipe_198_190_crab = true;
+
+    // [creatures] — pre-place Triax at (&99, &3b) in slot 1 so the frame-1
+    // intro (absorb + teleport via the adjacent destinator) plays out as
+    // it does in the 6502 ROM (&0860 initial object table). Set false to
+    // start with no Triax in the world — useful when level-walking the
+    // upper world without the intro snatching the player on frame 1.
+    bool spawn_initial_triax = true;
 
     // [debug] stress_test — when true, scatter one of every animated
     // creature type in a grid around the player's spawn at startup. The

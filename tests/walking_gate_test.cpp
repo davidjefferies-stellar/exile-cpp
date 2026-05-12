@@ -53,7 +53,7 @@ TEST(walking_gate_increments_and_caps_in_air) {
     p.flags = 0;
     p.state = 0;
 
-    // First tick: SUPPORTED clears, counter goes 0 → 1.
+    // First tick: SUPPORTED clears, counter goes 0 -> 1.
     h.tick_n(1);
     EXPECT_EQ(static_cast<int>(h.player().state & kCounterMask), 1);
 

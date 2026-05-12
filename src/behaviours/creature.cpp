@@ -280,28 +280,28 @@ void update_fluffy(Object& obj, UpdateContext& ctx) {
 // Per-type imp tables, indexed by (type − RED_MAGENTA_IMP): projectile
 // &319d, minimum_energy &31a2, food &317f, gift &31a7.
 static constexpr uint8_t imp_projectile_type[5] = {
-    0x34, // red/magenta   → BLUE_MUSHROOM_BALL
-    0x17, // red/yellow    → RED_BULLET
-    0x58, // blue/cyan     → CORONIUM_CRYSTAL
-    0x33, // cyan/yellow   → RED_MUSHROOM_BALL
-    0x33, // red/cyan      → RED_MUSHROOM_BALL
+    0x34, // red/magenta   -> BLUE_MUSHROOM_BALL
+    0x17, // red/yellow    -> RED_BULLET
+    0x58, // blue/cyan     -> CORONIUM_CRYSTAL
+    0x33, // cyan/yellow   -> RED_MUSHROOM_BALL
+    0x33, // red/cyan      -> RED_MUSHROOM_BALL
 };
 static constexpr uint8_t imp_minimum_energy[5] = {
     0x0a, 0x50, 0x46, 0x14, 0x13,
 };
 static constexpr uint8_t imp_food_type[5] = {
-    0x11, // red/magenta   → WASP
-    0x2f, // red/yellow    → WHITE_YELLOW_BIRD
-    0x10, // blue/cyan     → PIRANHA
-    0x34, // cyan/yellow   → BLUE_MUSHROOM_BALL
-    0x30, // red/cyan      → RED_MAGENTA_BIRD
+    0x11, // red/magenta   -> WASP
+    0x2f, // red/yellow    -> WHITE_YELLOW_BIRD
+    0x10, // blue/cyan     -> PIRANHA
+    0x34, // cyan/yellow   -> BLUE_MUSHROOM_BALL
+    0x30, // red/cyan      -> RED_MAGENTA_BIRD
 };
 static constexpr uint8_t imp_gift_type[5] = {
-    0x4b, // red/magenta   → POWER_POD
-    0x12, // red/yellow    → ACTIVE_GRENADE
-    0x47, // blue/cyan     → ALIEN_WEAPON
-    0x47, // cyan/yellow   → ALIEN_WEAPON
-    0x12, // red/cyan      → ACTIVE_GRENADE
+    0x4b, // red/magenta   -> POWER_POD
+    0x12, // red/yellow    -> ACTIVE_GRENADE
+    0x47, // blue/cyan     -> ALIEN_WEAPON
+    0x47, // cyan/yellow   -> ALIEN_WEAPON
+    0x12, // red/cyan      -> ACTIVE_GRENADE
 };
 
 // NPC_WAS_FED bit of objects_state (&11 in zp). Set by feed-detection
@@ -403,7 +403,7 @@ void update_imp(Object& obj, UpdateContext& ctx) {
             if (landed) {
                 // &452b-&4531: gift-spawn is fed-gated and counter-gated.
                 // 6502 DECs first then BMI; we check >0 then DEC, same
-                // arithmetic outcome (initial N → N drops).
+                // arithmetic outcome (initial N -> N drops).
                 if ((obj.state & kNPC_WAS_FED) &&
                     ctx.imp_gifts_remaining &&
                     ctx.imp_gifts_remaining[tidx] > 0) {
@@ -548,7 +548,7 @@ void update_imp(Object& obj, UpdateContext& ctx) {
         NPC::damage_player_if_touching(obj, ctx.mgr.player(), 5, ctx.damage_events);
     }
 
-    // &45c7-&45d3 find_a_target_and_fire (A=8 → fires when rng<=4, ~2%/frame).
+    // &45c7-&45d3 find_a_target_and_fire (A=8 -> fires when rng<=4, ~2%/frame).
     // Range-gated to 16 tiles per axis via &335a CMP #&06; skip when already
     // touching the player so a hugged imp doesn't shoot itself.
     bool not_at_target = (obj.touching != 0);
@@ -646,7 +646,7 @@ void update_red_frogman(Object& obj, UpdateContext& ctx) {
     NPC::enforce_minimum_energy(obj, 0x64);
 }
 
-// &4477: Green/cyan frogman — 14 touch damage (&447e LDA#&07; ASL → 14).
+// &4477: Green/cyan frogman — 14 touch damage (&447e LDA#&07; ASL -> 14).
 // Also adds to player mushroom timer (&447b JSR add_to_player_mushroom_timer).
 void update_green_frogman(Object& obj, UpdateContext& ctx) {
     frogman_common(obj, ctx, 14);
@@ -825,7 +825,7 @@ void update_piranha_or_wasp(Object& obj, UpdateContext& ctx) {
     }
 
     // &4f5e-&4f65: sprite frame from velocity magnitude mod 0x0c, shift
-    // right twice → 0..2. change_object_sprite_to_base_plus_A looks up
+    // right twice -> 0..2. change_object_sprite_to_base_plus_A looks up
     // object_types_sprite[type] (WASP_ONE or PIRANHA_ONE) and adds the
     // frame, giving the three animation sprites for each creature.
     uint8_t off = NPC::update_sprite_offset_using_velocities(obj, 0x0c);
@@ -909,10 +909,10 @@ static void update_bird_common(Object& obj, UpdateContext& ctx) {
     // &4654-&4659 visibility on damage. WAS_DAMAGED flag approximates the
     // 6502's &253c check; invisible birds read obj.state to reveal.
     if (obj.flags & ObjectFlags::WAS_DAMAGED) {
-        obj.state = 0x80;   // non-zero → visible
+        obj.state = 0x80;   // non-zero -> visible
     }
 
-    // &465b-&4668 sprite cycle: |v|%0x14 >> 2, with 4→2 so the 4-frame
+    // &465b-&4668 sprite cycle: |v|%0x14 >> 2, with 4->2 so the 4-frame
     // wing cycle dips through the middle pose on fast movement.
     {
         uint8_t off = NPC::update_sprite_offset_using_velocities(obj, 0x14);
@@ -1059,7 +1059,7 @@ static void triax_teleport_away(Object& obj) {
 }
 
 void update_triax(Object& obj, UpdateContext& ctx) {
-    // &4704-&4710 absorb destinator → re-arm tertiary &9d so it
+    // &4704-&4710 absorb destinator -> re-arm tertiary &9d so it
     // respawns at (0x64, 0xd6) in the lab, then teleport away.
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
         Object& target = ctx.mgr.object(obj.touching);
@@ -1072,14 +1072,14 @@ void update_triax(Object& obj, UpdateContext& ctx) {
     }
 
     Mood::update_mood(obj, ctx);
-    NPC::update_npc_path(obj, ctx);  // 16-frame LOS raycast → directness
+    NPC::update_npc_path(obj, ctx);  // 16-frame LOS raycast -> directness
 
     // &4712-&4718 no-LOS give-up: 1-in-256 frames when directness < 2.
     uint8_t lvl = NPC::directness_level(obj);
     if (lvl < 2) {
         if (ctx.rng.next() == 0) { triax_teleport_away(obj); return; }
     } else {
-        // &471a-&4724: energy < 0x40 → 1-in-64 teleport ((rnd & 0xfc) == 0).
+        // &471a-&4724: energy < 0x40 -> 1-in-64 teleport ((rnd & 0xfc) == 0).
         if (obj.energy < 0x40 && (ctx.rng.next() & 0xfc) == 0) {
             triax_teleport_away(obj); return;
         }
@@ -1087,7 +1087,7 @@ void update_triax(Object& obj, UpdateContext& ctx) {
 
     // &4726-&4730: 1-in-32 grenade else icer. consider_firing_at_player_
     // and_move_triax grants +2 energy per update, then flows into
-    // move_hovering_npc (&486e) → thrust_towards_target (&487a) which
+    // move_hovering_npc (&486e) -> thrust_towards_target (&487a) which
     // does DEC acceleration_y at &4883 — Triax is a flying enemy.
     NPC::cancel_gravity(obj);
     const Object& player = ctx.mgr.player();
@@ -1117,7 +1117,7 @@ void update_triax(Object& obj, UpdateContext& ctx) {
         }
     }
 
-    // &4733-&473d: energy < 5 → 1-in-4 teleport (faithful: bit 0 of OR'd
+    // &4733-&473d: energy < 5 -> 1-in-4 teleport (faithful: bit 0 of OR'd
     // randoms covers it; we use a simpler ((rnd & 0xc0) == 0) gate).
     if (obj.energy < 5 && (ctx.rng.next() & 0xc0) == 0) {
         triax_teleport_away(obj); return;

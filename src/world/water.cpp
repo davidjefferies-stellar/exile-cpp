@@ -40,7 +40,7 @@ void set_desired_y(int range, uint8_t y) {
 // Port of &2626-&265b. For each range, compute the signed step toward
 // desired_y (high byte of a 16-bit SBC of (desired, 0x18) - (y, frac)),
 // add the ±2 cycle, clamp to ±2 via keep_within_range, then ADC into
-// y_fraction with carry → INC y, pre-clamp negative → DEC y.
+// y_fraction with carry -> INC y, pre-clamp negative -> DEC y.
 void update_waterlines(uint8_t frame_counter) {
     uint8_t delta = (frame_counter & 0x20) ? 0xfe : 0x02;  // signed ±2
     for (int x = 0; x < 4; x++) {
@@ -56,7 +56,7 @@ void update_waterlines(uint8_t frame_counter) {
         int8_t step = int8_t(uint8_t(s));
         if (step >  2) step =  2;
         if (step < -2) step = -2;
-        // ADC y_fraction; carry → INC y. PLP+BPL: pre-clamp N → DEC y.
+        // ADC y_fraction; carry -> INC y. PLP+BPL: pre-clamp N -> DEC y.
         int sum = int(uint8_t(step)) + int(g_y_fraction[x]);
         g_y_fraction[x] = uint8_t(sum & 0xff);
         if (sum > 0xff)   g_y[x]++;
@@ -101,8 +101,8 @@ static int8_t seven_eighths(int8_t v) {
 }
 
 // Port of &2f01-&2f8a apply_buoyancy_loop + the &2f85 four-frame damping.
-// Total velocity_y DECs when fully submerged: weight 0/1→5, 2→4, 3→3,
-// 4→2, 5+→0.
+// Total velocity_y DECs when fully submerged: weight 0/1->5, 2->4, 3->3,
+// 4->2, 5+->0.
 void apply_water_effects(const Landscape& landscape, Object& obj,
                          uint8_t weight, bool every_four_frames) {
     int sprite_h_units = (obj.sprite <= 0x80)

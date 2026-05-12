@@ -106,7 +106,7 @@ void exercise_projectile_weapon(uint8_t weapon_type,
     //        running out, so force energy directly. Object-touch would
     //        mutate it to FIREBALL instead, which is plasma's special
     //        non-explosive impact.
-    //    Either path lands in object_update.cpp step 12 (energy=0 →
+    //    Either path lands in object_update.cpp step 12 (energy=0 ->
     //    explode_object_with_duration), which is what we assert.
     if (bullet.type == expected_bullet) {
         if (expected_bullet == ObjectType::PLASMA_BALL) {
