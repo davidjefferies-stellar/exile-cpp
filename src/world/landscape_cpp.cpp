@@ -39,15 +39,28 @@ static uint8_t calc_f1(uint8_t x, uint8_t y) {
 }
 
 // ============================================================================
-// Pick from kTilesTable with bounds check. Port of &18da.
+// Pick from kTilesTable with bounds check. Port of &18da
+// leave_with_tile_from_table:
+//   &18da SEC
+//   &18db LDA &114f,Y ; earth_tiles_rotation_table
+//   &18de RTS
+// (Bounds check is port-only; 6502 trusts caller-set Y.)
 // ============================================================================
 static uint8_t tile_from_table(uint8_t index) {
     return (index < sizeof(kTilesTable)) ? kTilesTable[index] : kTileSpace;
 }
 
 // ============================================================================
-// Earth or stone fill. f1 == 0 always means EARTH; otherwise pick one
-// of eight variants from bits 4..1 of f1. Port of &191c.
+// Earth or stone fill. Port of &191c leave_with_earth_or_stone:
+//   &191c LDA &9d ; f1_tile_xy   ; zero if filling sides or bottom of world
+//   &191e LSR / LSR / LSR        ; 84218421 -> ...84218
+//   &1921 AND #&0e               ;          -> ....421.
+//   &1923 LSR                    ;          -> .....421
+//   &1924 ADC #&01               ; offset in [&01,&08]
+//   &1926 TAY
+//   &1927 JMP &18da              ; fall through to table lookup
+// f1 == 0 always means EARTH; otherwise pick one of eight variants from
+// bits 4..1 of f1.
 // ============================================================================
 static uint8_t earth_or_stone(uint8_t f1) {
     if (f1 == 0) return kTileEarth;

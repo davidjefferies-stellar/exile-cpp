@@ -107,6 +107,7 @@
 
     <!-- Game / game -->
     <ClCompile Include="src\game\game.cpp">                       <Filter>Game\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\game_debug.cpp">                 <Filter>Game\game</Filter> </ClCompile>
     <ClCompile Include="src\game\config.cpp">                     <Filter>Game\game</Filter> </ClCompile>
     <ClCompile Include="src\game\save_load.cpp">                  <Filter>Game\game</Filter> </ClCompile>
     <ClCompile Include="src\game\tertiary_spawn.cpp">             <Filter>Game\game</Filter> </ClCompile>

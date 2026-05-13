@@ -15,9 +15,15 @@
 
 namespace Behaviors {
 
-// Port of &4dd4 rotate_colour_from_A. Drives palette through a 4-entry
-// cycle based on the high bits of A. Returns the low bits (0-3) so callers
-// can gate periodic events (sound, etc.) on them.
+// Port of &4dd4 rotate_colour_from_A:
+//   &4dd4 LSR A / LSR A           ; A >>= 2
+//   &4dd6 AND #&03                ; A &= 3
+//   &4dd8 TAX
+//   &4dd9 LDA &4d82,X ; transporter_beams_palette_table
+//   &4ddc STA &73 ; this_object_palette
+//   &4dde RTS
+// 4-entry palette cycle; we return the (a>>2)&3 index so callers can
+// gate periodic events (sound, etc.) on the same low bits.
 static uint8_t rotate_colour_from_A(Object& obj, uint8_t a) {
     static constexpr uint8_t PALETTE_TABLE[4] = { 0x52, 0x63, 0x35, 0x21 };
     uint8_t idx = (a >> 2) & 0x03;
@@ -25,19 +31,35 @@ static uint8_t rotate_colour_from_A(Object& obj, uint8_t a) {
     return idx;
 }
 
-// &40db-&40ed explode_object_with_duration_A. Mutates ONLY type and
-// tertiary_data_offset; sprite/palette/energy/pos stay. update_explosion
-// then takes over and flickers the source sprite through random palettes.
+// Port of &40db-&40ed explode_object_with_duration_A:
+//   &40db JSR &13f8 play_sound_on_channel_zero (data 17 03 11 04)
+//   &40e2 STA &3d ; tertiary_data_offset (explosion duration)
+//   &40e4 LDA #&44 ; OBJECT_EXPLOSION
+//   &40e6 STA &41 ; this_object_type
+//   &40e8 LDA #&ce ; -50
+//   &40ea STA &081d ; explosion_timer  (negative = explosion active)
+//   &40ed RTS
+// Mutates ONLY type and tertiary_data_offset; sprite/palette/energy/pos
+// stay. update_explosion then takes over.
 void explode_object_with_duration(Object& obj, uint8_t duration) {
     obj.tertiary_data_offset = duration;
     obj.type = ObjectType::EXPLOSION;
     // &40e8 global explosion_timer (screen flash) not wired to renderer.
 }
 
-// Port of &4005 add_to_player_mushroom_timer. Adds 0x3f (+optional 1 from
-// entry carry) to timers[which] unless it would overflow; does not yet
-// honor the mushroom-immunity-pill gate or player_immobility_timers.
-// Call with which=0 for red mushrooms, which=1 for blue.
+// Port of &4005 add_to_player_mushroom_timer:
+//   &4005 LDA #&3f
+//   &4007 ADC &081a,X ; player_mushroom_timers
+//   &400a BCS &400f                ; skip_ceiling — overflow leaves it alone
+//   &400c STA &081a,X
+//   &400f BIT &0815 ; mushroom_immunity_pill_collected
+//   &4012 BMI &4041 ; leave        ; immunity pill → no immobility kick
+//   &4014 CMP &ba,X ; immobility_timers
+//   &4016 BCC &4041 ; leave        ; new timer below existing? skip
+//   &4018 STA &ba,X
+//   &401a RTS
+// We do the timer add but skip the immobility-pill and immobility-
+// timer paths (not wired yet). Call with which=0 red, =1 blue.
 static void add_to_player_mushroom_timer(UpdateContext& ctx, int which, bool extra) {
     if (!ctx.player_mushroom_timers) return;
     uint8_t* t = &ctx.player_mushroom_timers[which];

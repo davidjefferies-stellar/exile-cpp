@@ -205,10 +205,18 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
             obj.tertiary_data_offset = 0;
         }
 
-        // Port of &3ed1-&3edf update_metal/stone_door_tile. state =
-        // tile - 1 (SBC #&00 with carry CLEAR); update_door rebuilds
-        // obj.x as state + carry_from_(tx + 0x10) — closed tx=0xff
-        // gives carry=1 -> x = tile, open tx=0x00 -> x = tile - 1.
+        // Port of &3ed1-&3edf update_metal/stone_door_tile:
+        //   &3ed1 ASL A
+        //   &3ed2 STA &0936,Y ; objects_ty (0 horiz, 2 vert)
+        //   &3ed5 TAX
+        //   &3ed6 LDA &95,X ; tile_x   (X=0 → tile_x, X=2 → tile_y)
+        //   &3ed8 SBC #&00            ; carry CLEAR → state = tile - 1
+        //   &3eda STA &0976,Y ; objects_state
+        //   &3edd LDA &a3 ; door_open_fraction
+        //   &3edf STA &0916,Y ; objects_tx
+        // update_door later rebuilds obj.x as state + carry_from_(tx +
+        // 0x10) — closed tx=0xff gives carry=1 → x = tile, open tx=0x00
+        // → x = tile - 1.
         if (ttype == TileType::METAL_DOOR || ttype == TileType::STONE_DOOR) {
             obj.ty    = vertical_door ? 0x02 : 0x00;
             obj.state = static_cast<uint8_t>(
@@ -217,9 +225,15 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
             obj.tx = opening_initial ? 0x00 : 0xff;
         }
 
-        // Port of &3fbf..&3fcc update_tile_with_object_from_data — spawn
-        // as real type for position/flags, then overwrite type with
-        // PLACEHOLDER (0x49) so update_placeholder pins until the anchor
+        // Port of &3fbf-&3fcc update_tile_with_object_from_data:
+        //   &3fbf LDA &0986,Y ; tertiary_objects_data
+        //   &3fc2 AND #&7f             ; strip "needs creating" bit
+        //   &3fc4 JSR &4042 create_primary_object_from_tertiary
+        //   &3fc7 LDA #&49 ; OBJECT_PLACEHOLDER
+        //   &3fc9 STA &0860,Y ; objects_type
+        //   &3fcc RTS
+        // Spawn as real type for position/flags, then overwrite type
+        // with PLACEHOLDER so update_placeholder pins until the anchor
         // is close enough to restore the real type.
         if (ttype == TileType::SPACE_WITH_OBJECT_FROM_DATA) {
             obj.type = ObjectType::PLACEHOLDER;

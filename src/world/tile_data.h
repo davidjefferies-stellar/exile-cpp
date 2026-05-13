@@ -229,8 +229,13 @@ inline int get_obstruction_pattern_index(uint8_t tile_type, bool flip_h, bool fl
 }
 
 // Get the Y offset for a tile's obstruction. Port of &245f-&246f:
-// pick high nibble (non-flipped) or low nibble (flipped), shift to 0xN0; if
-// non-zero, OR with 0x0f to round to end of pixel (original &246e ORA #&0f).
+//   &245f LDA &056b,Y ; tiles_obstruction_y_offsets_table
+//   &2462 BIT &09 ; tile_flip  (&40 = flipped vertically)
+//   &2464 BVC &246a
+//   &2466 ASL/ASL/ASL/ASL          ; flipped: bottom nibble → top
+//   &246a AND #&f0                  ; not flipped: keep top nibble
+//   &246c BEQ &2470                  ; zero → no offset
+//   &246e ORA #&0f                   ; round to end of pixel
 inline uint8_t get_tile_y_offset(uint8_t tile_type, bool flip_v) {
     if (tile_type >= 64) return 0;
     uint8_t offsets = tiles_obstruction_y_offsets[tile_type];

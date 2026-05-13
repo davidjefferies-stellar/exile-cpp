@@ -122,6 +122,7 @@
     <ClCompile Include="src\rendering\palette.cpp" />
     <ClCompile Include="src\particles\particle_system.cpp" />
     <ClCompile Include="src\game\game.cpp" />
+    <ClCompile Include="src\game\game_debug.cpp" />
     <ClCompile Include="src\game\config.cpp" />
     <ClCompile Include="src\game\save_load.cpp" />
     <ClCompile Include="src\game\tertiary_spawn.cpp" />

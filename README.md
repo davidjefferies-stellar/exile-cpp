@@ -160,21 +160,3 @@ src/
   game/         Top-level loop orchestration (game.cpp ≤ ~200 lines).
 ```
 
-## Status
-
-See `docs/porting_progress.md` for a system-by-system survey of what's
-faithfully ported vs. partial vs. missing, with 6502 address ranges for
-each entry. The disk-load supervisor, copy protection, and demo mode are
-intentionally left out; everything else aims to match the disassembly.
-
-`docs/tertiary.md` and `docs/tertiary_objects.md` (a complete
-column-table view of all 254 tertiary entries),
-`docs/object_spawning.md`, and
-`docs/angles_from_velocities.md` document specific subsystems where the
-6502's data layout / arithmetic semantics needed careful porting.
-`docs/intro_triax.md` traces the non-scripted Triax / destinator opening
-beat through the per-frame update loop. `docs/collision.md` covers the
-tile and object collision system, including the 22.5°/45° slope
-patterns. `docs/rendering.md` walks the tile-byte → atlas sprite →
-palette → pixels pipeline, including the procedural palette codes for
-stone strata, bushes, leaves and mushrooms.

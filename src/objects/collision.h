@@ -104,10 +104,15 @@ VelocityTransfer apply_mass_ratio_velocity(
     uint8_t this_weight, uint8_t other_weight,
     bool smallest_overlap_in_this_axis);
 
-// Port of &3ebd-&3ec2 door_tiles_table substitution. Swaps METAL_DOOR /
-// STONE_DOOR for STONE_SLOPE_78 (closed) or SPACE (open) based on the
-// live DOOR_FLAG_OPENING bit; preserves flip. Reads live state from a
-// linked primary if any, else the stored tertiary byte.
+// Port of &3ebd-&3ec2 door_tiles_table substitution:
+//   &3ebd ROL A                ; carry → bit 0 (open flag)
+//   &3ebe TAX                  ; X = 0..3: h_closed, h_open, v_closed, v_open
+//   &3ebf LDA &3e91,X ; door_tiles_table
+//   &3ec2 STA &08 ; tile_type_and_flip
+// Swaps METAL_DOOR / STONE_DOOR for STONE_SLOPE_78 (closed) or SPACE
+// (open) based on the live DOOR_FLAG_OPENING bit; preserves flip. Reads
+// live state from a linked primary if any, else the stored tertiary
+// byte.
 uint8_t substitute_door_for_obstruction(
     uint8_t tile_and_flip, int data_offset,
     const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects,

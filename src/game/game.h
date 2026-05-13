@@ -300,8 +300,31 @@ private:
     // frame flushes any events recorded in ObjectManager::debug_events_
     // (cre/prm/dem/ret/rem) as a line so churn patterns can be inspected
     // offline (grep / tail -f). File lives next to exile.ini.
+    //
+    // The implementation of these debug-only helpers lives in
+    // game_debug.cpp so the main game.cpp stays focused on the per-frame
+    // chain. dump_init_diagnostics writes the one-shot landscape /
+    // switch / tertiary census at startup; log_walking_diagnosis is the
+    // state-change-only walking trace emitted from update_player.
     std::ofstream debug_log_;
     void flush_debug_log();
+    void dump_init_diagnostics();
+    void log_walking_diagnosis(const Object& player, const InputState& inp,
+                               int8_t pre_vx, int8_t pre_vy,
+                               uint8_t pre_xf, uint8_t pre_yf,
+                               int8_t accel_x, int8_t accel_y);
+
+    // Port-only test rigs (event panel buttons, chained-grenade demo,
+    // smooth-flood subframe drain). All bodies live in game_debug.cpp so
+    // the production update path stays clean.
+    void tick_test_grenades();
+    void tick_test_flood();
+
+    // Per-frame TTL tick + erase pass for the damage / floating-label
+    // overlay rings. Both are debug-only visual feedback (no gameplay
+    // effect) so the body lives in game_debug.cpp alongside the rest of
+    // the debug helpers.
+    void tick_overlay_visuals();
 
     // Tertiary -> primary spawn-gate radius (in tiles). Set from
     // exile.ini [distances] spawn_tertiary during Game::init; default

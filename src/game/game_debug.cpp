@@ -1,0 +1,545 @@
+#include "game/game.h"
+#include "behaviours/environment.h"
+#include "objects/collision.h"
+#include "objects/object_data.h"
+#include "objects/object_tables.h"
+#include "rendering/debug_names.h"
+#include "rendering/sprite_atlas.h"
+#include "world/tertiary.h"
+#include "world/tile_data.h"
+#include "world/water.h"
+#include <algorithm>
+#include <cstdio>
+
+// game_debug.cpp — implementations of the debug-log helpers and the
+// port-only test rigs (event-panel triggers, smooth-flood subframe drain,
+// chained-grenade demo). Pulled out of game.cpp so the main per-frame
+// chain stays readable. All entry points are members of Game; nothing
+// here is reachable from a release-only path.
+
+// ---------- One-shot startup diagnostics --------------------------------
+//
+// Writes a census of the freshly-baked landscape into exile-debug.log so
+// post-mortem grep can answer "is the switch at (227,156) actually wired
+// up?" without re-running the game under a debugger. Bails out silently
+// if [logs] is disabled (debug_log_ never opened).
+void Game::dump_init_diagnostics() {
+    if (!debug_log_.is_open()) return;
+
+    // Plumb the same stream into the renderer so its debug helpers
+    // (events panel click trace, etc.) land in the same file rather
+    // than fighting MSVC's deny-write share on a second handle.
+    renderer_->set_debug_log(&debug_log_);
+    debug_log_ << "# exile-cpp lifecycle log\n"
+               << "# cols: frame kind p<slot> TYPE @x,y anchor=ax,ay dx=DX dy=DY\n";
+
+    // One-shot diagnostic for the user-reported "missing bush" at
+    // (138, 120) — the SPACE_W_TYPE redirect at idx 190 (entry &be)
+    // that should resolve to PIPE + bush. Logs the raw landscape
+    // tile, tertiary attachment and resolved tile_and_flip / data.
+    {
+        uint8_t tile = landscape_.get_tile(138, 120);
+        uint16_t tidx = landscape_.tertiary_index_at(138, 120);
+        debug_log_ << "# (138,120) raw_tile=0x"
+                   << std::hex << (int)tile << std::dec
+                   << " tertiary_idx=" << tidx;
+        if (tidx != Landscape::NO_TERTIARY) {
+            const TertiaryEntry& te = landscape_.tertiary_entry(tidx);
+            debug_log_ << " tile_and_flip=0x"
+                       << std::hex << (int)te.tile_and_flip
+                       << " data=0x" << (int)te.data
+                       << " type=0x" << (int)te.type << std::dec;
+        }
+        debug_log_ << "\n";
+    }
+
+    // One-shot dump of every cell the grid overlay's yellow shade
+    // would mark — i.e. SWITCH cells whose tertiary resolves to a
+    // SWITCH-typed tile_and_flip and whose X column holds another
+    // such cell. Helps verify whether the gate is producing zero
+    // hits because no aliases exist or because it's over-tightened.
+    int aliased_count = 0;
+    for (int y = 0; y < 256; ++y) {
+        for (int x = 0; x < 256; ++x) {
+            if (landscape_.switch_x_aliased(
+                    static_cast<uint8_t>(x),
+                    static_cast<uint8_t>(y))) {
+                debug_log_ << "# switch_x_aliased @"
+                           << x << "," << y << "\n";
+                aliased_count++;
+            }
+        }
+    }
+    debug_log_ << "# switch_x_aliased total: "
+               << aliased_count << "\n";
+
+    // Looser diagnostic: count raw SWITCH (tile_type 0x08) cells per
+    // X column, no tertiary / resolved-type gate. Tells us whether
+    // the strict gate is pruning real aliases or there genuinely
+    // aren't any raw-SWITCH X collisions in the loaded map.
+    int raw_switch_x_count[256] = {};
+    for (int y = 0; y < 256; ++y) {
+        for (int x = 0; x < 256; ++x) {
+            uint8_t tile = landscape_.get_tile(
+                static_cast<uint8_t>(x), static_cast<uint8_t>(y));
+            uint8_t type = tile & TileFlip::TYPE_MASK;
+            if (type == static_cast<uint8_t>(TileType::SWITCH)) {
+                raw_switch_x_count[x]++;
+            }
+        }
+    }
+    int loose_aliased_count = 0;
+    for (int x = 0; x < 256; ++x) {
+        if (raw_switch_x_count[x] > 1) {
+            debug_log_ << "# raw_switch_x x=" << x
+                       << " count=" << raw_switch_x_count[x] << "\n";
+            loose_aliased_count += raw_switch_x_count[x];
+        }
+    }
+    debug_log_ << "# raw_switch_x_aliased total cells: "
+               << loose_aliased_count << "\n";
+
+    // Tertiary-entry capacity check. If close to TERTIARY_CAPACITY
+    // the bake will have run out and silently dropped entries —
+    // every cell after the threshold ends up NO_TERTIARY even when
+    // its X matched a source row.
+    debug_log_ << "# tertiary_entries used: "
+               << landscape_.tertiary_count()
+               << " / capacity " << Landscape::TERTIARY_CAPACITY
+               << "\n";
+
+    // Catalogue of every aliased switch group in the world. Walks
+    // each source row whose tile_and_flip resolves to SWITCH (0x08),
+    // looks up its column X via x_data, and lists every world cell
+    // with the matching raw type on that column. Groups with > 1
+    // cell are switches that share state — pressing any one toggles
+    // every other in the group via process_switch_effects's sibling
+    // fan-out.
+    debug_log_ << "# Aliased switch groups (cells sharing a source row):\n";
+    int alias_groups = 0;
+    for (int T = 0; T <= static_cast<int>(TileType::SWITCH); ++T) {
+        int rs = tertiary_ranges[T];
+        int re = tertiary_ranges[T + 1];
+        for (int i = rs; i < re; ++i) {
+            uint8_t tf = tertiary_objects_tile_and_flip_data[i];
+            if ((tf & TileFlip::TYPE_MASK) !=
+                static_cast<uint8_t>(TileType::SWITCH)) continue;
+            uint8_t source_x = tertiary_objects_x_data[i];
+            uint8_t cells_y[256];
+            int n_cells = 0;
+            for (int y = 0; y < 256; ++y) {
+                uint8_t tile = landscape_.get_tile(
+                    source_x, static_cast<uint8_t>(y));
+                if ((tile & TileFlip::TYPE_MASK) !=
+                    static_cast<uint8_t>(T)) continue;
+                cells_y[n_cells++] = static_cast<uint8_t>(y);
+            }
+            if (n_cells <= 1) continue;
+            ++alias_groups;
+            int data_off = static_cast<int>(static_cast<uint8_t>(
+                i + static_cast<int8_t>(tertiary_data_offset[T])));
+            uint8_t data = static_cast<uint8_t>(
+                tertiary_objects_data_bytes[data_off] & 0x7f);
+            uint8_t effect_id = static_cast<uint8_t>(data >> 3);
+            debug_log_ << "#   raw_type=0x"
+                       << std::hex << T << std::dec
+                       << " source_idx=" << i
+                       << " X=" << (int)source_x
+                       << " effect_id=" << (int)effect_id
+                       << " cells=" << n_cells << ":\n";
+            for (int c = 0; c < n_cells; ++c) {
+                debug_log_ << "#       @" << (int)source_x
+                           << "," << (int)cells_y[c] << "\n";
+            }
+        }
+    }
+    debug_log_ << "# Aliased switch groups total: "
+               << alias_groups << "\n";
+
+    // Detailed dump for X=227 — the column that holds the user-
+    // reported switches at (227,188) and (227,156). Log every
+    // CHECK_TERTIARY landscape cell on that column (raw types
+    // 0x00..0x08), so we catch redirects: e.g. a raw METAL_DOOR
+    // cell whose tertiary tile_and_flip is 0x08 SWITCH — that
+    // renders as a switch even though the landscape byte is a
+    // door marker.
+    for (int y = 0; y < 256; ++y) {
+        uint8_t tile = landscape_.get_tile(227,
+                                            static_cast<uint8_t>(y));
+        uint8_t type = tile & TileFlip::TYPE_MASK;
+        if (type > static_cast<uint8_t>(TileType::SWITCH)) continue;
+        uint16_t t_idx = landscape_.tertiary_index_at(
+            227, static_cast<uint8_t>(y));
+        bool from_map = landscape_.tile_from_map_data(
+            227, static_cast<uint8_t>(y));
+        debug_log_ << "# switch @227," << y
+                   << " tile=0x" << std::hex << (int)tile << std::dec
+                   << " from_map=" << (from_map ? "yes" : "no")
+                   << " tertiary_idx=" << t_idx;
+        if (t_idx == Landscape::NO_TERTIARY) {
+            debug_log_ << " (no tertiary attached)\n";
+            continue;
+        }
+        // The tertiary's tile_and_flip + data byte. The data offset
+        // into the live runtime store is computed the same way as
+        // the wiring overlay does.
+        const TertiaryEntry& te = landscape_.tertiary_entry(t_idx);
+        // The wiring overlay walks the SWITCH range to recover the
+        // source-table index; we know it via tertiary_source_idx_
+        // but that's private. Use the live data byte from the entry
+        // directly — the bake stores it unchanged from the source.
+        uint8_t data = te.data & 0x7f;
+        uint8_t effect_id = static_cast<uint8_t>(data >> 3);
+        uint8_t resolved_type = te.tile_and_flip & TileFlip::TYPE_MASK;
+        debug_log_ << " resolved_tile=0x"
+                   << std::hex << (int)te.tile_and_flip << std::dec
+                   << " (type=0x" << std::hex << (int)resolved_type
+                   << std::dec << ") data=0x"
+                   << std::hex << (int)data << std::dec
+                   << " effect_id=" << (int)effect_id << "\n";
+        uint8_t targets[8];
+        int n = Behaviors::switch_effect_targets(effect_id, targets, 8);
+        for (int t = 0; t < n; t++) {
+            // Decode the 6502 data_offset back to (tile_type, X) and
+            // list every cell on that column that matches the raw
+            // type — i.e. every door / target the press toggles in
+            // lockstep under the new fan-out semantics.
+            uint8_t b = targets[t];
+            debug_log_ << "#   target[" << t
+                       << "] data_offset=0x"
+                       << std::hex << (int)b << std::dec;
+            int matched_type = -1;
+            int source_idx_match = -1;
+            for (int tt = 0;
+                 tt <= static_cast<int>(TileType::SWITCH); ++tt) {
+                uint8_t s = static_cast<uint8_t>(
+                    b - tertiary_data_offset[tt]);
+                if (s <  tertiary_ranges[tt]) continue;
+                if (s >= tertiary_ranges[tt + 1]) continue;
+                matched_type = tt;
+                source_idx_match = s;
+                break;
+            }
+            if (matched_type < 0) {
+                debug_log_ << " (no source row matches)\n";
+                continue;
+            }
+            uint8_t target_x =
+                tertiary_objects_x_data[source_idx_match];
+            debug_log_ << " -> tile_type=0x"
+                       << std::hex << matched_type
+                       << " source_idx=" << std::dec << source_idx_match
+                       << " X=" << (int)target_x << "\n";
+            int hits = 0;
+            for (int yy = 0; yy < 256; ++yy) {
+                uint8_t raw = landscape_.get_tile(
+                    target_x, static_cast<uint8_t>(yy));
+                if ((raw & TileFlip::TYPE_MASK) !=
+                    static_cast<uint8_t>(matched_type)) continue;
+                uint16_t cell_idx = landscape_.tertiary_index_at(
+                    target_x, static_cast<uint8_t>(yy));
+                debug_log_ << "#       cell @" << (int)target_x
+                           << "," << yy
+                           << " raw=0x" << std::hex << (int)raw
+                           << std::dec
+                           << " entry_idx=" << cell_idx << "\n";
+                hits++;
+            }
+            if (hits == 0) {
+                debug_log_ << "#       (no cells of that type at X)\n";
+            }
+        }
+    }
+    debug_log_.flush();
+}
+
+// ---------- Per-frame lifecycle flush -----------------------------------
+//
+// Drains the ObjectManager's per-frame ring of cre/prm/dem/ret/rem/flp
+// events (plus any diag_lines_) into exile-debug.log, then clears the
+// buffer. Called once per non-paused tick from Game::tick after render().
+void Game::flush_debug_log() {
+    if (!debug_log_.is_open()) return;
+    if (object_mgr_.debug_events_n_ == 0 &&
+        object_mgr_.diag_lines_.empty()) return;
+
+    uint8_t ax = object_mgr_.activation_anchor_x();
+    uint8_t ay = object_mgr_.activation_anchor_y();
+
+    for (int i = 0; i < object_mgr_.debug_events_n_; i++) {
+        const ObjectManager::DebugEvent& e = object_mgr_.debug_events_[i];
+        const char* tag = "???";
+        switch (e.kind) {
+            case ObjectManager::EVT_CREATE:   tag = "cre"; break;
+            case ObjectManager::EVT_PROMOTE:  tag = "prm"; break;
+            case ObjectManager::EVT_DEMOTE:   tag = "dem"; break;
+            case ObjectManager::EVT_RETURN:   tag = "ret"; break;
+            case ObjectManager::EVT_REMOVE:   tag = "rem"; break;
+            case ObjectManager::EVT_FLIP:     tag = "flp"; break;
+            case ObjectManager::EVT_SEC_INIT: tag = "sec"; break;
+        }
+        const char* name =
+            (e.type < static_cast<uint8_t>(ObjectType::COUNT))
+                ? object_type_name(static_cast<ObjectType>(e.type))
+                : "UNKNOWN";
+
+        char line[192];
+        if (e.kind == ObjectManager::EVT_FLIP) {
+            // Flip event: x = velocity_x (reinterpreted signed), y = 0
+            // (facing right) or 1 (facing left). Spells out vx so the
+            // reason for the flip is obvious at a glance, and the
+            // frame/slot/type fields line up with normal events.
+            int vx = static_cast<int>(static_cast<int8_t>(e.x));
+            const char* facing = (e.y & 1) ? "LEFT" : "RIGHT";
+            std::snprintf(line, sizeof(line),
+                          "%u %s p%u %s vx=%d -> %s\n",
+                          static_cast<unsigned>(frame_counter_),
+                          tag, e.slot, name, vx, facing);
+        } else {
+            // Chebyshev distance to anchor — helps see if events cluster
+            // on the demote_settled / promote_secondary / spawn_tertiary
+            // rings.
+            int dx = static_cast<int>(static_cast<int8_t>(e.x - ax));
+            int dy = static_cast<int>(static_cast<int8_t>(e.y - ay));
+            std::snprintf(line, sizeof(line),
+                          "%u %s p%u %s @%u,%u anchor=%u,%u dx=%d dy=%d\n",
+                          static_cast<unsigned>(frame_counter_),
+                          tag, e.slot, name, e.x, e.y, ax, ay, dx, dy);
+        }
+        debug_log_ << line;
+    }
+    for (const std::string& s : object_mgr_.diag_lines_) {
+        debug_log_ << static_cast<unsigned>(frame_counter_) << " diag "
+                   << s;
+        if (s.empty() || s.back() != '\n') debug_log_ << '\n';
+    }
+    debug_log_.flush();
+}
+
+// ---------- Walking-diagnosis trace -------------------------------------
+//
+// State-change-only line emitted after integrate_player_motion when the
+// player's supported / walking / motion-input mask flips. Pairs with the
+// walk-state / walk-blocked / plr-tcr lines from player_actions /
+// player_motion to give a focused timeline of why the walk gate fired or
+// stalled. Stays silent on stationary frames so the log doesn't flood.
+void Game::log_walking_diagnosis(const Object& player, const InputState& inp,
+                                 int8_t pre_vx, int8_t pre_vy,
+                                 uint8_t pre_xf, uint8_t pre_yf,
+                                 int8_t accel_x, int8_t accel_y) {
+    bool motion_input = inp.move_left || inp.move_right ||
+                        inp.move_up   || inp.move_down  ||
+                        inp.jetpack   || inp.boost;
+    bool inp_supported_now = (player.flags & ObjectFlags::SUPPORTED) != 0;
+    bool inp_walking_now = inp_supported_now &&
+        !(inp.jetpack || inp.move_up || inp.move_down ||
+          (inp.boost && (inp.move_left || inp.move_right)));
+    bool inp_state_changed =
+        inp_supported_now != inp_log_supported_prev_ ||
+        inp_walking_now   != inp_log_walking_prev_   ||
+        motion_input      != inp_log_motion_prev_;
+    inp_log_supported_prev_ = inp_supported_now;
+    inp_log_walking_prev_   = inp_walking_now;
+    inp_log_motion_prev_    = motion_input;
+    if (!debug_log_.is_open() || !inp_state_changed) return;
+    if (!motion_input && pre_vx == 0 && pre_vy == 0 &&
+        player.velocity_x == 0 && player.velocity_y == 0) return;
+
+    bool supported = (player.flags & ObjectFlags::SUPPORTED) != 0;
+    bool newly    = (player.flags & ObjectFlags::NEWLY_CREATED) != 0;
+    bool fliph    = (player.flags & ObjectFlags::FLIP_HORIZONTAL) != 0;
+    bool walking  = supported && !(inp.jetpack || inp.move_up || inp.move_down ||
+                                   (inp.boost && (inp.move_left || inp.move_right)));
+
+    // Re-resolve the tile under the player's feet so the log shows the
+    // exact inputs the grounded-check inside integrate_player_motion was
+    // looking at. Lets us see WHY sup=0 when the player is visually
+    // standing on a floor.
+    int sprite_h = (player.sprite <= 0x80)
+                   ? sprite_atlas[player.sprite].h : 22;
+    int sprite_h_frac = (sprite_h > 0 ? sprite_h - 1 : 0) * 8;
+    int feet_abs_dbg = static_cast<int>(player.y.whole) * 256 +
+                       static_cast<int>(player.y.fraction) + sprite_h_frac;
+    uint8_t feet_ty  = static_cast<uint8_t>((feet_abs_dbg >> 8) & 0xff);
+    uint8_t feet_yf  = static_cast<uint8_t>(feet_abs_dbg & 0xff);
+    ResolvedTile fres_dbg = resolve_tile_with_tertiary(
+        landscape_, player.x.whole, feet_ty);
+    uint8_t raw_tile = Collision::substitute_door_for_obstruction(
+        fres_dbg.tile_and_flip, fres_dbg.data_offset,
+        reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
+            object_mgr_.object(0)),
+        object_mgr_.tertiary_data_byte(fres_dbg.data_offset));
+    uint8_t ftype = raw_tile & TileFlip::TYPE_MASK;
+    bool ffh = (raw_tile & TileFlip::HORIZONTAL) != 0;
+    bool ffv = (raw_tile & TileFlip::VERTICAL)   != 0;
+    bool ftype_solid = Collision::is_tile_type_solid(ftype);
+    bool fcoll_fv = ffv ^ tile_obstruction_v_flip_bit(ftype);
+    uint8_t fthresh = tile_threshold_at_x(ftype, ffh, ffv, player.x.fraction);
+    bool feet_in_obstr = fcoll_fv ? (feet_yf <= fthresh)
+                                  : (feet_yf >= fthresh);
+
+    char line[320];
+    std::snprintf(line, sizeof(line),
+                  "%u inp keys=%c%c%c%c%c%c facing=%s sup=%d new=%d fh=%d "
+                  "walk=%d pre_vel=%d,%d pre_frac=%u,%u accel=%d,%d "
+                  "post_vel=%d,%d post_frac=%u,%u pos=%u,%u "
+                  "feet=ty%u,yf%u tile=%02x type=%02x sol=%d cfv=%d "
+                  "thr=%u in_obs=%d tcA=%02x\n",
+                  static_cast<unsigned>(frame_counter_),
+                  inp.move_left  ? 'L' : '-',
+                  inp.move_right ? 'R' : '-',
+                  inp.move_up    ? 'U' : '-',
+                  inp.move_down  ? 'D' : '-',
+                  inp.jetpack    ? 'J' : '-',
+                  inp.boost      ? 'B' : '-',
+                  (player_facing_ & 0x80) ? "L" : "R",
+                  supported ? 1 : 0, newly ? 1 : 0, fliph ? 1 : 0,
+                  walking ? 1 : 0,
+                  pre_vx, pre_vy, pre_xf, pre_yf,
+                  accel_x, accel_y,
+                  player.velocity_x, player.velocity_y,
+                  player.x.fraction, player.y.fraction,
+                  player.x.whole, player.y.whole,
+                  feet_ty, feet_yf, raw_tile, ftype,
+                  ftype_solid ? 1 : 0, fcoll_fv ? 1 : 0,
+                  fthresh, feet_in_obstr ? 1 : 0,
+                  player_tile_collision_angle_);
+    debug_log_ << line;
+}
+
+// ---------- Event-panel triggers (port-only) ----------------------------
+//
+// Wired into the right-side Events panel — each branch corresponds to
+// one button in kEventButtons. Effects are deliberately over-driven
+// beyond the 6502's per-frame slope so the dev sees a clear visual
+// response within a couple of frames.
+void Game::trigger_event(int event_id) {
+    Object& player = object_mgr_.player();
+    // Spawn 4 tiles above the player — visible immediately. The 6502's
+    // y=0xfe / "teleport-to-player on first tick" recipe relies on the
+    // per-type teleport step which isn't fully ported for these types.
+    uint8_t spawn_x = player.x.whole;
+    uint8_t spawn_y = (player.y.whole > 4) ? (player.y.whole - 4) : 0;
+    switch (static_cast<EventId>(event_id)) {
+        case EventId::SPAWN_TRIAX: {
+            int slot = object_mgr_.create_object(
+                ObjectType::TRIAX, /*min_free_slots=*/4,
+                spawn_x, 0x80, spawn_y, 0x80);
+            if (slot > 0) object_mgr_.object(slot).target_and_flags = 0xc0;
+            break;
+        }
+        case EventId::SPAWN_MAGGOT:
+            // Spawn near the player so it's immediately visible. The
+            // 6502 spawns at the Triax-lab maggot machine (0x61, 0xd9);
+            // for a test trigger we want the maggot to be where the dev
+            // is looking, not 80 tiles away.
+            object_mgr_.create_object(ObjectType::MAGGOT, 4,
+                                       spawn_x, 0x80, spawn_y, 0x80);
+            break;
+        case EventId::SPAWN_CLAWED_ROBOT: {
+            int slot = object_mgr_.create_object(
+                ObjectType::MAGENTA_CLAWED_ROBOT, /*min_free_slots=*/4,
+                spawn_x, 0x80, spawn_y, 0x80);
+            if (slot > 0) object_mgr_.object(slot).target_and_flags = 0xc0;
+            break;
+        }
+        case EventId::TOGGLE_FLOOD: {
+            // Flip the flooding bit and arm the test fast-flood
+            // counter so the waterline moves at 1 tile/frame for the
+            // next 0x78 tiles. The 6502's slow integrator runs in
+            // parallel — once test progression finishes, the integrator
+            // takes over (and is a no-op since we're at desired_y).
+            flooding_state_ ^= 0x80;
+            test_flood_steps_remaining_ = 0x78;
+            test_flood_direction_ = (flooding_state_ & 0x80) ? -1 : +1;
+            break;
+        }
+        case EventId::TOGGLE_EARTHQUAKE:
+            // Bit 7 flip drives the existing state-advance code. Also
+            // arm the port-only camera-shake counter for a visible
+            // 60-frame jitter (CRTC R2 writes the 6502 used aren't
+            // available on a framebuffer renderer).
+            earthquake_state_ ^= 0x80;
+            test_shake_frames_ = (earthquake_state_ & 0x80) ? 60 : 0;
+            break;
+        case EventId::DAMAGE_PLAYER:
+            player.energy = (player.energy > 10) ? (player.energy - 10) : 0;
+            break;
+        case EventId::HEAL_PLAYER:
+            player.energy = (player.energy < 0xff - 0x40)
+                            ? (player.energy + 0x40) : 0xff;
+            break;
+    }
+}
+
+// ---------- Chained-grenade test rig ------------------------------------
+//
+// Halfway through the seed grenade's fuse (timer >= 0x30), convert the
+// three pending inactive slots to ACTIVE_GRENADE with their fuses fresh
+// so the four detonate in a chain ~48 frames after the seed. The seed +
+// slot table are populated by a #if 0-gated rig in init(); when the rig
+// is disabled `test_active_grenade_slot_` stays -1 and this is a no-op.
+void Game::tick_test_grenades() {
+    if (test_grenades_activated_ || test_active_grenade_slot_ <= 0) return;
+    Object& src = object_mgr_.object(test_active_grenade_slot_);
+    if (!src.is_active() ||
+        src.type != ObjectType::ACTIVE_GRENADE ||
+        src.timer < 0x30) return;
+
+    for (int i = 0; i < 4; i++) {
+        int s = test_pending_grenade_slots_[i];
+        if (s <= 0) continue;
+        Object& g = object_mgr_.object(s);
+        if (!g.is_active()) continue;
+        if (g.type != ObjectType::INACTIVE_GRENADE) continue;
+        g.type = ObjectType::ACTIVE_GRENADE;
+        g.sprite = object_types_sprite[
+            static_cast<uint8_t>(ObjectType::ACTIVE_GRENADE)];
+        g.palette = object_types_palette_and_pickup[
+            static_cast<uint8_t>(ObjectType::ACTIVE_GRENADE)] & 0x7f;
+        g.timer = 0;
+    }
+    test_grenades_activated_ = true;
+}
+
+// ---------- Overlay-visual TTL tick -------------------------------------
+//
+// damage_events_ and floating_labels_ are both transient visual rings
+// (damage numbers floating up from hit objects, "FED!" / "KEY!" pop-ups
+// on rare events). Their TTLs decay every frame and expired entries get
+// erased; the renderer reads the live vectors. No gameplay effect, so
+// the maintenance pass lives here instead of crowding tick().
+void Game::tick_overlay_visuals() {
+    for (auto& ev : damage_events_) {
+        if (ev.ttl > 0) ev.ttl--;
+    }
+    damage_events_.erase(
+        std::remove_if(damage_events_.begin(), damage_events_.end(),
+                       [](const DamageVisual& e){ return e.ttl == 0; }),
+        damage_events_.end());
+
+    for (auto& f : floating_labels_) {
+        if (f.ttl > 0) f.ttl--;
+    }
+    floating_labels_.erase(
+        std::remove_if(floating_labels_.begin(), floating_labels_.end(),
+                       [](const FloatingLabel& f){ return f.ttl == 0; }),
+        floating_labels_.end());
+}
+
+// ---------- Smooth-flood subframe drain ---------------------------------
+//
+// Runs alongside the 6502's slow integrator so the visible waterline
+// moves at 1 tile / second under the test trigger. direction is -1 to
+// flood (y decreasing = water rising on screen), +1 to drain.
+void Game::tick_test_flood() {
+    if (test_flood_steps_remaining_ <= 0) return;
+    if (++test_flood_subframe_ < 50) return;
+    test_flood_subframe_ = 0;
+    uint8_t y = Water::get_y(1);
+    int ny = int(y) + int(test_flood_direction_);
+    if (ny < 0)    ny = 0;
+    if (ny > 0xff) ny = 0xff;
+    Water::set_y(1, static_cast<uint8_t>(ny), 0);
+    test_flood_steps_remaining_--;
+}

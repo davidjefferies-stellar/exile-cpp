@@ -17,10 +17,16 @@
 #include "rendering/sprite_atlas.h"
 #include <array>
 
-// Port of &30e9-&30f5 apply_tile_collision_to_position_and_velocity's
-// bounce math, applied per-axis (our integration is axis-separated
-// whereas the 6502 uses a single vector). Cap 0x20, lose 2, damp 7/8,
-// reflect — settles within 3-4 bounces.
+// Port of &30e9-&30f5 — bounce damp:
+//   &30e9 SBC #&02                ; subtract 2 from velocity magnitude
+//   &30eb BCS &30ef               ; underflowed? clamp to 0
+//   &30ed LDA #&00
+//   &30ef JSR &3235 calculate_seven_eighths
+//   &30f2 JSR &2357 calculate_vector_from_magnitude_and_angle
+//   &30f5 STA &45 ; velocity_y    ; (caller also writes vector_x to &43)
+// Applied per-axis here because our integration is axis-separated
+// whereas the 6502 uses a single combined-magnitude vector. Cap 0x20,
+// lose 2, damp 7/8, reflect — settles within 3-4 bounces.
 static int8_t bounce_reflect(int8_t v_in) {
     int mag = (v_in < 0) ? -v_in : v_in;
     if (mag > 0x20) mag = 0x20;
@@ -361,10 +367,16 @@ void Game::update_objects() {
         // Step 9: Apply wind (only above surface)
         Wind::apply_surface_wind(obj);
 
-        // Port of &3f73 add_wind_particle_using_velocities — one
-        // PARTICLE_WIND per frame with probability magnitude/0x7f,
-        // emitted in the wind's direction (calculate_angle_from_vector
-        // then emit_directed feeds spd_rand/spd_base at &2357).
+        // Port of &3f73 add_wind_particle_using_velocities:
+        //   &3f73 JSR &22d4 calculate_angle_from_vector
+        //   &3f76 LDA &da ; rnd_state+1
+        //   &3f78 LSR A
+        //   &3f79 CMP &b7 ; magnitude
+        //   &3f7b BCS &3fb6 ; leave   ; stronger wind → more particles
+        //   &3f7d LDY #&6e ; PARTICLE_WIND
+        //   (falls through to &3f7f set_new_particles_position_from_this_object)
+        // One PARTICLE_WIND per frame with probability magnitude/0x7f,
+        // emitted in the wind's direction.
         {
             int8_t wvx = 0, wvy = 0;
             Wind::surface_wind_vector(obj, wvx, wvy);
@@ -610,9 +622,11 @@ void Game::update_objects() {
                         (obj.velocity_x > 0 && start_left  && !start_right && !obj_blocked) ||
                         (obj.velocity_x < 0 && start_right && !start_left  && !obj_blocked);
                     if ((tile_blocked || obj_blocked) && !relax_x) {
-                        // Port of &30b7: capture the max-axis velocity
-                        // BEFORE the reflect/damp so update_full_flask and
-                        // friends can tell a hard collision from a scrape.
+                        // Port of &30b7 (one instruction):
+                        //   &30b7 STY &1d ; pre_collision_velocity_magnitude
+                        // Capture the max-axis velocity BEFORE the
+                        // reflect/damp so update_full_flask and friends
+                        // can tell a hard collision from a scrape.
                         uint8_t pre = static_cast<uint8_t>(std::max(
                             std::abs(static_cast<int>(obj.velocity_x)),
                             std::abs(static_cast<int>(obj.velocity_y))));
@@ -620,9 +634,14 @@ void Game::update_objects() {
                         obj.x = old_x;
                         obj.velocity_x = bounce_reflect(obj.velocity_x);
                         obj.velocity_y = damp_seven_eighths(obj.velocity_y);
-                        // Port of &2b1d-&2b27 — symmetric stamp so the
-                        // heavier side (door, hive) sees the toucher
-                        // before its own post-revert step 9b runs.
+                        // Port of &2b1d-&2b27:
+                        //   &2b1d ORA &0856,Y ; objects_touching
+                        //   &2b20 BPL &2b27 ; skip
+                        //   &2b22 LDA &aa ; this_object
+                        //   &2b24 STA &0856,Y ; objects_touching
+                        // Symmetric stamp so the heavier side (door,
+                        // hive) sees the toucher before its own post-
+                        // revert step 9b runs.
                         if (obj_blocked) {
                             obj.touching = static_cast<uint8_t>(obj_blocker);
                             object_mgr_.object(obj_blocker).touching =

@@ -28,6 +28,9 @@
     <Filter Include="src\game">
       <UniqueIdentifier>{a001000b-0000-0000-0000-00000000001a}</UniqueIdentifier>
     </Filter>
+    <Filter Include="src\audio">
+      <UniqueIdentifier>{a001000e-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
     <Filter Include="data">
       <UniqueIdentifier>{a001000c-0000-0000-0000-00000000001a}</UniqueIdentifier>
     </Filter>
@@ -44,6 +47,7 @@
 
     <!-- src\world\ -->
     <ClCompile Include="src\world\landscape.cpp">                <Filter>src\world</Filter> </ClCompile>
+    <ClCompile Include="src\world\landscape_cpp.cpp">            <Filter>src\world</Filter> </ClCompile>
     <ClCompile Include="src\world\obstruction.cpp">              <Filter>src\world</Filter> </ClCompile>
     <ClCompile Include="src\world\wind.cpp">                     <Filter>src\world</Filter> </ClCompile>
     <ClCompile Include="src\world\water.cpp">                    <Filter>src\world</Filter> </ClCompile>
@@ -61,7 +65,9 @@
     <!-- src\behaviours\ -->
     <ClCompile Include="src\behaviours\npc_helpers.cpp">                 <Filter>src\behaviours</Filter> </ClCompile>
     <ClCompile Include="src\behaviours\mood.cpp">                        <Filter>src\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\path.cpp">                        <Filter>src\behaviours</Filter> </ClCompile>
     <ClCompile Include="src\behaviours\behavior_dispatch.cpp">           <Filter>src\behaviours</Filter> </ClCompile>
+    <ClCompile Include="src\behaviours\exile1_creatures.cpp">            <Filter>src\behaviours</Filter> </ClCompile>
 
     <!-- src\behaviours\ -->
     <ClCompile Include="src\behaviours\projectile.cpp">        <Filter>src\behaviours</Filter> </ClCompile>
@@ -90,10 +96,16 @@
 
     <!-- src\game\ -->
     <ClCompile Include="src\game\game.cpp">                      <Filter>src\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\game_debug.cpp">                <Filter>src\game</Filter> </ClCompile>
     <ClCompile Include="src\game\config.cpp">                    <Filter>src\game</Filter> </ClCompile>
     <ClCompile Include="src\game\tertiary_spawn.cpp">            <Filter>src\game</Filter> </ClCompile>
     <ClCompile Include="src\game\object_update.cpp">             <Filter>src\game</Filter> </ClCompile>
     <ClCompile Include="src\game\render.cpp">                    <Filter>src\game</Filter> </ClCompile>
+    <ClCompile Include="src\game\save_load.cpp">                 <Filter>src\game</Filter> </ClCompile>
+
+    <!-- src\audio\ -->
+    <ClCompile Include="src\audio\audio.cpp">                    <Filter>src\audio</Filter> </ClCompile>
+    <ClCompile Include="src\audio\fenster_audio_impl.c">         <Filter>src\audio</Filter> </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <!-- src\core\ -->
@@ -142,7 +154,9 @@
     <!-- src\behaviours\ -->
     <ClInclude Include="src\behaviours\npc_helpers.h">                   <Filter>src\behaviours</Filter> </ClInclude>
     <ClInclude Include="src\behaviours\mood.h">                          <Filter>src\behaviours</Filter> </ClInclude>
+    <ClInclude Include="src\behaviours\path.h">                          <Filter>src\behaviours</Filter> </ClInclude>
     <ClInclude Include="src\behaviours\behavior_dispatch.h">             <Filter>src\behaviours</Filter> </ClInclude>
+    <ClInclude Include="src\behaviours\exile1_creatures.h">              <Filter>src\behaviours</Filter> </ClInclude>
 
     <!-- src\behaviours\ -->
     <ClInclude Include="src\behaviours\projectile.h">          <Filter>src\behaviours</Filter> </ClInclude>
@@ -157,6 +171,9 @@
     <!-- src\game\ -->
     <ClInclude Include="src\game\game.h">                        <Filter>src\game</Filter> </ClInclude>
     <ClInclude Include="src\game\config.h">                      <Filter>src\game</Filter> </ClInclude>
+
+    <!-- src\audio\ -->
+    <ClInclude Include="src\audio\audio.h">                      <Filter>src\audio</Filter> </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <!-- Non-code files at the project root — left without <Filter> so

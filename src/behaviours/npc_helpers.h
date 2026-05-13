@@ -105,9 +105,15 @@ void seek_player(Object& obj, const Object& player, int8_t speed);
 // NPC avoidance: set velocity away from player
 void flee_player(Object& obj, const Object& player, int8_t speed);
 
-// Flip sprite to face movement direction. Port of &257e flip_object_to_match_
-// velocity_x — unconditional. Used by NPCs whose 6502 equivalent calls &257e
-// directly (e.g. piranha, wasp).
+// Flip sprite to face movement direction. Port of &257e
+// flip_object_to_match_velocity_x — unconditional:
+//   &257e LDA &43 ; velocity_x
+//   &2580 BEQ &2584 ; leave_with_this_object_x_flip
+//   &2582 STA &37 ; this_object_x_flip
+//   &2584 LDA &37 ; this_object_x_flip
+//   &2586 RTS
+// Used by NPCs whose 6502 equivalent calls &257e directly (e.g. piranha,
+// wasp).
 void face_movement_direction(Object& obj);
 
 // &2578 consider_flipping_object_to_match_velocity_x. 1-in-4 rng gate
@@ -129,8 +135,15 @@ void offset_child_from_parent(Object& child, const Object& parent);
 void aim_toward(int8_t& vel_x, int8_t& vel_y,
                 const Object& from, const Object& target, uint8_t speed);
 
-// Port of &22cc calculate_angle_from_velocities. Converts a signed
-// (dx, dy) byte pair into the 6502's 8-bit angle convention
+// Port of &22cc calculate_angle_from_velocities (thin shim into &22d4
+// calculate_angle_from_vector):
+//   &22cc LDA &43 ; velocity_x
+//   &22ce STA &b4 ; vector_x
+//   &22d0 LDA &45 ; velocity_y
+//   &22d2 STA &b6 ; vector_y
+//   &22d4 JSR &233d get_absolute_vector_components
+//   …angle_from_vector body…
+// Converts (dx, dy) into the 6502's 8-bit angle convention
 // (0x00 = +x, 0x40 = +y, 0x80 = -x, 0xc0 = -y).
 uint8_t angle_from_deltas(int8_t dx, int8_t dy);
 
@@ -170,9 +183,16 @@ void change_object_sprite_to_base_plus_A(Object& obj, uint8_t offset);
 // mounted creatures (red slime) must keep their y-anchor pinned.
 void change_object_sprite_x_only(Object& obj, uint8_t offset);
 
-// Port of &321f dampen_this_object_velocities_twice. Halves both axes
-// of velocity via arithmetic shift right, twice. Used by birds when
-// they wander into water.
+// Port of &321f dampen_this_object_velocities_twice:
+//   &321f JSR &3222 dampen_this_object_velocities
+//         (falls through into &3222 to dampen a second time)
+//   &3222 JSR &322d dampen_this_object_velocity_x
+//   &3225 LDA &45 ; velocity_y
+//   &3227 JSR &3235 calculate_seven_eighths
+//   &322a STA &45
+//   &322c RTS
+// Net effect: applies (7/8)^2 = 49/64 damping to both axes. Used by
+// birds when they wander into water.
 void dampen_velocities_twice(Object& obj);
 
 // &3be1 consider_absorbing_object_touched (reduced). Plays &14ad
