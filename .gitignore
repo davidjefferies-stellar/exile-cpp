@@ -16,3 +16,6 @@ deps/PDCurses-3.9/
 # Per-developer Claude Code context. Kept local so everyone can have
 # their own standing instructions without polluting the repo.
 CLAUDE.md
+
+# Local porting notes — kept out of the repo so they can stay rough.
+docs/
