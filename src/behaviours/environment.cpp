@@ -662,7 +662,16 @@ void update_hive(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4789: Dense nest - spawns creatures from nest
+// Port of &4789 update_dense_nest (called with Y = touching slot, or
+// negative if none):
+//   &4789 TYA
+//   &478a ORA &dc ; rnd_state+3       ; 1-in-2 chance of acting
+//   &478c BMI &47c2 ; leave            ; nothing touching, or roll miss
+//   &478e JMP &0ba9 set_object_Y_velocities_from_this_object
+// Net: half the time, the dense nest zeroes the touched object's
+// velocities (the 6502 helper copies this_object's vels — which are
+// zero for a static nest — onto Y). Port currently removes the toucher
+// outright; full velocity-clamp + creature-spawn is still TODO.
 void update_dense_nest(Object& obj, UpdateContext& ctx) {
     NPC::enforce_minimum_energy(obj, 0x7f);
     // Dense nests absorb objects that touch them
@@ -833,9 +842,12 @@ void update_sucking_nest(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4ba9 update_bush. 6502 calls the freeze helper at &28a3/&28aa; we pin
-// BUSH like a weight-7 static in object_update.cpp (search `pin_bush`),
-// so this stub is a no-op. Bushes are indestructible per &040d.
+// Port of &4ba9 update_bush:
+//   &4ba9 JSR &28a3 set_this_object_velocities_to_zero
+//   &4bac JMP &28aa set_this_object_position_from_previous_position
+// We pin BUSH like a weight-7 static in object_update.cpp (search
+// `pin_bush`), so this stub is a no-op. Bushes are indestructible
+// per &040d.
 void update_bush(Object& obj, UpdateContext& ctx) {
     (void)obj; (void)ctx;
 }

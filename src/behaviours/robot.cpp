@@ -212,7 +212,12 @@ void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
     NPC::enforce_minimum_energy(obj, 0x46);
 }
 
-// &4804: Hovering robot - flies, patrols, fires
+// Port of &4804 update_hovering_robot (3-inst head, falls through to
+// shared hovering-NPC body):
+//   &4804 JSR &4f10 set_turret_or_robot_energy   ; carry clear if low
+//   &4807 BCC &47c2 ; leave                       ; idle this frame
+//   &4809 LDA &dc ; rnd_state+3
+//         (continues into the fire / move chain)
 void update_hovering_robot(Object& obj, UpdateContext& ctx) {
     NPC::cancel_gravity(obj);
     NPC::enforce_minimum_energy(obj, 0x81);
@@ -267,7 +272,15 @@ void update_hovering_robot(Object& obj, UpdateContext& ctx) {
     NPC::consider_hovering_over_ground(obj, ctx);
 }
 
-// &481F: Clawed robot (4 variants)
+// Port of &481f update_clawed_robot head (5-inst entry, falls through
+// to the shared fire / hover-towards-target chain):
+//   &481f JSR &253c check_if_object_was_damaged    ; carry = took >=8
+//   &4822 ROR &11 ; this_object_state              ; bit 7 = damaged
+//   &4824 LSR &11                                    ; consume the bit
+//   &4826 LDX &41 ; this_object_type
+//   &4828 LDY &4881,X ; clawed_robots_energy_table   ; min-energy lookup
+// 4 variants share the body; the energy table at &4881 drives the
+// teleport-away threshold.
 void update_clawed_robot(Object& obj, UpdateContext& ctx) {
     // Min energy depends on variant
     uint8_t min_energy;
@@ -348,7 +361,11 @@ void update_clawed_robot(Object& obj, UpdateContext& ctx) {
     NPC::consider_hovering_over_ground(obj, ctx);
 }
 
-// &43E7 update_hovering_ball / &43EB update_invisible_hovering_ball.
+// Port of &43e7 update_hovering_ball (3-inst head) + &43eb
+// update_invisible_hovering_ball (fall-through entry):
+//   &43e7 JSR &4dd2 rotate_colour_from_frame_counter ; visible variant only
+//   &43ea TYA
+//   &43eb BMI &4400 ; not_touching_other_object       ; invisible entry
 // Shared body factored to take a "is visible" flag matching the 6502's
 // fall-through (visible variant runs &4dd2 colour rotate then drops
 // into the invisible entry at &43eb).

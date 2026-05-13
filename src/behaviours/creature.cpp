@@ -144,7 +144,17 @@ void update_inactive_chatter(Object& obj, UpdateContext& ctx) {
     obj.type = ObjectType::ACTIVE_CHATTER;
 }
 
-// &46F0: Crew member - wanders, can be rescued
+// Port of &46f0 update_crew_member:
+//   &46f0 JSR &2492 play_scream_if_damaged
+//   &46f3 JSR &3a6d update_walking_state
+//   &46f6 JSR &254e increase_energy_by_one_if_not_zero
+//   &46f9 LDA #&07                    ; 1-in-32 flip chance
+//   &46fb JSR &257a consider_flipping_object_to_match_velocity_x_A
+//   &46fe TAY                         ; A = x flip
+//   &46ff LDA #&c0 ; upright
+//   &4701 JMP &38d0 set_spacesuit_sprite_and_palette
+// Wanders, can be rescued; port currently uses our reduced Mood
+// system instead of the 6502's walking-state chain.
 void update_crew_member(Object& obj, UpdateContext& ctx) {
     Mood::update_mood(obj, ctx);
     uint8_t mood = Mood::get_mood(obj);
@@ -639,23 +649,41 @@ static void frogman_common(Object& obj, UpdateContext& ctx, uint8_t damage) {
     NPC::enforce_minimum_energy(obj, 0x7f);
 }
 
-// &4463: Red frogman — avoids mushroom balls, min energy 100 (&64),
-// does NOT deal touch damage in the original. Only green/invisible do.
+// Port of &4463 update_red_frogman:
+//   &4463 LDX #&09 ; npc stimuli type
+//   &4465 JSR &27c9 check_for_npc_stimuli
+//   &4468 LDA #&33 ; OBJECT_RED_MUSHROOM_BALL
+//   &446a TAY
+//   &446b JSR &3c0c avoid_object_type_Y
+//   &446e JSR &3d26 consider_updating_npc_path
+//   &4471 LDY #&64                    ; min energy 100
+//   &4473 BNE &448a set_frogman_minimum_energy (always)
+// Red frogman does NOT deal touch damage in the original; only the
+// green/invisible variants do (they enter at &4477).
 void update_red_frogman(Object& obj, UpdateContext& ctx) {
     frogman_common(obj, ctx, 0);
     NPC::enforce_minimum_energy(obj, 0x64);
 }
 
-// &4477: Green/cyan frogman — 14 touch damage (&447e LDA#&07; ASL -> 14).
-// Also adds to player mushroom timer (&447b JSR add_to_player_mushroom_timer).
+// Port of &4477 update_green_frogman / cyan frogman:
+//   &4477 LDX &3b ; this_object_touching
+//   &4479 BNE &4488 ; not_touching_player
+//   &447b JSR &4005 add_to_player_mushroom_timer (X=0 → red mushroom)
+//   &447e LDA #&07
+//   &4480 STA &12 ; this_object_timer (jump cooldown 7 frames)
+//   &4482 ASL A                       ; A = 14 damage
+//   &4483 LDY #&00 ; OBJECT_SLOT_PLAYER
+//   &4485 JSR &24a6 damage_object
+//   &4488 LDY #&5a                    ; min energy 90
+//         (falls through to set_frogman_minimum_energy)
 void update_green_frogman(Object& obj, UpdateContext& ctx) {
     frogman_common(obj, ctx, 14);
     NPC::enforce_minimum_energy(obj, 0x5a); // min 90
 }
 
-// &4475: Invisible frogman — clears visibility bit (LSR &2b in the original,
-// not yet represented in our Object struct) then falls through to the
-// green frogman behavior (same 14 damage + mushroom timer).
+// Port of &4475 update_invisible_frogman (one instruction, falls
+// through into update_green_frogman):
+//   &4475 LSR &2b ; this_object_visibility   ; clear top bit → invisible
 // TODO: wire invisibility once Object has a visibility field.
 void update_invisible_frogman(Object& obj, UpdateContext& ctx) {
     update_green_frogman(obj, ctx);
@@ -749,7 +777,14 @@ void update_big_fish(Object& obj, UpdateContext& ctx) {
     NPC::consider_face_movement_direction(obj, ctx.rng);
 }
 
-// &420A: Worm - burrows through earth
+// Port of &420a update_worm (thin shim into &4e5e update_worm_or_maggot):
+//   &420a LDA #&86                    ; OBJECT_RED_FROGMAN | &80 = "also target player"
+//   &420c LDY #&07 ; OBJECT_GREEN_FROGMAN   ; avoid type
+//   &420e LDX #&00                    ; 0 damage
+//   &4210 JSR &4e5e update_worm_or_maggot
+//   &4213 JMP &3c11 avoid_target      ; worms avoid green frogmen + player
+// Port currently uses a simplified "move toward player" instead of the
+// 6502 burrow path; the type/avoid/damage signature is preserved.
 void update_worm(Object& obj, UpdateContext& ctx) {
     // Worms move toward player underground
     if (ctx.every_eight_frames) {
@@ -778,7 +813,15 @@ void update_worm(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4E52: Maggot - similar to worm
+// Port of &4e52 update_maggot (thin shim into &4e5e update_worm_or_maggot):
+//   &4e52 LDA &15 ; this_object_energy
+//   &4e54 AND #&7f                    ; clear MSB
+//   &4e56 STA &15
+//   &4e58 LDA #&82 ; OBJECT_CREW_MEMBER | &80   ; target+avoid pair
+//   &4e5a LDY #&2f ; OBJECT_WHITE_YELLOW_BIRD
+//   &4e5c LDX #&14                    ; 20 damage
+//         (falls through to &4e5e update_worm_or_maggot)
+// Same worm/maggot common body, different damage + target/avoid types.
 void update_maggot(Object& obj, UpdateContext& ctx) {
     update_worm(obj, ctx);
 }
@@ -948,17 +991,27 @@ static void update_bird_common(Object& obj, UpdateContext& ctx) {
     NPC::face_movement_direction(obj);
 }
 
-// &4631: Green/yellow and white/yellow birds. Plain wrapper around
-// update_bird_common — their only distinguishing behaviour is the
-// damage/energy table lookup.
+// Port of &4631 update_bird (common entry for green/yellow + white/yellow):
+//   &4631 JSR &2587 rnd
+//   &4634 AND #&3f                    ; 1-in-64 bird call
+//   &4636 BNE &463f ; skip_sound
+//   &4638 JSR &13fa play_sound (data 57 07 43 f6)
+//   &463f LDX &41 ; this_object_type  ; falls through to per-type body
+// The two visible variants only differ in the damage/energy lookup
+// that the common body picks up off the X-indexed table.
 void update_bird(Object& obj, UpdateContext& ctx) {
     update_bird_common(obj, ctx);
 }
 
-// &4621: Red/magenta bird. 1-in-256 chance per frame of playing
-// whistle-two, which deactivates Chatter. We don't have whistle sound
-// playback yet; the logic signals intent via a flag on obj.state so the
-// Chatter update can react later.
+// Port of &4621 update_red_magenta_bird:
+//   &4621 LDA &da ; rnd_state+1
+//   &4623 BNE &463f ; skip_sound       ; 1-in-256 chance
+//   &4625 JSR &2c9e play_whistle_two_sound   ; deactivates Chatter
+//   &4628 JMP &463f ; skip_sound
+//         (falls into update_bird common body at &463f via the JMP)
+// The full whistle-two side effect (setting whistle_two_activating_
+// object so Chatter deactivates) is a separate TODO; the audible
+// whistle goes through here.
 void update_red_magenta_bird(Object& obj, UpdateContext& ctx) {
     uint8_t r = ctx.rng.next();
     if (r == 0) {
@@ -971,9 +1024,13 @@ void update_red_magenta_bird(Object& obj, UpdateContext& ctx) {
     update_bird_common(obj, ctx);
 }
 
-// &462B update_invisible_bird. Visible only after damage (obj.state!=0).
-// 6502 stores visibility at &2b; we use bit 7 of obj.palette since that's
-// the plot path that honours invisibility in our port.
+// Port of &462b update_invisible_bird:
+//   &462b LDA &11 ; this_object_state  ; nonzero = recently damaged
+//   &462d BNE &4631 update_bird        ; skip clearing visibility
+//   &462f LSR &2b ; this_object_visibility   ; clear MSB → invisible
+//         (falls through to &4631 update_bird common body)
+// 6502 stores visibility at &2b; we use bit 7 of obj.palette since
+// that's the plot path that honours invisibility in our port.
 void update_invisible_bird(Object& obj, UpdateContext& ctx) {
     // &462b-&462f: if bird hasn't taken damage recently, clear the top
     // bit of this_object_visibility to make it invisible again.

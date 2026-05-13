@@ -85,11 +85,21 @@ struct Ctx {
 // Math helpers — straight ports of the named 6502 routines.
 // =============================================================================
 
-// 6502 &3256 invert_if_negative.
+// Port of &3256 invert_if_negative:
+//   &3256 CLC
+//   &3257 BPL &325d ; leave            ; A positive → pass through
+//   &3259 EOR #&ff
+//   &325b ADC #&01                      ; two's-complement negate
+//   &325d RTS
 static inline uint8_t invert_if_negative(uint8_t a) {
     return (a & 0x80) ? static_cast<uint8_t>((a ^ 0xff) + 1) : a;
 }
-// 6502 &324c invert_if_positive.
+// Port of &324c invert_if_positive:
+//   &324c CLC
+//   &324d BMI &3253 ; leave             ; A negative → pass through
+//   &324f EOR #&ff
+//   &3251 ADC #&01
+//   &3253 RTS
 static inline uint8_t invert_if_positive(uint8_t a) {
     return (a & 0x80) ? a : static_cast<uint8_t>((a ^ 0xff) + 1);
 }

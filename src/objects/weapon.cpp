@@ -40,8 +40,12 @@ void get_firing_velocity(uint8_t aim_angle, bool facing_left,
     diamond_vector(angle, magnitude, vel_x, vel_y);
 }
 
-// Saturating int8_t add — port of &327f prevent_overflow which clamps a
-// signed-overflowing ADC result to ±0x7f / 0x80.
+// Saturating int8_t add — port of &327f prevent_overflow:
+//   &327f BVC &3285 ; leave         ; V clear → no overflow
+//   &3281 LDA #&7f
+//   &3283 ADC #&00                   ; keeps sign: A = &7f or &80
+//   &3285 RTS
+// Clamps a signed-overflowing ADC result to ±0x7f / 0x80.
 static int8_t sat_add_i8(int a, int b) {
     int s = a + b;
     if (s >  127) s =  127;

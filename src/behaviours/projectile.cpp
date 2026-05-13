@@ -431,7 +431,10 @@ void update_blue_death_ball(Object& obj, UpdateContext& ctx) {
     emit_projectile_trail(obj, ctx);
 }
 
-// &434A: Red bullet - medium damage
+// Port of &434a update_red_bullet:
+//   &434a LDA #&06 ; explosion duration
+//   &434c LDX #&1e ; damage (30)
+//   &434e JMP &461b update_bullet_with_particle_trail_and_consider_moving_towards_player
 void update_red_bullet(Object& obj, UpdateContext& ctx) {
     common_bullet_update(obj, ctx, 30);
     emit_projectile_trail(obj, ctx);
@@ -605,7 +608,12 @@ void update_red_mushroom_ball(Object& obj, UpdateContext& ctx) {
     obj.energy = 0;
 }
 
-// &4791: Invisible debris - just floats
+// Port of &4791 update_invisible_debris:
+//   &4791 JSR &251f reduce_energy_by_one     ; limited lifespan
+//   &4794 BNE &47c2 ; leave
+//   &4796 JMP &2529 set_object_for_removal
+// Port uses an additive timer instead of the 6502's decrementing
+// energy, but the lifespan (~64 frames) matches.
 void update_invisible_debris(Object& obj, UpdateContext& ctx) {
     obj.timer++;
     if (obj.timer >= 64) obj.energy = 0;

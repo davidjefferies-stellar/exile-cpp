@@ -9,12 +9,22 @@ void add_velocities_to_position(Object& obj) {
     obj.y.add_velocity(obj.velocity_y);
 }
 
-// Helper matching &3256: make positive (absolute value for signed byte)
+// Port of &3254 make_positive (falls through into &3256 invert_if_negative):
+//   &3254 CMP #&00
+//   &3256 CLC
+//   &3257 BPL &325d ; leave
+//   &3259 EOR #&ff
+//   &325b ADC #&01                    ; |A|
+//   &325d RTS
 static uint8_t make_positive(int8_t v) {
     return (v < 0) ? static_cast<uint8_t>(-v) : static_cast<uint8_t>(v);
 }
 
-// Helper matching &327f: prevent signed overflow
+// Port of &327f prevent_overflow:
+//   &327f BVC &3285 ; leave
+//   &3281 LDA #&7f
+//   &3283 ADC #&00                    ; A becomes &7f or &80 (sign)
+//   &3285 RTS
 static int8_t prevent_overflow(int val) {
     if (val > 127) return 127;
     if (val < -128) return -128;

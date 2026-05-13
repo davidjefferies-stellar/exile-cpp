@@ -170,8 +170,12 @@ void update_destinator(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &43A7 update_empty_flask. If below waterline, change_object_type to
-// FULL_FLASK. Skip the inert-body call — our main loop handles gravity.
+// Port of &43a7 update_empty_flask:
+//   &43a7 LDA #&4d ; OBJECT_FULL_FLASK
+//   &43a9 BIT &1f ; this_object_in_water  ; positive if submerged
+//   &43ab BPL &43e4 to_change_object_type ; convert to FULL_FLASK
+//   &43ad RTS
+// Skip the inert-body call — our main loop handles gravity.
 void update_empty_flask(Object& obj, UpdateContext& ctx) {
     (void)ctx;
     // Must use per-column waterline (this_object_in_water at &1f), not
@@ -246,9 +250,14 @@ void update_full_flask(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4351 update_remote_control_device. Player-fire sets player_object_fired
-// to the held slot (apply_player_input); doors/transporters/cannon read the
-// same flag via check_if_object_hit_by_remote_control (&0bc5).
+// Port of &4351 update_remote_control_device:
+//   &4351 JSR &0bbf check_if_object_fired
+//   &4354 BNE &43a6 ; leave              ; not firing this frame
+//   &4356 JSR &13fa play_sound (data 57 07 c1 d3)
+//   &435d JMP &312b create_aim_particle
+// Player-fire sets player_object_fired to the held slot
+// (apply_player_input); doors/transporters/cannon read the same flag
+// via check_if_object_hit_by_remote_control (&0bc5).
 void update_control_device(Object& obj, UpdateContext& ctx) {
     update_collectable(obj, ctx);
 
@@ -340,8 +349,13 @@ void update_coronium_boulder(Object& obj, UpdateContext& ctx) {
     coronium_common(obj, ctx);
 }
 
-// &41C2: Coronium crystal - also has a lifespan timer
-// Timer increments by 2 each frame; explodes when it overflows (128 frames)
+// Port of &41c2 update_coronium_crystal (4 inst entry, falls through to
+// shared coronium body):
+//   &41c2 LDA #&0a                    ; explosion duration 10
+//   &41c4 INC &12 ; this_object_timer
+//   &41c6 INC &12 ; this_object_timer  ; +2 / frame
+//   &41c8 BMI &41e8 to_explode_object_with_duration_A
+// Crystal explodes ~64 frames after spawn (timer overflows into bit 7).
 void update_coronium_crystal(Object& obj, UpdateContext& ctx) {
     // Lifespan countdown: timer increases by 2, explodes at overflow (&41c4-&41c8)
     obj.timer += 2;
@@ -397,15 +411,25 @@ void update_alien_weapon(Object& obj, UpdateContext& ctx) {
     Audio::play(Audio::CH_ANY, kSoundLowBeep);
 }
 
-// &439C: Giant block - heavy physics object
+// Port of &439c update_giant_block:
+//   &439c LDA &20 ; this_object_waterline
+//   &439e CMP #&c0                  ; 3/4 submerged?
+//   &43a0 BCC &43a6 ; leave
+//   &43a2 DEC &42 ; acceleration_y  ; float upwards (twice — accel -2)
+//   &43a4 DEC &42
+//   &43a6 RTS
+// Port relies on main-loop physics for the float; the 6502's per-frame
+// accel-tweak isn't ported yet, hence the empty body.
 void update_giant_block(Object& obj, UpdateContext& ctx) {
     // Giant blocks just follow physics, no active behavior
 }
 
-// &43AD: Inert physics object (piano, boulder, invisible inert)
+// Port of &43ad update_inert:
+//   &43ad RTS
+// Pure physics objects (piano, boulder, invisible inert) — gravity,
+// collision, velocity handled by the main physics loop.
 void update_inert(Object& obj, UpdateContext& ctx) {
-    // Pure physics objects - no active behavior.
-    // Gravity, collision, and velocity are handled by the main physics loop.
+    // No active behavior.
 }
 
 } // namespace Behaviors

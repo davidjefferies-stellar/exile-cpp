@@ -75,8 +75,12 @@ void damage_player_if_touching(Object& obj, Object& player, uint8_t damage,
     }
 }
 
-// &352e give_object_minimum_energy. &3530 BEQ skips when energy==0
-// (mid-explode); healing here makes the NPC immortal.
+// Port of &352e give_object_minimum_energy:
+//   &352e LDA &15 ; this_object_energy
+//   &3530 BEQ &3537 ; leave            ; energy==0 → mid-explode, skip
+//   &3532 JSR &3bc1 get_maximum_of_A_and_Y
+//   &3535 STA &15
+//   &3537 RTS
 void enforce_minimum_energy(Object& obj, uint8_t min_energy) {
     if (obj.energy == 0) return;
     if (obj.energy < min_energy) {
