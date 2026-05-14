@@ -401,11 +401,12 @@ uint8_t substitute_door_for_obstruction(
         return tile_and_flip;
     }
 
-    // Live primary owns authoritative state; tertiary fallback strips
-    // bit 7 (spawn gate, not door state). Port deviation: when energy hits
-    // 0 the slot mutates to EXPLOSION and tertiary_data_offset is reused
-    // as a duration counter — treat SLOW_OR_DESTROYED as permanently open.
-    uint8_t data = static_cast<uint8_t>(tertiary_byte_fallback & 0x7f);
+    // Live primary owns authoritative state; tertiary fallback keeps
+    // bit 7 (needs-creating gate) — &3ead reads it BEFORE stripping.
+    // Port deviation: when energy hits 0 the slot mutates to EXPLOSION
+    // and tertiary_data_offset is reused as a duration counter — treat
+    // SLOW_OR_DESTROYED as permanently open.
+    uint8_t raw_data = tertiary_byte_fallback;
     bool destroyed_explosion = false;
     if (data_offset > 0) {
         for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
@@ -415,19 +416,30 @@ uint8_t substitute_door_for_obstruction(
                 if (obj.type == ObjectType::EXPLOSION) {
                     destroyed_explosion = true;
                 } else {
-                    data = obj.tertiary_data_offset;
+                    // Primaries store the data byte with bit 7 already
+                    // stripped by the spawn path (&408a in 6502).
+                    raw_data = obj.tertiary_data_offset;
                 }
                 break;
             }
         }
     }
 
-    // &3e91-&3e94 door_tiles_table + &3ea1-&3ea7 orientation = fh XOR fv.
-    // Horizontal closed -> SPACESHIP_WALL_HORIZONTAL_QUARTER (thin top slab
-    // the player walks on); vertical closed -> STONE_SLOPE_78 (left
-    // quarter solid). Both-set / neither-set means horizontal.
-    bool opening   = (data & 0x02) != 0;
-    bool destroyed = (data & 0x08) != 0; // DoorFlag::SLOW_OR_DESTROYED
+    // Port of &3ead-&3eb5 "is door open?" test:
+    //   &3ead BMI &3eb0   ; bit 7 set → still tertiary, skip LSR
+    //   &3eaf LSR A       ; primary → shift bits right by 1
+    //   &3eb0 AND #&02    ; mask "OPENING slot" after shift
+    // For a tertiary entry that mask reads OPENING (bit 1). For a
+    // primary (bit 7 already stripped, LSR shifts MOVING into bit 1)
+    // it actually reads MOVING (bit 2 of the original byte). MOVING is
+    // asserted every frame update_door runs and only cleared at &4d09
+    // stop_door — so a closing door reports "open" to obstruction
+    // queries right up until it parks at the closed end.
+    bool still_tertiary = (raw_data & 0x80) != 0;
+    bool door_open = still_tertiary
+        ? (raw_data & 0x02) != 0    // tertiary: read OPENING
+        : (raw_data & 0x04) != 0;   // primary:  read MOVING
+    bool destroyed = (raw_data & 0x08) != 0; // SLOW_OR_DESTROYED
     bool fh = (tile_and_flip & TileFlip::HORIZONTAL) != 0;
     bool fv = (tile_and_flip & TileFlip::VERTICAL)   != 0;
     bool vertical = (fh != fv);
@@ -437,7 +449,7 @@ uint8_t substitute_door_for_obstruction(
     // nibble + &247a collision-flip XOR — without this the substitute's
     // obstruction band lands on the wrong half of the tile.
     uint8_t flip_bits = tile_and_flip & ~TileFlip::TYPE_MASK;
-    if (opening || destroyed || destroyed_explosion) {
+    if (door_open || destroyed || destroyed_explosion) {
         return static_cast<uint8_t>(TileType::SPACE) | flip_bits;
     }
     uint8_t sub_type = vertical

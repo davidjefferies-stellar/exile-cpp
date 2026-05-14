@@ -181,145 +181,12 @@ bool Game::init() {
         (void)slot;
     }
 
-    // Test setup: 2 red slime drops onto door at (80, 96). Each deals 100
-    // dmg (&47b1 LDA #&64); same-frame total 200 drops door (255->55) below
-    // pair-3 threshold 128 -> SLOW_OR_DESTROYED. Stagger x_frac to avoid
-    // mutual AABB overlap before reaching the door.
-    {
-        constexpr uint8_t kStartTileX = 80;
-        constexpr uint8_t kStartTileY = 90;
-        for (int i = 0; i < 2; i++) {
-            uint8_t x_frac = static_cast<uint8_t>(0x40 + i * 0x60);
-            int slot = object_mgr_.create_object(
-                ObjectType::RED_DROP, /*min_free_slots=*/0,
-                kStartTileX, x_frac, kStartTileY, 0x40);
-            if (slot > 0) {
-                Object& d = object_mgr_.object(slot);
-                d.velocity_x = 0;
-                d.velocity_y = 4;  // matches &47f3 LDA #&04 spawn velocity
-            }
-        }
-    }
+    // Port-only startup rigs (red-slime damage demo + optional
+    // creature stress grid / grenade chain / icer drop). Body lives in
+    // game_debug.cpp alongside the other debug helpers.
+    spawn_test_rigs(cfg.stress_test, cfg.grenade_chain, cfg.icer_drop);
 
-    // [debug] stress_test — gated test rig that spawns one of every
-    // animated creature type in a grid NW of the player. Off by
-    // default; enable in exile.ini when benchmarking the AI / render
-    // pipeline.
-    if (cfg.stress_test) {
-        static constexpr ObjectType kCreatures[] = {
-            ObjectType::ACTIVE_CHATTER,
-            ObjectType::CREW_MEMBER,
-            ObjectType::FLUFFY,
-            ObjectType::SMALL_HIVE,
-            ObjectType::LARGE_HIVE,
-            ObjectType::RED_FROGMAN,
-            ObjectType::GREEN_FROGMAN,
-            ObjectType::INVISIBLE_FROGMAN,
-            ObjectType::RED_SLIME,
-            ObjectType::GREEN_SLIME,
-            ObjectType::YELLOW_SLIME,
-            ObjectType::DENSE_NEST,
-            ObjectType::SUCKING_NEST,
-            ObjectType::BIG_FISH,
-            ObjectType::WORM,
-            ObjectType::PIRANHA,
-            ObjectType::WASP,
-            ObjectType::HOVERING_BALL,
-            ObjectType::INVISIBLE_HOVERING_BALL,
-            ObjectType::MAGENTA_ROLLING_ROBOT,
-            ObjectType::RED_ROLLING_ROBOT,
-            ObjectType::BLUE_ROLLING_ROBOT,
-            ObjectType::HOVERING_ROBOT,
-            ObjectType::MAGENTA_CLAWED_ROBOT,
-            ObjectType::CYAN_CLAWED_ROBOT,
-            ObjectType::GREEN_CLAWED_ROBOT,
-            ObjectType::RED_CLAWED_ROBOT,
-            ObjectType::MAGGOT,
-            ObjectType::GARGOYLE,
-            ObjectType::RED_MAGENTA_IMP,
-            ObjectType::RED_YELLOW_IMP,
-            ObjectType::BLUE_CYAN_IMP,
-            ObjectType::CYAN_YELLOW_IMP,
-            ObjectType::RED_CYAN_IMP,
-            ObjectType::GREEN_YELLOW_BIRD,
-            ObjectType::WHITE_YELLOW_BIRD,
-            ObjectType::RED_MAGENTA_BIRD,
-            ObjectType::INVISIBLE_BIRD,
-            ObjectType::DOG,
-            ObjectType::CRAB,
-        };
-        constexpr int kCols      = 8;
-        constexpr uint8_t kBaseX = 60;  // 18 tiles left of player (78)
-        constexpr uint8_t kBaseY = 85;  // 10 tiles above player (95)
-        constexpr uint8_t kStepX = 3;
-        constexpr uint8_t kStepY = 3;
-        for (size_t i = 0; i < sizeof(kCreatures) / sizeof(kCreatures[0]); i++) {
-            uint8_t tx = static_cast<uint8_t>(kBaseX +
-                static_cast<int>(i % kCols) * kStepX);
-            uint8_t ty = static_cast<uint8_t>(kBaseY +
-                static_cast<int>(i / kCols) * kStepY);
-            object_mgr_.create_object(
-                kCreatures[i], /*min_free_slots=*/0,
-                tx, 0x80, ty, 0x80);
-        }
-    }
-#if 0
-    // Disabled — grenade chain-reaction test rig.
-    {
-        constexpr uint8_t kDoorTileX = 80;
-        constexpr uint8_t kDoorTileY = 95;
-        for (int i = 0; i < 5; i++) {
-            uint8_t x_frac = static_cast<uint8_t>(0x00 + i * 0x33);
-            ObjectType t = (i == 0) ? ObjectType::ACTIVE_GRENADE
-                                    : ObjectType::INACTIVE_GRENADE;
-            int slot = object_mgr_.create_object(
-                t, /*min_free_slots=*/0,
-                kDoorTileX, x_frac, kDoorTileY, 0x40);
-            if (slot > 0) {
-                Object& g = object_mgr_.object(slot);
-                g.velocity_x = 0;
-                g.velocity_y = 0;
-                g.timer = 0;
-                if (i > 0) {
-                    g.energy = 0x3f;
-                }
-                if (i == 0) {
-                    test_active_grenade_slot_ = slot;
-                } else {
-                    test_pending_grenade_slots_[i - 1] = slot;
-                }
-            }
-        }
-    }
-#endif
-#if 0
-    // Disabled — kept around as a reference for the bullet-drop test.
-    {
-        constexpr uint8_t kStartTileX = 80;
-        constexpr uint8_t kStartTileY = 80;
-        constexpr int8_t  kFallVy     = 0x30;
-        for (int i = 0; i < 7; i++) {
-            uint8_t x_frac = static_cast<uint8_t>(0x20 + i * 0x20);
-            int slot = object_mgr_.create_object(
-                ObjectType::ICER_BULLET, /*min_free_slots=*/0,
-                kStartTileX, x_frac, kStartTileY, 0x80);
-            if (slot > 0) {
-                Object& b = object_mgr_.object(slot);
-                b.velocity_x = 0;
-                b.velocity_y = kFallVy;
-                b.timer = 0x30;
-            }
-        }
-    }
-#endif
-
-    // Truncate + open the lifecycle log. Any previous session's data is
-    // discarded — we only ever want the current run's churn record. Each
-    // non-paused frame flushes its events here via flush_debug_log().
-    // Gated on [logs] enabled so a normal run doesn't litter the cwd; all
-    // log call sites already check `is_open()` so the open() skip turns
-    // them into no-ops naturally. The startup census + per-frame flush
-    // implementations live in game_debug.cpp.
+    // Truncate + open the lifecycle log. 
     if (cfg.logs_enabled) {
         debug_log_.open("exile-debug.log",
                         std::ios::out | std::ios::trunc);
@@ -342,8 +209,6 @@ bool Game::init() {
     return true;
 }
 
-// flush_debug_log and dump_init_diagnostics now live in game_debug.cpp.
-
 void Game::run() {
     using clock = std::chrono::steady_clock;
     // Locked logic+render rate from [debug] target_fps. Logic and render
@@ -351,8 +216,7 @@ void Game::run() {
     // the game (audio aligned via Audio::set_logic_rate in init).
     auto frame_duration = std::chrono::microseconds(1'000'000 / target_fps_);
 
-    // 30-frame rolling FPS window — fed by actual frame_start deltas so
-    // the per-frame sleep counts. Game::render reads fps_value_.
+    // 30-frame rolling FPS window.
     auto fps_window_start = clock::now();
     int  fps_frame_count  = 0;
 
@@ -386,10 +250,7 @@ void Game::tick() {
         // changing every frame.
         process_input();
 
-        // Activation-anchor mode is now driven by the "Map mode"
-        // checkbox in the bottom HUD strip. Renderer owns the flag so
-        // the click-to-toggle in the renderer's mouse handler stays
-        // self-contained; we just read it each frame.
+        // Activation-anchor mode is driven by the "Map mode"
         activation_from_camera_ = renderer_->map_mode_enabled();
 
         // Rising-edge toggle on 'P': freeze / unfreeze world updates.
@@ -481,9 +342,7 @@ void Game::tick() {
         if (!paused_) {
             object_mgr_.reset_debug_counters();
             // [player] invincible — reset HP to full at the top of every
-            // tick so any damage applied during this frame is undone
-            // before the next visual update. Cheap, doesn't need to
-            // touch any per-source damage path.
+            // tick 
             if (invincible_) object_mgr_.player().energy = 0xff;
             update_timers();
             // &19c9 update_background_flash — tick the sky-flash cooldown
@@ -511,9 +370,7 @@ void Game::tick() {
                 object_mgr_.door_timer_--;
             }
 
-            // Random events — currently just the star-field spawn path from
-            // &2660-&26e6 (see update_events). Full event system (worms /
-            // maggots / clawed robots / Triax summoning) is TODO.
+            // Random events 
             update_events();
 
             // Tick the particle pool (port of &207e update_particles).
@@ -524,9 +381,6 @@ void Game::tick() {
             }
 
             // &4a1c ROR &29d7 — clear player_object_fired at end of tick
-            // so the "fire while holding" pulse only lasts one frame.
-            // Any RCD / door / transporter hit-test that needed to see it
-            // ran during update_objects / update_events above.
             player_object_fired_ = 0xff;
         }
 
@@ -800,18 +654,12 @@ void Game::update_events() {
                 sprite_h_byte = static_cast<uint8_t>((h > 0 ? (h - 1) : 0) * 8);
             }
 
-            // Place the spawn so its sprite CENTRE sits on the tile's
-            // boundary opposite the pipe / nest opening — i.e. half of
-            // the sprite is in the pipe tile, half emerges into the next
-            // tile down (or up if v-flipped). The 6502 default at
-            // &4075-&407e is bottom-flush (sprite bottom at tile bottom);
-            // the visual we want is the creature partially poking out of
-            // the opening, so we shift by an extra h/2.
+            // Port-only emergence shift for fireball in pipes
             bool v_flipped = (res.tile_and_flip & TileFlip::VERTICAL) != 0;
-            uint8_t half_h = static_cast<uint8_t>(sprite_h_byte >> 1);
             spawn.y.fraction = v_flipped
-                ? static_cast<uint8_t>(0u - half_h)            // centred on tile TOP edge
-                : static_cast<uint8_t>(0xff - half_h);          // centred on tile BOTTOM edge
+                ? static_cast<uint8_t>(0x08)
+                : static_cast<uint8_t>(0xf8);
+            (void)sprite_h_byte;
 
             // &3e7d-&3e83 centre the spawn horizontally within the tile.
             // This overrides whatever &4072 set.

@@ -725,9 +725,14 @@ void update_red_drop(Object& obj, UpdateContext& ctx) {
 void update_fireball(Object& obj, UpdateContext& ctx) {
     NPC::damage_player_if_touching(obj, ctx.mgr.player(), 8, ctx.damage_events);
 
-    if (ctx.every_four_frames) {
-        obj.palette = (obj.palette & 0x70) | (ctx.rng.next() & 0x07);
-    }
+    // Port of &4b13-&4b1b palette pick. Indexed by (timer & 7) into the
+    // 6502's &4ace fireball_palettes_table: { kyR, rwY, rwY, rwY, kyR,
+    // rwY, kyR, rwY } — 5 red/white/yellow, 3 black/yellow/red, so the
+    // flame stays in the warm half of the palette as the timer ticks.
+    static constexpr uint8_t kFireballPalettes[8] = {
+        0x10, 0x34, 0x34, 0x34, 0x10, 0x34, 0x10, 0x34,
+    };
+    obj.palette = kFireballPalettes[obj.timer & 0x07];
 
     // &4b0b-&4b11: random horizontal/vertical flip every frame — keeps
     // the flames looking chaotic.

@@ -543,3 +543,144 @@ void Game::tick_test_flood() {
     Water::set_y(1, static_cast<uint8_t>(ny), 0);
     test_flood_steps_remaining_--;
 }
+
+// ---------- Startup test spawns ----------------------------------------
+//
+// Drops a pair of red slimes onto the door at (80, 96) so a fresh game
+// has a visible damage event in view, and optionally scatters one of
+// every animated NPC type in a grid NW of the player when [debug]
+// stress_test is on. Both rigs are port-only debug aids — the 6502 ROM
+// has no equivalent — but they're useful enough during AI / damage
+// regression work to keep around behind the existing config gate.
+void Game::spawn_test_rigs(bool stress_test, bool grenade_chain, bool icer_drop) {
+    // Two red slime drops onto door at (80, 96). Each deals 100 dmg
+    // (&47b1 LDA #&64); same-frame total 200 drops door (255->55) below
+    // pair-3 threshold 128 -> SLOW_OR_DESTROYED. Stagger x_frac so the
+    // pair doesn't overlap before reaching the door.
+    {
+        constexpr uint8_t kStartTileX = 80;
+        constexpr uint8_t kStartTileY = 90;
+        for (int i = 0; i < 2; i++) {
+            uint8_t x_frac = static_cast<uint8_t>(0x40 + i * 0x60);
+            int slot = object_mgr_.create_object(
+                ObjectType::RED_DROP, /*min_free_slots=*/0,
+                kStartTileX, x_frac, kStartTileY, 0x40);
+            if (slot > 0) {
+                Object& d = object_mgr_.object(slot);
+                d.velocity_x = 0;
+                d.velocity_y = 4;  // matches &47f3 LDA #&04 spawn velocity
+            }
+        }
+    }
+
+    // [debug] grenade_chain — one ACTIVE_GRENADE + four INACTIVE_GRENADEs
+    // on door (80, 95). tick_test_grenades() flips the inactives to
+    // ACTIVE mid-fuse so the four detonate in a chain ~48 frames after
+    // the seed. Records the spawned slots in test_*_grenade_slots_.
+    if (grenade_chain) {
+        constexpr uint8_t kDoorTileX = 80;
+        constexpr uint8_t kDoorTileY = 95;
+        for (int i = 0; i < 5; i++) {
+            uint8_t x_frac = static_cast<uint8_t>(0x00 + i * 0x33);
+            ObjectType t = (i == 0) ? ObjectType::ACTIVE_GRENADE
+                                    : ObjectType::INACTIVE_GRENADE;
+            int slot = object_mgr_.create_object(
+                t, /*min_free_slots=*/0,
+                kDoorTileX, x_frac, kDoorTileY, 0x40);
+            if (slot > 0) {
+                Object& g = object_mgr_.object(slot);
+                g.velocity_x = 0;
+                g.velocity_y = 0;
+                g.timer = 0;
+                if (i > 0) g.energy = 0x3f;
+                if (i == 0) {
+                    test_active_grenade_slot_ = slot;
+                } else {
+                    test_pending_grenade_slots_[i - 1] = slot;
+                }
+            }
+        }
+    }
+
+    // [debug] icer_drop — seven ICER_BULLETs falling at vy=0x30 onto
+    // (80, 80). Reference rig for bullet-vs-tile collision tuning.
+    if (icer_drop) {
+        constexpr uint8_t kStartTileX = 80;
+        constexpr uint8_t kStartTileY = 80;
+        constexpr int8_t  kFallVy     = 0x30;
+        for (int i = 0; i < 7; i++) {
+            uint8_t x_frac = static_cast<uint8_t>(0x20 + i * 0x20);
+            int slot = object_mgr_.create_object(
+                ObjectType::ICER_BULLET, /*min_free_slots=*/0,
+                kStartTileX, x_frac, kStartTileY, 0x80);
+            if (slot > 0) {
+                Object& b = object_mgr_.object(slot);
+                b.velocity_x = 0;
+                b.velocity_y = kFallVy;
+                b.timer = 0x30;
+            }
+        }
+    }
+
+    // [debug] stress_test — gated rig that spawns one of every animated
+    // creature type in an 8-wide grid NW of the player. Off by default;
+    // enable in exile.ini when benchmarking the AI / render pipeline.
+    if (!stress_test) return;
+
+    static constexpr ObjectType kCreatures[] = {
+        ObjectType::ACTIVE_CHATTER,
+        ObjectType::CREW_MEMBER,
+        ObjectType::FLUFFY,
+        ObjectType::SMALL_HIVE,
+        ObjectType::LARGE_HIVE,
+        ObjectType::RED_FROGMAN,
+        ObjectType::GREEN_FROGMAN,
+        ObjectType::INVISIBLE_FROGMAN,
+        ObjectType::RED_SLIME,
+        ObjectType::GREEN_SLIME,
+        ObjectType::YELLOW_SLIME,
+        ObjectType::DENSE_NEST,
+        ObjectType::SUCKING_NEST,
+        ObjectType::BIG_FISH,
+        ObjectType::WORM,
+        ObjectType::PIRANHA,
+        ObjectType::WASP,
+        ObjectType::HOVERING_BALL,
+        ObjectType::INVISIBLE_HOVERING_BALL,
+        ObjectType::MAGENTA_ROLLING_ROBOT,
+        ObjectType::RED_ROLLING_ROBOT,
+        ObjectType::BLUE_ROLLING_ROBOT,
+        ObjectType::HOVERING_ROBOT,
+        ObjectType::MAGENTA_CLAWED_ROBOT,
+        ObjectType::CYAN_CLAWED_ROBOT,
+        ObjectType::GREEN_CLAWED_ROBOT,
+        ObjectType::RED_CLAWED_ROBOT,
+        ObjectType::MAGGOT,
+        ObjectType::GARGOYLE,
+        ObjectType::RED_MAGENTA_IMP,
+        ObjectType::RED_YELLOW_IMP,
+        ObjectType::BLUE_CYAN_IMP,
+        ObjectType::CYAN_YELLOW_IMP,
+        ObjectType::RED_CYAN_IMP,
+        ObjectType::GREEN_YELLOW_BIRD,
+        ObjectType::WHITE_YELLOW_BIRD,
+        ObjectType::RED_MAGENTA_BIRD,
+        ObjectType::INVISIBLE_BIRD,
+        ObjectType::DOG,
+        ObjectType::CRAB,
+    };
+    constexpr int kCols      = 8;
+    constexpr uint8_t kBaseX = 60;  // 18 tiles left of player (78)
+    constexpr uint8_t kBaseY = 85;  // 10 tiles above player (95)
+    constexpr uint8_t kStepX = 3;
+    constexpr uint8_t kStepY = 3;
+    for (size_t i = 0; i < sizeof(kCreatures) / sizeof(kCreatures[0]); i++) {
+        uint8_t tx = static_cast<uint8_t>(kBaseX +
+            static_cast<int>(i % kCols) * kStepX);
+        uint8_t ty = static_cast<uint8_t>(kBaseY +
+            static_cast<int>(i / kCols) * kStepY);
+        object_mgr_.create_object(
+            kCreatures[i], /*min_free_slots=*/0,
+            tx, 0x80, ty, 0x80);
+    }
+}

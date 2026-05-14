@@ -140,19 +140,33 @@ constexpr uint32_t kDebugToneInc =
 #endif
 bool g_open = false;
 
-// 8-bit freq envelope -> phase increment. 5-octave geometric sweep over
-// SN76489 range: freq_hz(byte) = 125 * 2^(byte * 5 / 255).
+// Port of &1345-&135f envelope-byte -> SN76489 10-bit divider:
+//   EOR #&ff; pick the smallest Y in {0..3} where (a >= limits[Y]);
+//   SBC bases[Y]; ASL A / ROL freq_high Y times. The 6502 then splits
+//   the result across the SN76489 latch + data bytes, but composed
+//   the 10-bit N simplifies to (a_post_SBC << Y). Frequency follows
+//   the 6502's documented formula: freq = 4_000_000 / (32 * N).
+constexpr uint16_t divider_from_envelope_byte(unsigned byte_value) {
+    constexpr uint8_t limits[4] = { 0x00, 0x40, 0x84, 0xb6 };
+    constexpr uint8_t bases[4]  = { 0xe0, 0x10, 0x4a, 0x80 };
+    uint8_t a = static_cast<uint8_t>((byte_value & 0xff) ^ 0xff);
+    int y = 4;
+    while (y > 0) {
+        y--;
+        if (a >= limits[y]) break;
+    }
+    a = static_cast<uint8_t>(a - bases[y]);
+    uint16_t n = a;
+    for (int s = 0; s < y; s++) n = static_cast<uint16_t>(n << 1);
+    return n == 0 ? 1 : n;
+}
+
 constexpr uint64_t phase_inc_for_byte(unsigned byte_value) {
-    const uint64_t b = byte_value & 0xff;
-    const uint64_t scaled = b * 5u;
-    const uint64_t octaves = scaled / 255u;                      // 0..5
-    const uint64_t frac    = (scaled % 255u) * 65536u / 255u;    // 0..65535
-    // 2^frac approximated linearly between 2^0=1 and 2^1=2.
-    const uint64_t mantissa = 65536u + frac;
-    const uint64_t freq_q16 = (125ull << octaves) * mantissa;    // freq * 65536
-    // phase_inc = freq * 2^32 / sample_rate; we have freq * 65536
-    // already, so multiply by 65536 / sample_rate.
-    return (freq_q16 * 65536ull) / kSampleRate;
+    const uint16_t n = divider_from_envelope_byte(byte_value);
+    // phase_inc = freq * 2^32 / sample_rate, where freq = 125000 / N.
+    // Combine into a single integer division to keep precision.
+    constexpr uint64_t k = (125000ULL << 32) / kSampleRate;
+    return k / n;
 }
 
 constexpr uint32_t make_phase_inc(unsigned n) {
@@ -183,7 +197,15 @@ constexpr uint8_t noise_reg_for_byte(unsigned byte_value) {
     return static_cast<uint8_t>((a & 0x0f) | 0xe0);
 }
 constexpr uint32_t noise_step_for_byte(unsigned byte_value) {
-    constexpr uint64_t rate_hz[4] = { 488, 244, 122, 122 };
+    // SN76489AN noise LFSR shift rate at the BBC's 4 MHz chip clock:
+    //   NF=00: 4_000_000 / 32 / 16 = 7812.5 Hz
+    //   NF=01: 4_000_000 / 32 / 32 = 3906.25 Hz
+    //   NF=10: 4_000_000 / 32 / 64 = 1953.125 Hz
+    //   NF=11: channel 2 tone freq — we approximate with the slowest
+    //          fixed rate since we don't have channel-2's live divider
+    //          here. Matches the 6502's `4_000_000 / (32 * N)` formula
+    //          documented at &1345.
+    constexpr uint64_t rate_hz[4] = { 7813, 3906, 1953, 1953 };
     const uint8_t reg = noise_reg_for_byte(byte_value);
     return static_cast<uint32_t>((rate_hz[reg & 0x03] << 32) / kSampleRate);
 }

@@ -320,6 +320,11 @@ private:
     void tick_test_grenades();
     void tick_test_flood();
 
+    // Startup test spawns: red-slime-on-door rig (always) plus the
+    // [debug] gated rigs — stress_test creature grid, grenade_chain,
+    // icer_drop. Called once from Game::init after the world is baked.
+    void spawn_test_rigs(bool stress_test, bool grenade_chain, bool icer_drop);
+
     // Per-frame TTL tick + erase pass for the damage / floating-label
     // overlay rings. Both are debug-only visual feedback (no gameplay
     // effect) so the body lives in game_debug.cpp alongside the rest of

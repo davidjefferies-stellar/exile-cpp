@@ -275,6 +275,10 @@ StartupConfig load_startup_config(const std::string& path) {
             bool b = false;
             if (key == "stress_test" && parse_bool(value, b)) {
                 cfg.stress_test = b;
+            } else if (key == "grenade_chain" && parse_bool(value, b)) {
+                cfg.grenade_chain = b;
+            } else if (key == "icer_drop" && parse_bool(value, b)) {
+                cfg.icer_drop = b;
             } else if (key == "show_fps" && parse_bool(value, b)) {
                 cfg.show_fps = b;
             } else if (key == "target_fps") {

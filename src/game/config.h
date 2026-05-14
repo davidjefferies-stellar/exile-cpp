@@ -102,6 +102,17 @@ struct StartupConfig {
     // and visual regression testing.
     bool stress_test = false;
 
+    // [debug] grenade_chain — when true, drop one ACTIVE_GRENADE and
+    // four INACTIVE_GRENADEs on door (80, 95) at startup. tick_test_
+    // grenades() flips the inactives to active mid-fuse so the four
+    // detonate in a chain ~48 frames after the seed. Default false.
+    bool grenade_chain = false;
+
+    // [debug] icer_drop — when true, drop seven ICER_BULLETs falling at
+    // vy=0x30 onto (80, 80) at startup. Used during the bullet-vs-tile
+    // collision tuning work; left as a reference. Default false.
+    bool icer_drop = false;
+
     // [debug] show_fps — when true, render a measured frames-per-second
     // value in the top-right corner of the window. Sampled over a 30-
     // frame rolling window in Game::run, so the number reflects actual
