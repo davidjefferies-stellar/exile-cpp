@@ -359,14 +359,16 @@ void aim_toward(int8_t& vel_x, int8_t& vel_y,
     vel_y = static_cast<int8_t>(vy);
 }
 
-// Port of update_sprite_offset_using_velocities (&2555-&256c). "Max of
-// |vx|, |vy|" divided by 16, plus 1, plus existing timer, mod
-// `modulus`. Faster-moving objects tick through their frames faster.
-uint8_t update_sprite_offset_using_velocities(Object& obj, uint8_t modulus) {
+// Port of update_sprite_offset_using_velocities (&2555 → &2557-&256c).
+// "Max of |vx|, |vy|" shifted right `divide_shift` times, plus 1, plus
+// existing timer, mod `modulus`. Faster movers cycle frames faster.
+uint8_t update_sprite_offset_using_velocities(Object& obj, uint8_t modulus,
+                                              uint8_t divide_shift) {
     uint8_t ax = static_cast<uint8_t>(std::abs(obj.velocity_x));
     uint8_t ay = static_cast<uint8_t>(std::abs(obj.velocity_y));
     uint8_t m  = (ax > ay) ? ax : ay;
-    m = static_cast<uint8_t>(m >> 4);
+    if (divide_shift > 7) divide_shift = 7;
+    m = static_cast<uint8_t>(m >> divide_shift);
     uint16_t sum = static_cast<uint16_t>(obj.timer) + 1 + m;
     if (modulus == 0) modulus = 1;
     obj.timer = static_cast<uint8_t>(sum % modulus);

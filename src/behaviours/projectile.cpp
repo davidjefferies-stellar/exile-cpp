@@ -298,8 +298,21 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
 
 // &42F7 update_active_grenade. Destroyed (energy==0) -> duration 10;
 // fuse expiry (timer==0x60) -> duration 16; else tick palette through
-// &4dd4 table and play tick sound. Player-cancel via &0bbf is TODO.
+// &4dd4 table and play tick sound. Firing while holding (player_object_
+// fired == this slot, &0bbf) demotes back to INACTIVE_GRENADE so the
+// player can re-pocket / disarm without exploding.
 void update_active_grenade(Object& obj, UpdateContext& ctx) {
+    // &42f7-&4302: check_if_object_fired -> change_object_type back to
+    // OBJECT_INACTIVE_GRENADE with a fresh palette/sprite, fuse reset.
+    if (static_cast<uint8_t>(ctx.this_slot) == ctx.player_object_fired) {
+        obj.timer  = 0;
+        obj.type   = ObjectType::INACTIVE_GRENADE;
+        uint8_t idx = static_cast<uint8_t>(ObjectType::INACTIVE_GRENADE);
+        obj.sprite  = object_types_sprite[idx];
+        obj.palette = object_types_palette_and_pickup[idx] & 0x7f;
+        return;
+    }
+
     // &4305-&4309: destroyed -> quick explosion (duration 10).
     if (obj.energy == 0) {
         ctx.mgr.log_diag(
@@ -446,19 +459,28 @@ void update_pistol_bullet(Object& obj, UpdateContext& ctx) {
     emit_projectile_trail(obj, ctx);
 }
 
-// &4A88 update_plasma_ball. On contact -> fireball; underwater 1-in-4
-// removal; energy=0 -> explode. Falls under main-loop gravity (6502
-// doesn't touch acceleration_y here). TODO: &4aa7 particles, &4a8d
-// fireball type-match.
+// &4A88 update_plasma_ball. Contact -> duration-13 fireball, except for
+// EXPLOSION / BUSH / FIREBALL (&1fd0 gate). Underwater: 1-in-4 random
+// removal. Trail = 3 particles while energy >= 3, ramping to a 30-
+// particle burst on the last two frames and at removal (&4aa7).
 void update_plasma_ball(Object& obj, UpdateContext& ctx) {
-    // &4a88: if touching another object, turn that object into a duration-13
-    // fireball (the plasma ball "becomes" the fireball in the same slot).
+    // &4a88-&4a90 turn-touched-object-into-fireball, gated by &1fd0
+    // check_if_object_collides_with_plasma_ball: explosion / bush /
+    // fireball are pass-throughs. Slot 0 (player) is excluded here as
+    // a port-only safety so fireballs spawn at the target, not the player.
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS && obj.touching != 0) {
-        obj.type   = ObjectType::FIREBALL;
-        obj.timer  = 0x0d;
-        obj.energy = 0x0d;
-        obj.state  = 0; // zero target-object — "from exploding object"
-        return;
+        const Object& touched = ctx.mgr.object(obj.touching);
+        bool pass_through =
+            touched.type == ObjectType::EXPLOSION ||
+            touched.type == ObjectType::BUSH      ||
+            touched.type == ObjectType::FIREBALL;
+        if (!pass_through) {
+            obj.type   = ObjectType::FIREBALL;
+            obj.timer  = 0x0d;
+            obj.energy = 0x0d;
+            obj.state  = 0; // zero target-object — "from exploding object"
+            return;
+        }
     }
 
     // &4a92-&4a98: 1-in-4 random removal while fully underwater.
@@ -476,13 +498,20 @@ void update_plasma_ball(Object& obj, UpdateContext& ctx) {
     // &4a9a: reduce_energy_by_one. If it reaches 0 -> remove (explode).
     if (obj.energy > 0) obj.energy--;
     if (obj.energy == 0) {
-        // &4ac8 remove_plasma_ball_or_fireball adds a burst of particles.
-        if (ctx.particles) ctx.particles->emit(ParticleType::PLASMA, 4, obj, ctx.rng);
+        // &4ac8 remove_plasma_ball_or_fireball jumps to the &4aa7
+        // 30-particle "death" burst (flag 0xa1 = inherit object velocity).
+        if (ctx.particles) ctx.particles->emit(ParticleType::PLASMA, 30, obj, ctx.rng);
         return;
     }
 
-    // &4a9f+: trail particles while alive.
-    if (ctx.particles) ctx.particles->emit(ParticleType::PLASMA, 1, obj, ctx.rng);
+    // &4a9f-&4aab plasma trail particle count: 3 while energy >= 3,
+    // ramps to 30 on the last two frames so the bolt blooms before it
+    // fizzles. Flag bit 0 (&a0 vs &a1) toggles "inherit object velocity"
+    // — our particle system always inherits, so we ignore it here.
+    if (ctx.particles) {
+        uint8_t count = (obj.energy >= 3) ? 3 : 30;
+        ctx.particles->emit(ParticleType::PLASMA, count, obj, ctx.rng);
+    }
 }
 
 // &4101-&4154 lightning. state = signed size in [-4,+4] (pos grow, neg
@@ -490,6 +519,13 @@ void update_plasma_ball(Object& obj, UpdateContext& ctx) {
 // flips growth to shrink.
 void update_lightning(Object& obj, UpdateContext& ctx) {
     auto s8 = [](uint8_t u) { return static_cast<int8_t>(u); };
+
+    // &1a35-&1a41 captures this_object_previous_velocity at frame start
+    // (before any acceleration is applied this frame). update_lightning
+    // runs before Physics::apply_acceleration in our port, so these are
+    // the same value — save locally to restore at the end.
+    int8_t prev_vx = obj.velocity_x;
+    int8_t prev_vy = obj.velocity_y;
 
     bool touching = (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS);
     bool damaged_something = false;
@@ -562,11 +598,25 @@ void update_lightning(Object& obj, UpdateContext& ctx) {
     if ((ctx.frame_counter & 0x03) == 0)
         obj.flags ^= ObjectFlags::FLIP_HORIZONTAL;
 
-    // &414a-&4152: no gravity; carry previous velocity forward so the
-    // lightning holds its original motion vector instead of decaying.
-    NPC::cancel_gravity(obj);
-    // TODO: set velocity = previous_velocity once the "previous velocity"
-    // fields are part of Object.
+    // &414a-&4152: DEC acceleration_y (cancel gravity), then velocity =
+    // previous_velocity. After update_lightning returns, our physics
+    // adds +1 gravity to vy and, once every 16 frames, decays |v| by 1
+    // (apply_acceleration's inertia tick). Pre-compensate both so the
+    // post-physics velocity equals the frame-start prev_velocity.
+    int target_vx = prev_vx;
+    int target_vy = prev_vy - 1;  // physics will re-add +1 gravity
+    if (ctx.every_sixteen_frames) {
+        if      (prev_vy > 0) target_vy += 1;
+        else if (prev_vy < 0) target_vy -= 1;
+        if      (prev_vx > 0) target_vx += 1;
+        else if (prev_vx < 0) target_vx -= 1;
+    }
+    if (target_vx >  127) target_vx =  127;
+    if (target_vx < -128) target_vx = -128;
+    if (target_vy >  127) target_vy =  127;
+    if (target_vy < -128) target_vy = -128;
+    obj.velocity_x = static_cast<int8_t>(target_vx);
+    obj.velocity_y = static_cast<int8_t>(target_vy);
 }
 
 // &4698 mushroom balls. Fireball touch -> coronium crystal. Touch or
@@ -601,11 +651,25 @@ void update_red_mushroom_ball(Object& obj, UpdateContext& ctx) {
         add_to_player_mushroom_timer(ctx, blue ? 1 : 0, blue);
     }
 
-    // &46b5: 32 mushroom particles.
-    if (ctx.particles)
-        ctx.particles->emit(ParticleType::STAR_OR_MUSHROOM, 32, obj, ctx.rng);
-    // &46bc: remove mushroom ball.
-    obj.energy = 0;
+    // &46b2 play_sound_for_mushrooms tail-calls &3f7f set_new_particles_
+    // position_from_this_object, which shifts the ball's x/y fraction by
+    // -0x40 (quarter-tile up-left) and emits ONE STAR_OR_MUSHROOM via
+    // add_particle. Then &46b5 adds 32 more via add_particles — STAR_OR_
+    // MUSHROOM's particle_flags=0x00 means it does NOT re-copy this_object
+    // position, so the 32 inherit the same -0x40 base. Spawn a -0x40-
+    // offset shim for the burst so it matches the 6502 cluster.
+    if (ctx.particles) {
+        Object spawn = obj;
+        int yf = int(spawn.y.fraction) - 0x40;
+        if (yf < 0) { yf += 256; spawn.y.whole--; }
+        spawn.y.fraction = static_cast<uint8_t>(yf);
+        int xf = int(spawn.x.fraction) - 0x40;
+        if (xf < 0) { xf += 256; spawn.x.whole--; }
+        spawn.x.fraction = static_cast<uint8_t>(xf);
+        ctx.particles->emit(ParticleType::STAR_OR_MUSHROOM, 33, spawn, ctx.rng);
+    }
+    // &46bc JMP set_object_for_removal (&2529) — sets PENDING_REMOVAL.
+    obj.flags |= ObjectFlags::PENDING_REMOVAL;
 }
 
 // Port of &4791 update_invisible_debris:
@@ -723,7 +787,50 @@ void update_red_drop(Object& obj, UpdateContext& ctx) {
 // &4AD6 update_fireball. Stationary fire: palette cycle, random flip,
 // one upward PARTICLE_FIREBALL/frame (angle=0xc0) for the ember effect.
 void update_fireball(Object& obj, UpdateContext& ctx) {
-    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 8, ctx.damage_events);
+    // &4ade-&4ae0: state (this_object_target_object) zero = temporary
+    // fireball from exploding object (plasma_ball / grenade); non-zero =
+    // permanent fireball from a tertiary. Only the temporary path
+    // decrements timer and self-removes.
+    bool permanent = (obj.state != 0);
+
+    // &4ae2-&4ae4 update_temporary_fireball: DEC timer; BMI removal.
+    if (!permanent) {
+        if (obj.timer == 0) {
+            obj.flags |= ObjectFlags::PENDING_REMOVAL;
+            return;
+        }
+        obj.timer--;
+    }
+
+    // &4ae6 / &4b60: default damage 10 (temporary), 20 (permanent). The
+    // &4ae8-&4af2 big-damage path: every 16 frames, if timer >= 8, damage
+    // jumps to 90 ("big damage at start of long explosions").
+    uint8_t damage = permanent ? 20 : 10;
+    if (ctx.every_sixteen_frames && obj.timer >= 0x08) {
+        damage = 90;
+    }
+
+    // &4af4-&4b00 damage_object on the touched slot — any object, not
+    // just the player. Without this, plasma-ball-derived fireballs sit
+    // on robots without hurting them.
+    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
+        Object& target = ctx.mgr.object(obj.touching);
+        uint16_t hurt = std::min<uint16_t>(damage, target.energy);
+        target.energy = (target.energy > damage)
+                      ? static_cast<uint8_t>(target.energy - damage)
+                      : 0;
+        if (obj.touching != 0) target.flags |= ObjectFlags::WAS_DAMAGED;
+        if (ctx.damage_events && hurt > 0) {
+            DamageVisual ev;
+            ev.src_x = obj.x.whole; ev.src_y = obj.y.whole;
+            ev.src_x_frac = obj.x.fraction; ev.src_y_frac = obj.y.fraction;
+            ev.tgt_x = target.x.whole; ev.tgt_y = target.y.whole;
+            ev.tgt_x_frac = target.x.fraction; ev.tgt_y_frac = target.y.fraction;
+            ev.tgt_slot = static_cast<int8_t>(obj.touching);
+            ev.amount = static_cast<uint8_t>(hurt);
+            ctx.damage_events->push_back(ev);
+        }
+    }
 
     // Port of &4b13-&4b1b palette pick. Indexed by (timer & 7) into the
     // 6502's &4ace fireball_palettes_table: { kyR, rwY, rwY, rwY, kyR,

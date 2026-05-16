@@ -252,7 +252,7 @@ void Game::update_objects() {
                               every_four_frames_, every_eight_frames_,
                               every_sixteen_frames_, every_thirty_two_frames_,
                               every_sixty_four_frames_,
-                              whistle_one_active_, whistle_two_activator_,
+                              whistle_one_active_, &whistle_two_activator_,
                               &whistle_one_collected_, &whistle_two_collected_,
                               player_mushroom_timers_,
                               player_keys_collected_,

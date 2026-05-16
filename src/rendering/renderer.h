@@ -123,6 +123,16 @@ public:
                                  uint8_t /*wy*/, uint8_t /*wy_frac*/,
                                  uint8_t /*colour*/) {}
 
+    // Query whether a world-position pixel was painted by a tile's
+    // foreground (BBC logical colours 8-15). Port of the 6502 test at
+    // &2118 — particles without PARTICLE_FLAG_FOREGROUND that XOR onto a
+    // foreground pixel are removed (&2120 BEQ remove_particle_after_
+    // unplotting). Default false for renderers without an fg mask.
+    virtual bool query_fg_at(uint8_t /*wx*/, uint8_t /*wx_frac*/,
+                             uint8_t /*wy*/, uint8_t /*wy_frac*/) const {
+        return false;
+    }
+
     // HUD
     virtual void render_hud(const PlayerState& player) = 0;
 

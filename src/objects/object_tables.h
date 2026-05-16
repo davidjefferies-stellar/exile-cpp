@@ -28,6 +28,16 @@ inline uint8_t get_initial_energy(uint8_t object_type) {
     return object_type_ranges_energy[range];
 }
 
+// Port of &2db0 get_range_for_object_type_A. Returns 0-9 indexing into
+// object_type_ranges_table; find_object treats Y=0x80+range as "match
+// any object in this range" for its secondary-type test.
+inline int get_range_for_object_type(uint8_t object_type) {
+    for (int x = 9; x >= 0; x--) {
+        if (object_type >= object_type_ranges[x]) return x;
+    }
+    return 0;
+}
+
 // ============================================================================
 // Weapon Tables (from &2cdc and &085a)
 // ============================================================================

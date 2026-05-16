@@ -108,10 +108,10 @@ void update_active_chatter(Object& obj, UpdateContext& ctx) {
     // &4933-&494a produce power pod toward whistle-two source if 16-tile
     // LOS clear (check_for_obstruction_between_objects_80). LOS is door-
     // aware; without it Chatter fires through walls.
-    if (ctx.whistle_two_activator < GameConstants::PRIMARY_OBJECT_SLOTS &&
-        NPC::has_line_of_sight(obj, ctx.whistle_two_activator,
-                                /*max_tiles=*/16, ctx)) {
-        const Object& source = ctx.mgr.object(ctx.whistle_two_activator);
+    uint8_t w2 = ctx.whistle_two_activator ? *ctx.whistle_two_activator : 0xff;
+    if (w2 < GameConstants::PRIMARY_OBJECT_SLOTS &&
+        NPC::has_line_of_sight(obj, w2, /*max_tiles=*/16, ctx)) {
+        const Object& source = ctx.mgr.object(w2);
         int8_t sdx = static_cast<int8_t>(source.x.whole - obj.x.whole);
         int8_t sdy = static_cast<int8_t>(source.y.whole - obj.y.whole);
         // Fire a power pod toward the whistle source.
@@ -178,16 +178,22 @@ void update_crew_member(Object& obj, UpdateContext& ctx) {
 void update_fluffy(Object& obj, UpdateContext& ctx) {
     NPC::enforce_minimum_energy(obj, 0x29); // Min energy 41
 
+    // Snapshot before Mood::update_mood — mood.cpp:212 consumes
+    // WAS_DAMAGED as a one-shot stimulus, but the 6502 reads it again
+    // at &4295 check_if_object_was_damaged for the squeal trigger.
+    bool was_damaged = (obj.flags & ObjectFlags::WAS_DAMAGED) != 0;
+
     // NPC stimuli check (type 6 = responds to imps/fireballs)
     Mood::update_mood(obj, ctx);
 
     uint8_t mood = Mood::get_mood(obj);
     bool is_squealing = false;
 
-    // Squeal if damaged (energy dropped sharply)
-    if (obj.state & 0x08) { // Recently damaged flag
+    // &4295-&4298 check_if_object_was_damaged. WAS_DAMAGED is bit 3 of
+    // FLAGS, not state — earlier port read &state & 0x08 (always 0 for
+    // fluffy), so a hit fluffy never squealed for the damage stimulus.
+    if (was_damaged) {
         is_squealing = true;
-        obj.state &= ~0x08;
     }
 
     // Squeal if mood is MINUS_TWO (very scared)
@@ -271,16 +277,40 @@ void update_fluffy(Object& obj, UpdateContext& ctx) {
                         obj.velocity_y == player.velocity_y);
 
     if (!likely_held && (obj.timer & 0x80)) {
-        // Walk using NPC walking type 2, speed 0x28
-        // Simplified: move toward target or wander
-        if (mood == NPCMood::MINUS_ONE || mood == NPCMood::MINUS_TWO) {
-            // Scared: run away from threats (toward player for safety)
-            NPC::seek_player(obj, player, 0x10);
-        } else {
-            // Wander randomly
-            if (ctx.every_sixteen_frames) {
-                obj.velocity_x = (ctx.rng.next() & 0x0f) - 7;
-            }
+        // &42f0-&42f4 JMP update_walking_npc_and_check_for_obstacles_with_
+        // speed_A with X=2 (walking type), A=&28 (speed 40). Walking type
+        // 2 is shared with imps: max_accel 0x10, weight 1, turn_prob 0xc8,
+        // jump_prob 0x08 (~3% per frame). Earlier port used seek_player
+        // at speed 0x10, which made fluffy crawl and never jump.
+        uint8_t target_slot = obj.target_and_flags & TargetFlags::OBJECT_MASK;
+        bool avoid = (obj.target_and_flags & TargetFlags::AVOID) != 0;
+        const Object& target =
+            (target_slot < GameConstants::PRIMARY_OBJECT_SLOTS &&
+             ctx.mgr.object(target_slot).is_active())
+                ? ctx.mgr.object(target_slot)
+                : player;
+
+        int8_t dx = static_cast<int8_t>(target.x.whole - obj.x.whole);
+        if (avoid) dx = static_cast<int8_t>(-dx);
+        constexpr int8_t kSpeed = 0x28;
+        int8_t target_vx = (dx > 0) ? kSpeed
+                         : (dx < 0) ? static_cast<int8_t>(-kSpeed)
+                         : 0;
+        constexpr int kMaxAccel = 0x10;
+        int diff = int(target_vx) - int(obj.velocity_x);
+        int step = (diff >  kMaxAccel) ?  kMaxAccel
+                 : (diff < -kMaxAccel) ? -kMaxAccel
+                 : diff;
+        obj.velocity_x = static_cast<int8_t>(int(obj.velocity_x) + step);
+
+        // &3afc-&3b04 jump probability gate: rnd < jump_prob_table[2]
+        // (= 0x08) every frame. consider_setting_npc_jumping requires the
+        // NPC to be on a walkable surface — we use SUPPORTED as the
+        // analog. Impulse -0x18 matches the imp port (frogman-sized hop;
+        // 6502's &3a65 SBC #&0a + walking accel composes to similar).
+        if (obj.is_supported() && ctx.rng.next() < 0x08) {
+            obj.velocity_y = -0x18;
+            obj.flags &= ~ObjectFlags::SUPPORTED;
         }
     }
 
@@ -591,13 +621,6 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                 // init_object_from_type; step 15 would zero our velocity.
                 b.energy &= 0x7f;
                 NPC::offset_child_from_parent(b, obj);
-
-                // &460f imp_sound_parameters. The 6502 patches byte 3
-                // (pitch) at runtime per imp variant via STA at &4609;
-                // here we use the default-table values verbatim. Mostly
-                // heard as a wide pitch range across the imp colours.
-                static constexpr uint8_t kSoundImp[4] = { 0x9c, 0x05, 0xa6, 0xa5 };
-                Audio::play_at(Audio::CH_ANY, kSoundImp, obj.x.whole, obj.y.whole);
             }
         }
     }
@@ -605,23 +628,44 @@ void update_imp(Object& obj, UpdateContext& ctx) {
     // Face direction of movement.
     NPC::face_movement_direction(obj);
 
-    // &45d6-&45e6: sprite from velocity magnitude mod 0x0c, divide by 8,
-    // shift right once more to collapse into 0..2. Base = SPRITE_IMP_
-    // WALKING_ONE (0x64). If velocity_x is zero, use the walking-one
-    // frame directly (no animation).
+    // &45d6-&45e6: sprite from |velocity|/8 mod 0x0c, then LSR/LSR to
+    // collapse to 0..2 across SPRITE_IMP_WALKING_ONE..THREE (base 0x64).
+    // Still imp at velocity_x == 0 uses the walking-one frame directly.
     if (obj.velocity_x == 0) {
         NPC::change_object_sprite_to_base_plus_A(obj, 0);
     } else {
-        // /8 scaling (X=2) approximated by helper's default /16; off/2
-        // still lands in 0..2 — full scaling TODO.
-        uint8_t off = NPC::update_sprite_offset_using_velocities(obj, 0x0c);
+        uint8_t off = NPC::update_sprite_offset_using_velocities(
+            obj, 0x0c, /*divide_shift=*/3);
         off >>= 2;
-        if (off > 2) off = 2;
         NPC::change_object_sprite_to_base_plus_A(obj, off);
     }
 
-    // &45f0-&460f: play imp sound (scream if just damaged, random-
-    // pitched call otherwise). Sound playback is TODO.
+    // &45f0-&460f: scream at fixed pitch 0xa5 when WAS_DAMAGED (>=8 in
+    // a single hit), otherwise once every 16 frames roll a 50% call with
+    // state-mixed random pitch. imp_sound_parameters bytes 0..2 are
+    // fixed; byte 3 is the patched pitch.
+    uint8_t pitch = 0;
+    bool play = false;
+    if (obj.flags & ObjectFlags::WAS_DAMAGED) {
+        pitch = 0xa5;
+        play = true;
+    } else if ((ctx.frame_counter & 0x0f) == 0) {
+        uint8_t r = ctx.rng.next();
+        // 6502 LSR/ROR: bit 7 of result = bit 0 of r → 50% gate.
+        if (r & 0x01) {
+            uint8_t a = static_cast<uint8_t>((r >> 2) | 0x80);
+            a ^= obj.state;
+            a &= 0xe0;
+            a >>= 1;
+            a |= 0x05;
+            pitch = a;
+            play = true;
+        }
+    }
+    if (play) {
+        const uint8_t imp_sound[4] = { 0x9c, 0x05, 0xa6, pitch };
+        Audio::play_at(Audio::CH_ANY, imp_sound, obj.x.whole, obj.y.whole);
+    }
 }
 
 // Common frogman behavior
@@ -684,8 +728,9 @@ void update_green_frogman(Object& obj, UpdateContext& ctx) {
 // Port of &4475 update_invisible_frogman (one instruction, falls
 // through into update_green_frogman):
 //   &4475 LSR &2b ; this_object_visibility   ; clear top bit → invisible
-// TODO: wire invisibility once Object has a visibility field.
+// Bit 7 of palette is our visibility flag (matches update_invisible_bird).
 void update_invisible_frogman(Object& obj, UpdateContext& ctx) {
+    obj.palette &= 0x7f;
     update_green_frogman(obj, ctx);
 }
 
@@ -1007,19 +1052,21 @@ void update_bird(Object& obj, UpdateContext& ctx) {
 //   &4621 LDA &da ; rnd_state+1
 //   &4623 BNE &463f ; skip_sound       ; 1-in-256 chance
 //   &4625 JSR &2c9e play_whistle_two_sound   ; deactivates Chatter
-//   &4628 JMP &463f ; skip_sound
-//         (falls into update_bird common body at &463f via the JMP)
-// The full whistle-two side effect (setting whistle_two_activating_
-// object so Chatter deactivates) is a separate TODO; the audible
-// whistle goes through here.
+// play_whistle_two_sound at &2c9e plays the high-note block, stamps
+// &29d8 with this_object, then falls through to &2cb4 for the shared
+// low-note block — the Chatter LOS check at &4933 reads &29d8.
 void update_red_magenta_bird(Object& obj, UpdateContext& ctx) {
     uint8_t r = ctx.rng.next();
     if (r == 0) {
-        // &2c9e-&2ca1 play_whistle_two_sound. The wider effect (setting
-        // whistle_two_activating_object so Chatter deactivates) is a
-        // separate TODO; the audible whistle goes through here.
-        static constexpr uint8_t kSoundWhistleTwo[4] = { 0xb0, 0x24, 0xb6, 0xe2 };
-        Audio::play_at(Audio::CH_ANY, kSoundWhistleTwo, obj.x.whole, obj.y.whole);
+        static constexpr uint8_t kSoundWhistleHigh[4] = { 0xb0, 0x24, 0xb6, 0xe2 };
+        static constexpr uint8_t kSoundWhistleLow[4]  = { 0xb0, 0x24, 0xb6, 0xb3 };
+        Audio::play_at(Audio::CH_ANY, kSoundWhistleHigh, obj.x.whole, obj.y.whole);
+        Audio::play_at(Audio::CH_ANY, kSoundWhistleLow,  obj.x.whole, obj.y.whole);
+        // &2ca5-&2ca7 STA &29d8 with this_object. Chatter's &4933 path
+        // reads this slot and tracks LOS toward it to drop a power pod.
+        if (ctx.whistle_two_activator) {
+            *ctx.whistle_two_activator = static_cast<uint8_t>(ctx.this_slot);
+        }
     }
     update_bird_common(obj, ctx);
 }

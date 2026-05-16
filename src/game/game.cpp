@@ -679,7 +679,7 @@ void Game::update_events() {
 
     // Earthquake progression (&25e2-&2610). negative state = running;
     // worsens more quickly early, tapers toward 0x21. Skipped: BBC R2
-    // sync register writes (&2604-&260a) for raster shudder — TODO.
+    // sync register writes (&2604-&260a) for raster shudder.
     if (earthquake_state_ & 0x80) {
         uint8_t a = static_cast<uint8_t>(earthquake_state_ << 1);
         // CMP rnd: carry set more often as earthquake progresses.

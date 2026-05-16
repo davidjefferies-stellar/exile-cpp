@@ -82,6 +82,8 @@ public:
     void render_particle(uint8_t wx, uint8_t wx_frac,
                          uint8_t wy, uint8_t wy_frac,
                          uint8_t colour) override;
+    bool query_fg_at(uint8_t wx, uint8_t wx_frac,
+                     uint8_t wy, uint8_t wy_frac) const override;
     void render_hud(const PlayerState& player) override;
     int viewport_width_tiles() const override;
     int viewport_height_tiles() const override;

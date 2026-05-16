@@ -21,7 +21,10 @@ struct UpdateContext {
     bool every_sixty_four_frames;
     // Whistle state
     bool whistle_one_active;       // Whistle one played this frame
-    uint8_t whistle_two_activator; // Slot of object that played whistle two (0xff = none)
+    // &29d8 whistle_two_activating_object. Player sets this to 0 on U;
+    // red/magenta bird sets it to its own slot via &2c9e. Pointer so
+    // behaviours can write it. Reads compare slot < PRIMARY_SLOTS.
+    uint8_t* whistle_two_activator;
     // &0816/&0817 whistle-collected flags. update_collectable sets via
     // &4b90 DEC player_collected; apply_player_input gates Y/U playback.
     bool* whistle_one_collected;
@@ -169,9 +172,12 @@ bool compute_firing_vector(const Object& from, const Object& target,
 bool fire_at_target(const Object& from, const Object& target,
                     Random& rng, int8_t& vx, int8_t& vy);
 
-// &2555 update_sprite_offset_using_velocities. Animation cadence scales
-// with max(|vx|,|vy|)/16; result replaces obj.timer.
-uint8_t update_sprite_offset_using_velocities(Object& obj, uint8_t modulus);
+// &2555 / &2557 update_sprite_offset_using_(scaled_)velocities. The
+// scaled entry point lets the caller pick how aggressively to divide
+// the velocity; `divide_shift` mirrors the 6502's X register + 1 (i.e.
+// the number of LSRs). Default 4 (X=3, /16) matches the &2555 entry.
+uint8_t update_sprite_offset_using_velocities(Object& obj, uint8_t modulus,
+                                              uint8_t divide_shift = 4);
 
 // Port of &3292 change_object_sprite_to_base_plus_A. Looks up the base
 // sprite for this object's type in `object_types_sprite` and sets

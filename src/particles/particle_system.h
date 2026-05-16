@@ -80,6 +80,14 @@ public:
     int count() const { return n_; }
     const Particle& get(int i) const { return pool_[i]; }
 
+    // Swap-remove (port of the 6502 free path at &213a remove_particle).
+    // Caller must use a descending loop so the swap doesn't skip slots.
+    void remove(int i) {
+        if (i < 0 || i >= n_) return;
+        pool_[i] = pool_[n_ - 1];
+        n_--;
+    }
+
 private:
     Particle pool_[MAX_PARTICLES];
     int n_ = 0;

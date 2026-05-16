@@ -100,16 +100,28 @@ void PixelRenderer::blit_sprite(int dst_x, int dst_y, uint8_t sprite_id,
     flip_h ^= (e.intrinsic_flip & 1) != 0;
     flip_v ^= (e.intrinsic_flip & 2) != 0;
 
-    // Width/height collapse to 0 at extreme zoom-out; guard with max(1)
-    // so tiny sprites still show at least one pixel.
-    int w_screen = e.w * PX_SCALE_X * scale / zoom_den;
-    int h_screen = e.h * PX_SCALE_Y * scale / zoom_den;
-    // 6502 &0d21 teleport shrink: reduce the rendered extent so the
-    // sprite fizzes down. Caller centres via dst_x / dst_y.
+    int w_full = e.w * PX_SCALE_X * scale / zoom_den;
+    int h_full = e.h * PX_SCALE_Y * scale / zoom_den;
+    int w_screen = w_full;
+    int h_screen = h_full;
+    // 6502 &0d21 reduce_sprite_if_teleporting: shrink both screen
+    // extent and atlas-source range by the same shift so the sprite
+    // collapses around its own centre rather than its top-left.
     if (shrink_shift_x) w_screen >>= shrink_shift_x;
     if (shrink_shift_y) h_screen >>= shrink_shift_y;
     if (w_screen < 1) w_screen = 1;
     if (h_screen < 1) h_screen = 1;
+    int atlas_w_shr = e.w; if (shrink_shift_x) atlas_w_shr >>= shrink_shift_x;
+    int atlas_h_shr = e.h; if (shrink_shift_y) atlas_h_shr >>= shrink_shift_y;
+    if (atlas_w_shr < 1) atlas_w_shr = 1;
+    if (atlas_h_shr < 1) atlas_h_shr = 1;
+    // 6502 &0d2c-&0d35 add (full-shrunk)/2 to both spritesheet_x and
+    // x_fraction. Screen offset stays in screen pixels, source offset
+    // in atlas pixels.
+    dst_x += (w_full - w_screen) / 2;
+    dst_y += (h_full - h_screen) / 2;
+    int src_off_x = (int(e.w) - atlas_w_shr) / 2;
+    int src_off_y = (int(e.h) - atlas_h_shr) / 2;
 
     // atlas-pixel = screen-pixel * num / den. When num > den (zoom-out)
     // each screen pixel covers multiple atlas pixels.
@@ -121,8 +133,8 @@ void PixelRenderer::blit_sprite(int dst_x, int dst_y, uint8_t sprite_id,
     for (int py = 0; py < h_screen; ++py) {
         int ppy = dst_y + py;
         if (ppy < 0 || ppy >= hud_y) continue;
-        int ay0 = py * sy_num / sy_den;
-        int ay1 = (py + 1) * sy_num / sy_den;
+        int ay0 = py * sy_num / sy_den + src_off_y;
+        int ay1 = (py + 1) * sy_num / sy_den + src_off_y;
         if (ay1 <= ay0) ay1 = ay0 + 1;
         if (ay1 > e.h) ay1 = e.h;
         if (ay0 >= e.h) ay0 = e.h - 1;
@@ -136,8 +148,8 @@ void PixelRenderer::blit_sprite(int dst_x, int dst_y, uint8_t sprite_id,
             // at &1066. Only applies for object blits with an fg lookup.
             if (!is_tile && fg && fg_row[ppx]) continue;
 
-            int ax0 = px * sx_num / sx_den;
-            int ax1 = (px + 1) * sx_num / sx_den;
+            int ax0 = px * sx_num / sx_den + src_off_x;
+            int ax1 = (px + 1) * sx_num / sx_den + src_off_x;
             if (ax1 <= ax0) ax1 = ax0 + 1;
             if (ax1 > e.w) ax1 = e.w;
             if (ax0 >= e.w) ax0 = e.w - 1;
@@ -539,27 +551,19 @@ void PixelRenderer::render_object(Fixed8_8 world_x, Fixed8_8 world_y,
     uint8_t  fg[4] = {0, 0, 0, 0};
     resolve_palette(info.palette, /*is_tile=*/false, lut);
 
-    // Port of &0cfe reduce_sprite_if_teleporting. Y uses (timer & 7)
-    // as shift count; X uses ((timer * 5/4) & 7).
+    // Port of &0cfe reduce_sprite_if_teleporting. Y uses (timer & 7);
+    // X uses ((t>>2) + t + bit_1(t)) & 7 — the +bit_1 is the ADC carry
+    // out of the second LSR at &0d12. blit_sprite centres both screen
+    // extent and atlas source around the sprite's middle.
     uint8_t shrink_x = 0, shrink_y = 0;
-    int dx_shrink = 0, dy_shrink = 0;
     if (info.teleport_timer != 0) {
         uint8_t t = info.teleport_timer;
         shrink_y = static_cast<uint8_t>(t & 0x07);
-        uint8_t t_x = static_cast<uint8_t>(t + (t >> 2));
+        uint8_t t_x = static_cast<uint8_t>(t + (t >> 2) + ((t >> 1) & 1));
         shrink_x = static_cast<uint8_t>(t_x & 0x07);
-        const SpriteAtlasEntry& e = sprite_atlas[info.sprite_id];
-        int tpx = tile_px_x();
-        int tpy = tile_px_y();
-        int w_full = e.w * tpx / 16;  // 1 tile = 16 atlas-px wide
-        int h_full = e.h * tpy / 8;   // 1 tile = 8  atlas-px tall
-        int w_shr  = w_full >> shrink_x; if (w_shr < 1) w_shr = 1;
-        int h_shr  = h_full >> shrink_y; if (h_shr < 1) h_shr = 1;
-        dx_shrink = (w_full - w_shr) / 2;
-        dy_shrink = (h_full - h_shr) / 2;
     }
 
-    blit_sprite(sx + dx_shrink, sy + dy_shrink, info.sprite_id,
+    blit_sprite(sx, sy, info.sprite_id,
                 info.flip_h, info.flip_v, lut, fg,
                 /*is_tile=*/false,
                 shrink_x, shrink_y);
@@ -687,6 +691,21 @@ void PixelRenderer::render_particle(uint8_t wx, uint8_t wx_frac,
     int sx, sy;
     if (!world_to_screen(wx, wy, sx, sy, wx_frac, wy_frac)) return;
     fill_rect(sx, sy, scale, scale, col);
+}
+
+bool PixelRenderer::query_fg_at(uint8_t wx, uint8_t wx_frac,
+                                uint8_t wy, uint8_t wy_frac) const {
+    // &2118 AND #&c0 / &2120 BEQ test on the post-plot screen byte. The
+    // 6502 reads the live framebuffer; we read the parallel fg_mask
+    // populated by tile blits. Sample the centre of the scale×scale
+    // particle splat so a stretched pixel doesn't false-positive on a
+    // neighbouring tile's fringe.
+    int sx, sy;
+    if (!world_to_screen(wx, wy, sx, sy, wx_frac, wy_frac)) return false;
+    int px = sx + scale / 2;
+    int py = sy + scale / 2;
+    if (px < 0 || px >= f.width || py < 0 || py >= f.height) return false;
+    return fg_mask[static_cast<size_t>(py) * f.width + px] != 0;
 }
 
 int PixelRenderer::viewport_width_tiles() const { return vp_w_tiles(); }

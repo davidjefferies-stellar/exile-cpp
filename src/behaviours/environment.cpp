@@ -565,8 +565,40 @@ void update_transporter_beam(Object& obj, UpdateContext& ctx) {
     uint8_t y_frac = obj.is_flipped_v() ? beam : static_cast<uint8_t>(-beam);
     obj.y.fraction = static_cast<uint8_t>(y_frac - 1);
 
-    // &4dc8-&4dd1: remote-control hit toggles the transporter lock bits.
-    // TODO: port check_if_object_hit_by_remote_control + consider_toggling_lock.
+    // &4dc8-&4dd1 / &31ac transporter path: RCD hit toggles the
+    // stationary bit when the matching key is collected. Key index is
+    // (data + 0x60) >> 5 → 3..6 for the four transporter colours (the
+    // 6502 packs the key into data bits 5-6). 3-tile Chebyshev range
+    // matches the door RCD port above.
+    if (ctx.player_object_fired < GameConstants::PRIMARY_OBJECT_SLOTS &&
+        ctx.player_keys_collected) {
+        const Object& fired = ctx.mgr.object(ctx.player_object_fired);
+        if (fired.is_active() &&
+            fired.type == ObjectType::REMOTE_CONTROL_DEVICE) {
+            int8_t dx = static_cast<int8_t>(fired.x.whole - obj.x.whole);
+            int8_t dy = static_cast<int8_t>(fired.y.whole - obj.y.whole);
+            int adx = dx < 0 ? -dx : dx;
+            int ady = dy < 0 ? -dy : dy;
+            if (adx <= 3 && ady <= 3) {
+                uint8_t key_idx =
+                    static_cast<uint8_t>((data + 0x60) >> 5);
+                if (key_idx < 8 &&
+                    (ctx.player_keys_collected[key_idx] & 0x80)) {
+                    data ^= 0x01;  // &31c2 toggle stationary bit
+                    obj.tertiary_data_offset = data;
+                    if (obj.tertiary_slot > 0) {
+                        ctx.mgr.set_tertiary_data_byte(
+                            obj.tertiary_slot,
+                            static_cast<uint8_t>(data & 0x7f));
+                    }
+                    static constexpr uint8_t kSoundLock[4] =
+                        { 0x94, 0x64, 0xba, 0xc4 };
+                    Audio::play_at(Audio::CH_ANY, kSoundLock,
+                                   obj.x.whole, obj.y.whole);
+                }
+            }
+        }
+    }
 
     // &4dd2-&4ddc: palette cycles via rotate_colour_from_A using the
     // *global* frame_counter (not obj's local counter).
@@ -582,8 +614,23 @@ void update_hive(Object& obj, UpdateContext& ctx) {
     uint8_t spawn_type_id = (obj.tertiary_data_offset >> 2) & 0x1f;
     obj.state = spawn_type_id;
 
-    // &4bb3: consider_absorbing_object_touched — hives absorb any of
-    // their own spawn they touch. TODO: full port.
+    // &4bb3 / &3be1 consider_absorbing_object_touched: hives absorb
+    // their own spawn type on contact. The 6502 gates on a touching-
+    // angle check at &3bd5 (object must be on the hive's facing side);
+    // skipped here — wasps/piranhas only ever exit the spawn-side anyway.
+    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS &&
+        obj.touching != 0) {
+        Object& touched = ctx.mgr.object(obj.touching);
+        if (touched.is_active() &&
+            static_cast<uint8_t>(touched.type) == spawn_type_id) {
+            ctx.mgr.remove_object(obj.touching);
+            // &3bf2 play_low_beep — 4-byte sound block at &14b0.
+            static constexpr uint8_t kSoundLowBeep[4] =
+                { 0x5d, 0x04, 0xff, 0x05 };
+            Audio::play_at(Audio::CH_ANY, kSoundLowBeep,
+                           obj.x.whole, obj.y.whole);
+        }
+    }
 
     // &4bb6: minimum energy 0x46 (70).
     NPC::enforce_minimum_energy(obj, 0x46);
@@ -607,9 +654,20 @@ void update_hive(Object& obj, UpdateContext& ctx) {
     uint8_t roll = ctx.rng.next() & ctx.rng.next() & ctx.rng.next() & 0x07;
     if (roll < count) return;
 
-    // &4bd7-&4bde: don't spawn if a BIG_FISH or any OBJECT_RANGE_FLYING_
-    // ENEMIES is already present. TODO: full port (needs find_object and
-    // the object-range tables at &3c2a).
+    // &4bd7-&4bde find_object A=0x0e Y=0x86: skip spawning if any
+    // BIG_FISH or any OBJECT_RANGE_FLYING_ENEMIES (range 6) primary is
+    // present. Cheaper than the full find_object — we only care if any
+    // matches, not which is nearest.
+    constexpr int kFlyingEnemiesRange = 6;
+    for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+        const Object& p = ctx.mgr.object(i);
+        if (!p.is_active()) continue;
+        uint8_t pt = static_cast<uint8_t>(p.type);
+        if (pt == 0x0e ||
+            get_range_for_object_type(pt) == kFlyingEnemiesRange) {
+            return;
+        }
+    }
 
     // Range-check the spawn type before we commit.
     if (spawn_type_id >= static_cast<uint8_t>(ObjectType::COUNT)) return;
@@ -669,18 +727,16 @@ void update_hive(Object& obj, UpdateContext& ctx) {
 //   &478c BMI &47c2 ; leave            ; nothing touching, or roll miss
 //   &478e JMP &0ba9 set_object_Y_velocities_from_this_object
 // Net: half the time, the dense nest zeroes the touched object's
-// velocities (the 6502 helper copies this_object's vels — which are
-// zero for a static nest — onto Y). Port currently removes the toucher
-// outright; full velocity-clamp + creature-spawn is still TODO.
+// velocities by copying its own (zero) vels onto the toucher. Min-energy
+// 0x7f keeps the nest at its range-2 floor (not in the 6502 routine
+// itself but matches its long-term steady state).
 void update_dense_nest(Object& obj, UpdateContext& ctx) {
     NPC::enforce_minimum_energy(obj, 0x7f);
-    // Dense nests absorb objects that touch them
-    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS && obj.touching != 0) {
+    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS &&
+        (ctx.rng.next() & 0x80) == 0) {
         Object& other = ctx.mgr.object(obj.touching);
-        // Absorb non-player objects
-        if (other.weight() <= 4) {
-            ctx.mgr.remove_object(obj.touching);
-        }
+        other.velocity_x = obj.velocity_x;
+        other.velocity_y = obj.velocity_y;
     }
 }
 

@@ -576,8 +576,12 @@ void Game::render() {
         info.flip_v = obj.is_flipped_v();
         info.visible = true;
         info.type = obj.type;
-        info.teleport_timer = (obj.flags & ObjectFlags::TELEPORTING)
-                              ? obj.timer : 0;
+        bool teleporting = (obj.flags & ObjectFlags::TELEPORTING) != 0;
+        info.teleport_timer = teleporting ? obj.timer : 0;
+        // &1c09 STA this_object_y with #&11: at the dematerialise frame
+        // the 6502 punts the sprite offscreen for one tick before the
+        // &1c1e reposition. Equivalent here is to skip drawing it.
+        if (teleporting && obj.timer == 0x11) info.visible = false;
 
         renderer_->render_object(obj.x, obj.y, info);
     }
@@ -786,12 +790,21 @@ void Game::render() {
         }
     }
 
-    // Render particles (on top of tiles/objects, below HUD).
-    for (int i = 0; i < particles_.count(); i++) {
+    // Render particles (on top of tiles/objects, below HUD). Descending
+    // walk so swap-remove for the &2118-&2120 foreground-kill (particle
+    // landed on a colour-8..15 tile pixel and lacks PARTICLE_FLAG_
+    // FOREGROUND) doesn't skip slots — particles_.remove does the same
+    // shuffle as the 6502's remove_particle at &213a.
+    for (int i = particles_.count() - 1; i >= 0; i--) {
         const Particle& p = particles_.get(i);
         renderer_->render_particle(p.x, p.x_fraction,
                                    p.y, p.y_fraction,
                                    p.colour_and_flags & 0x07);
+        if ((p.colour_and_flags & ParticleFlag::FOREGROUND) == 0 &&
+            renderer_->query_fg_at(p.x, p.x_fraction,
+                                   p.y, p.y_fraction)) {
+            particles_.remove(i);
+        }
     }
 
     // Debug: primary / secondary / tertiary tier overlay. The renderer
