@@ -487,6 +487,7 @@ static void apply_tile_collision(Ctx& ctx) {
         std::abs(static_cast<int>(ctx.obj.velocity_x)),
         std::abs(static_cast<int>(ctx.obj.velocity_y))));
     ctx.obj.pre_collision_magnitude = magnitude;
+    ctx.obj.pre_collision_angle     = velocity_angle;
 
     uint8_t angle_rel = static_cast<uint8_t>(velocity_angle - tile_collision_angle);
     if ((angle_rel & 0x80) == 0) {
