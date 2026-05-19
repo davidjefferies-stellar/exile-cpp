@@ -542,17 +542,6 @@ void Game::process_input() {
         input_.process_key(key);
     }
 
-    // Merge in the BBC's input from jsbeeb if mirror mode is on. The
-    // browser-side bridge-client polls BBC's action_keys_pressed and
-    // POSTs to /bridge/input each frame; JsbeebBridge::merge_into
-    // OR-s those into our local InputState so either keyboard can
-    // drive the port.
-    if (bridge_sync_on_) {
-        InputState merged = input_.state();
-        JsbeebBridge::merge_into(merged);
-        input_.set_state(merged);
-    }
-
     // Window-close path: get_key returns InputKey::CLOSE_REQUESTED when
     // the user clicked the title-bar X. No key binding to this — only
     // the renderer's should_close flag drives it.
@@ -585,25 +574,18 @@ void Game::process_input() {
     }
     dump_key_prev_ = dump_down;
 
-    // 'J' — toggle jsbeeb mirror mode. First frame after toggling on,
-    // push the full world state (objects, weapons, keys, tertiary,
-    // secondary, zero-page RNG / pose / frame counter). On every
-    // subsequent frame, push only the action_keys_pressed table so the
-    // BBC drives its own simulation from the same input we're seeing.
-    // This avoids the per-frame poke of object positions that was
-    // leaving ghost pixels on the BBC framebuffer.
+    // 'J' — one-shot full world-state sync to jsbeeb. Pushes objects,
+    // weapons, keys, tertiary, secondary, zero-page RNG / pose / frame
+    // counter on the rising edge. After the snapshot fires jsbeeb runs
+    // free; we do not read keys back from the BBC.
     bool bridge_down = input_.state().bridge_push;
-    bool just_toggled_on = false;
-    if (bridge_down && !bridge_key_prev_) {
-        bridge_sync_on_ = !bridge_sync_on_;
-        just_toggled_on = bridge_sync_on_;
-    }
+    bool just_pressed = bridge_down && !bridge_key_prev_;
     bridge_key_prev_ = bridge_down;
 
-    if (bridge_sync_on_) {
+    if (just_pressed) {
         std::vector<JsbeebBridge::Write> writes;
 
-        if (just_toggled_on) {
+        {
             // -------- FULL INITIAL SYNC --------
             // 16 primary slots × 14 fields (bases at &0860..&0936).
             // Loop hard-capped at 16: our primary_ is 64 wide but the

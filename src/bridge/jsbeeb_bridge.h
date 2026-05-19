@@ -2,8 +2,6 @@
 #include <cstdint>
 #include <vector>
 
-struct InputState;
-
 // Embedded HTTP + Server-Sent-Events server. Serves jsbeeb's static
 // `dist/` (produced by a one-time `npm run build`) and a /bridge/events
 // SSE channel that our port pokes into when 'J' is pressed. No npm at
@@ -20,12 +18,6 @@ struct Write {
 // dist/) are silent — the J binding is a debug convenience, not a
 // load-bearing feature.
 void poke(const std::vector<Write>& writes);
-
-// OR-merge the BBC's most-recently-received action_keys_pressed state
-// (posted by the in-browser bridge-client to /bridge/input) into the
-// supplied InputState. No-op if no input has ever arrived. Lets jsbeeb
-// drive our port's player while mirror mode is on.
-void merge_into(InputState& s);
 
 // Optional explicit lifecycle for tests or non-default config. Safe to
 // call repeatedly; subsequent calls are no-ops.

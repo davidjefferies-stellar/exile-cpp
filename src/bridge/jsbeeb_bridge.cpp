@@ -1,13 +1,10 @@
-// jsbeeb bridge — SSE world-state push + keystroke poll for the BBC
-// emulator at https://bbc.xania.org/. Toggle with J after booting Exile
-// in jsbeeb, then paste this into the jsbeeb tab's DevTools console:
+// jsbeeb bridge — SSE world-state push to the BBC emulator at
+// https://bbc.xania.org/. Press J in Exile to push a one-shot snapshot;
+// after the initial poke jsbeeb runs free, so its keyboard and ours
+// are independent. Paste this into the jsbeeb tab's DevTools console:
 //   const es=new EventSource('http://localhost:5173/bridge/events');es.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='poke')m.writes.forEach(w=>processor.writemem(w.addr,w.value));};
-//   const B=0x126b,N=0x27,U='http://localhost:5173/bridge/input',L=Array(N).fill(-1);(function loop(){const a=Array(N);let d=false;for(let i=0;i<N;i++){const b=processor.readmem(B+i)&0x80?1:0;a[i]=b;if(b!==L[i])d=true;}if(d){L.splice(0,N,...a);fetch(U,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actions:a}),keepalive:true}).catch(()=>{});}requestAnimationFrame(loop);})();
-// Pressing J pushes the initial snapshot; jsbeeb keystrokes then drive
-// the C++ player until you press J again.
 
 #include "bridge/jsbeeb_bridge.h"
-#include "player/input.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -36,14 +33,6 @@ std::string doc_root_;
 std::mutex sse_mutex_;
 std::vector<SOCKET> sse_clients_;
 std::once_flag init_flag_;
-
-// Most recently POSTed BBC action_keys_pressed snapshot. The browser's
-// bridge-client polls processor.readmem(0x126b..0x1291) each frame and
-// POSTs to /bridge/input; merge_into() OR-s these into the port's
-// InputState. 0x80 = key pressed, 0x00 = released.
-constexpr int ACTION_COUNT = 0x27;
-std::mutex input_mutex_;
-uint8_t bridge_actions_[ACTION_COUNT] = {};
 
 // Blocking write of `len` bytes. Returns false on any send() failure so
 // the caller can drop the socket from the SSE client list.
@@ -177,67 +166,8 @@ void serve_sse(SOCKET s) {
     sse_clients_.push_back(s);
 }
 
-// Pull Content-Length out of the request headers (case-insensitive).
-// Returns 0 if absent / malformed. Cap to keep the read bounded.
-size_t parse_content_length(const std::string& req) {
-    static const char* keys[] = { "Content-Length:", "content-length:" };
-    for (const char* k : keys) {
-        auto p = req.find(k);
-        if (p == std::string::npos) continue;
-        p += std::strlen(k);
-        while (p < req.size() && (req[p] == ' ' || req[p] == '\t')) ++p;
-        long v = std::atol(req.c_str() + p);
-        if (v < 0) v = 0;
-        if (v > 65536) v = 65536;  // sanity cap
-        return static_cast<size_t>(v);
-    }
-    return 0;
-}
-
-// Read full request including body. recv_request returns up to the
-// double-CRLF; if there's a body, we extract whatever came in the same
-// recv and read any remainder until Content-Length bytes are present.
-std::string recv_full(SOCKET s, std::string& body_out) {
-    std::string req = recv_request(s);
-    body_out.clear();
-    if (req.empty()) return req;
-    auto hdr_end = req.find("\r\n\r\n");
-    if (hdr_end == std::string::npos) return req;
-    size_t want = parse_content_length(req);
-    body_out = req.substr(hdr_end + 4);
-    while (body_out.size() < want) {
-        char tmp[1024];
-        int n = ::recv(s, tmp, sizeof(tmp), 0);
-        if (n <= 0) break;
-        body_out.append(tmp, static_cast<size_t>(n));
-    }
-    return req.substr(0, hdr_end);
-}
-
-// Parse {"actions":[0,1,...]} into bridge_actions_. Lenient: ignores
-// whitespace, accepts any 0/non-0 integer, stops at ACTION_COUNT.
-void parse_input_body(const std::string& body) {
-    auto arr = body.find('[');
-    auto end = body.find(']', arr == std::string::npos ? 0 : arr);
-    if (arr == std::string::npos || end == std::string::npos) return;
-    uint8_t parsed[ACTION_COUNT] = {};
-    size_t idx = 0;
-    size_t i = arr + 1;
-    while (i < end && idx < ACTION_COUNT) {
-        while (i < end && (body[i] == ' ' || body[i] == ',' ||
-                            body[i] == '\t' || body[i] == '\n')) ++i;
-        if (i >= end) break;
-        long v = std::atol(body.c_str() + i);
-        parsed[idx++] = (v != 0) ? 0x80 : 0;
-        while (i < end && body[i] != ',') ++i;
-    }
-    std::lock_guard<std::mutex> lock(input_mutex_);
-    std::memcpy(bridge_actions_, parsed, ACTION_COUNT);
-}
-
 void handle_client(SOCKET s) {
-    std::string body;
-    std::string req = recv_full(s, body);
+    std::string req = recv_request(s);
     if (req.empty()) { closesocket(s); return; }
     std::string method, path;
     if (!parse_request(req, method, path)) { closesocket(s); return; }
@@ -249,22 +179,10 @@ void handle_client(SOCKET s) {
         const char* preflight =
             "HTTP/1.1 204 No Content\r\n"
             "Access-Control-Allow-Origin: *\r\n"
-            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+            "Access-Control-Allow-Methods: GET, OPTIONS\r\n"
             "Access-Control-Allow-Headers: Content-Type\r\n"
             "Access-Control-Allow-Private-Network: true\r\n\r\n";
         send_all(s, preflight, std::strlen(preflight));
-        closesocket(s);
-        return;
-    }
-
-    if (method == "POST" && path.starts_with("/bridge/input")) {
-        parse_input_body(body);
-        const char* ok =
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Length: 0\r\n"
-            "Access-Control-Allow-Origin: *\r\n"
-            "Connection: close\r\n\r\n";
-        send_all(s, ok, std::strlen(ok));
         closesocket(s);
         return;
     }
@@ -384,41 +302,6 @@ void poke(const std::vector<Write>& writes) {
         } else {
             ++it;
         }
-    }
-}
-
-void merge_into(InputState& s) {
-    // Snapshot under the mutex so concurrent POST writes can't tear
-    // mid-read. Mapping mirrors the action_keys_pressed indices in
-    // the disassembly's action table (line ~3556).
-    uint8_t a[ACTION_COUNT];
-    {
-        std::lock_guard<std::mutex> lock(input_mutex_);
-        std::memcpy(a, bridge_actions_, ACTION_COUNT);
-    }
-    if (a[0x0c]) s.retrieve     = true;   // G
-    if (a[0x0d]) s.fire         = true;   // SPACE
-    if (a[0x0e]) s.aim_centre   = true;   // I
-    if (a[0x0f] || a[0x21]) s.move_left  = true;   // LEFT / Q
-    if (a[0x10] || a[0x22]) s.move_right = true;   // RIGHT / W
-    if (a[0x11] || a[0x23]) s.move_up    = true;   // UP / P
-    if (a[0x12] || a[0x25]) s.move_down  = true;   // DOWN / L
-    if (a[0x13]) s.aim_down     = true;   // K
-    if (a[0x14]) s.aim_up       = true;   // O
-    if (a[0x15]) s.boost        = true;   // @
-    if (a[0x16]) s.lie_down     = true;   // CTRL
-    if (a[0x17]) s.turn_around  = true;   // TAB
-    if (a[0x18]) s.whistle_one  = true;   // Y
-    if (a[0x19]) s.whistle_two  = true;   // U
-    if (a[0x1a]) s.teleport     = true;   // T
-    if (a[0x1b]) s.remember_pos = true;   // R
-    if (a[0x1c]) s.throw_obj    = true;   // >
-    if (a[0x1d]) s.drop         = true;   // M
-    if (a[0x1e]) s.pickup       = true;   // <
-    if (a[0x1f]) s.store        = true;   // S
-    // F0..F5 (BBC actions &01-&06) -> weapon_select 0..5.
-    for (uint8_t i = 0; i < 6; ++i) {
-        if (a[1 + i]) s.weapon_select = i;
     }
 }
 

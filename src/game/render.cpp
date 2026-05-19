@@ -258,9 +258,6 @@ void Game::render() {
                       scrub_offset_, snapshot_ring_count_);
         overlay += buf;
     }
-    // jsbeeb bridge sync indicator. J toggles; while on, ~640 byte
-    // writes go out to localhost:5173 every tick via SSE.
-    if (bridge_sync_on_) overlay += "[JSBEEB SYNC]\n";
     // Editor save-feedback banner: "Saved exile.map" / "Save FAILED" for
     // ~2-4 seconds after pressing '\'.
     if (frame_counter_ < editor_save_msg_until_frame_) {

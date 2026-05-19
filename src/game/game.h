@@ -512,12 +512,8 @@ private:
     bool save_key_prev_     = false;
     bool load_key_prev_     = false;
     bool dump_key_prev_     = false;
+    // 'J' is a one-shot — edge-detect only, no mirror-mode flag.
     bool bridge_key_prev_   = false;
-    // 'J' toggles jsbeeb mirror mode. The frame J flips on, process_
-    // input pushes a full world snapshot; subsequent frames push only
-    // the BBC's action_keys_pressed table so jsbeeb runs its own
-    // simulation from our inputs.
-    bool bridge_sync_on_      = false;
 
     // Rewind ring buffer. capacity == 600 frames (~10 sec at 60fps);
     // head_ is the next write slot, count_ is the number of valid entries
