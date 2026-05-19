@@ -1,5 +1,6 @@
 #include "behaviours/environment.h"
 #include "behaviours/path.h"
+#include "behaviours/npc_helpers.h"
 #include "audio/audio.h"
 #include "core/types.h"
 #include "objects/object_data.h"
@@ -12,6 +13,63 @@
 #include <cstdlib>
 
 namespace Behaviors {
+
+// Port of &0bc5/&0bc7 check_if_object_hit_by_other_control. Returns
+// true when the player has just fired an object of type `control_type`
+// AND that fired object is inside an aim cone centred on the player's
+// aim direction passing through `target`.
+//
+// 6502 pipeline at &0bd2-&0be5:
+//   &0bd2 LDA #&18 (3 tiles in &20-fractions) — range gate via &359c
+//   &0bd9 JSR &22a0 — angle, computed via
+//                    &2305 SBC: relative = other - this
+//                    (this = target, other = fired), so `angle` is the
+//                    direction FROM target TO fired.
+//   &0bdc SBC player_aim — A = angle - player_aim
+//   &0bde SBC #&80       — A = angle - player_aim - 0x80
+//   &0be0 invert_if_negative — abs
+//   &0be3 ADC distance        — distance in &20-fractions (8 per tile)
+//   &0be5 CMP #&18            — pass if A < 0x18
+//
+// Direction-of-angle gotcha: despite the function name "of object X to
+// this_object", &22fe builds `relative = other - this`, so the angle
+// points from the target toward the fired object. For an on-axis hit
+// with player aiming right (aim = 0), the RCD must be APPROACHING the
+// target from the player's side — i.e. at smaller x than the target,
+// so the target→fired vector points right (angle 0x80, "left" in 6502
+// space). raw_diff = 0x80 - 0 - 0x80 = 0 → passes. Once the RCD
+// overshoots past the target the vector flips and the test rejects.
+static bool hit_by_aim_cone(const Object& target, UpdateContext& ctx,
+                            ObjectType control_type) {
+    if (ctx.player_object_fired >= GameConstants::PRIMARY_OBJECT_SLOTS) {
+        return false;
+    }
+    const Object& fired = ctx.mgr.object(ctx.player_object_fired);
+    if (!fired.is_active() || fired.type != control_type) return false;
+
+    // Chebyshev range gate at 3 tiles. The 6502 raycast at &359c also
+    // returns the distance in &83 in &20-fractions — we approximate
+    // with the tile count × 8 below.
+    int8_t fdx = static_cast<int8_t>(fired.x.whole - target.x.whole);
+    int8_t fdy = static_cast<int8_t>(fired.y.whole - target.y.whole);
+    int adx = fdx < 0 ? -fdx : fdx;
+    int ady = fdy < 0 ? -fdy : fdy;
+    int tiles = std::max(adx, ady);
+    if (tiles > 3) return false;
+    int distance_units = tiles * 8;     // 1 tile = 8 &20-fracs
+
+    // Direction TARGET → FIRED (see the &2305 SBC trace above). dx/dy
+    // are the same as the Chebyshev fdx/fdy above; pass them straight
+    // to angle_from_deltas.
+    uint8_t angle = NPC::angle_from_deltas(fdx, fdy);
+
+    // &0bdc-&0be0: abs(angle - player_aim - 0x80).
+    int raw_diff = static_cast<int8_t>(
+        angle - ctx.player_aim_angle - 0x80);
+    int abs_diff = raw_diff < 0 ? -raw_diff : raw_diff;
+
+    return (abs_diff + distance_units) < 0x18;
+}
 
 // &4D72-&4D7C: per-colour-pair tables.
 // speed table — how fast the door opens (halved when closing).
@@ -80,33 +138,25 @@ void update_door(Object& obj, UpdateContext& ctx) {
     // &4cab-&4cad: always re-set MOVING while the door is being ticked.
     uint8_t data = obj.tertiary_data_offset | DoorFlag::MOVING;
 
-    // &4c9e/&31ac RCD door-unlock. Port-only: drops the aim-cone test from
-    // &0bc5, uses Chebyshev distance only. Toggle LOCKED iff matching key
-    // collected (&31c2-&31cd), clearing MOVING or setting OPENING.
-    if (ctx.player_object_fired < GameConstants::PRIMARY_OBJECT_SLOTS &&
-        ctx.player_keys_collected) {
-        const Object& fired = ctx.mgr.object(ctx.player_object_fired);
-        if (fired.is_active() &&
-            fired.type == ObjectType::REMOTE_CONTROL_DEVICE) {
-            int8_t dx = static_cast<int8_t>(fired.x.whole - obj.x.whole);
-            int8_t dy = static_cast<int8_t>(fired.y.whole - obj.y.whole);
-            int adx = dx < 0 ? -dx : dx;
-            int ady = dy < 0 ? -dy : dy;
-            if (adx <= 3 && ady <= 3) {
-                uint8_t door_colour = (obj.tertiary_data_offset >> 4) & 0x07;
-                if (ctx.player_keys_collected[door_colour] & 0x80) {
-                    data ^= DoorFlag::LOCKED;
-                    if (data & DoorFlag::LOCKED) {
-                        data &= ~DoorFlag::MOVING;
-                    } else {
-                        data |= DoorFlag::OPENING;
-                    }
-                    // &31d0-&31d3 lock/unlock chime — same params for
-                    // both directions in the 6502.
-                    static constexpr uint8_t kSoundLock[4] = { 0x94, 0x64, 0xba, 0xc4 };
-                    Audio::play_at(Audio::CH_ANY, kSoundLock, obj.x.whole, obj.y.whole);
-                }
+    // &4c9e/&31ac RCD door-unlock: the door reacts iff the player just
+    // fired an RCD that's inside the aim-cone test at &0bc5 AND the
+    // matching key has been collected. player_object_fired is one-frame
+    // (cleared at end of tick by game.cpp), so the LOCKED toggle only
+    // fires on the firing frame, not repeatedly while the RCD coasts.
+    if (ctx.player_keys_collected &&
+        hit_by_aim_cone(obj, ctx, ObjectType::REMOTE_CONTROL_DEVICE)) {
+        uint8_t door_colour = (obj.tertiary_data_offset >> 4) & 0x07;
+        if (ctx.player_keys_collected[door_colour] & 0x80) {
+            data ^= DoorFlag::LOCKED;
+            if (data & DoorFlag::LOCKED) {
+                data &= ~DoorFlag::MOVING;
+            } else {
+                data |= DoorFlag::OPENING;
             }
+            // &31d0-&31d3 lock/unlock chime — same params for both
+            // directions in the 6502.
+            static constexpr uint8_t kSoundLock[4] = { 0x94, 0x64, 0xba, 0xc4 };
+            Audio::play_at(Audio::CH_ANY, kSoundLock, obj.x.whole, obj.y.whole);
         }
     }
 
@@ -385,15 +435,15 @@ static void process_switch_effects(ObjectManager& mgr,
 }
 
 // &49C5 check_if_object_can_trigger_switches: heavy enough (weight >= 2)
-// AND not on the per-type blacklist (invisible debris, maggots, clawed
-// robots, Triax). Used by both the visible-switch press path and the
-// invisible-switch collision trigger.
+// AND not on the per-type blacklist. The 6502 branch table at &49cc-&49d4
+// allows MAGGOT and higher via BCS, takes a special path for INVISIBLE_
+// DEBRIS, and only excludes the clawed-robot block (0x22-0x26) plus
+// INVISIBLE_DEBRIS (0x35). Maggots DO trigger switches in the original.
 static bool object_can_trigger_switches(const Object& obj) {
     uint8_t w = obj.weight();
     if (w < 2) return false;
     uint8_t t = static_cast<uint8_t>(obj.type);
     return t != static_cast<uint8_t>(ObjectType::INVISIBLE_DEBRIS) &&
-           t != static_cast<uint8_t>(ObjectType::MAGGOT) &&
            t != static_cast<uint8_t>(ObjectType::MAGENTA_CLAWED_ROBOT) &&
            t != static_cast<uint8_t>(ObjectType::CYAN_CLAWED_ROBOT) &&
            t != static_cast<uint8_t>(ObjectType::GREEN_CLAWED_ROBOT) &&
@@ -449,19 +499,8 @@ void update_switch(Object& obj, UpdateContext& ctx) {
     // very light objects, invisible debris, clawed robots, Triax, maggots.
     bool triggered = false;
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
-        Object& toucher = ctx.mgr.object(obj.touching);
-        uint8_t w = toucher.weight();
-        uint8_t t = static_cast<uint8_t>(toucher.type);
-        bool heavy = (w >= 2);
-        bool blacklisted =
-            t == static_cast<uint8_t>(ObjectType::INVISIBLE_DEBRIS) ||
-            t == static_cast<uint8_t>(ObjectType::MAGGOT) ||
-            t == static_cast<uint8_t>(ObjectType::MAGENTA_CLAWED_ROBOT) ||
-            t == static_cast<uint8_t>(ObjectType::CYAN_CLAWED_ROBOT) ||
-            t == static_cast<uint8_t>(ObjectType::GREEN_CLAWED_ROBOT) ||
-            t == static_cast<uint8_t>(ObjectType::RED_CLAWED_ROBOT) ||
-            t == static_cast<uint8_t>(ObjectType::TRIAX);
-        triggered = heavy && !blacklisted;
+        triggered = object_can_trigger_switches(
+            ctx.mgr.object(obj.touching));
     }
 
     // ROR tx with carry = triggered. Old tx bit 0 is shifted out and lost.
@@ -822,54 +861,63 @@ void update_sucking_nest(Object& obj, UpdateContext& ctx) {
 
     bool active = (obj.state & 0x80) != 0;
 
-    // &4e0f-&4e1c: accelerate_all_objects. Iterate every primary
-    // (skip self), LOS-raycast out to `power`, compute weight/distance-
-    // attenuated acceleration, nudge velocity toward (attract) or away
-    // (repel) from the nest.
+    // &4e0f-&4e1c: accelerate_all_objects. Iterate every primary slot
+    // including the player, LOS-raycast out to `power`, then add a
+    // magnitude-(power - weight*2 - 8 - distance)/2 velocity vector
+    // aimed away from (repel) or toward (attract) the nest.
     uint8_t damage_amount = 2;
     if (active) {
         uint8_t power = sucking_nests_power[variant];
         bool attract = (sucking_nests_direction[variant] & 0x01) != 0;
-        // power/8 converts &20 fractions to whole-tile cap for our
-        // has_line_of_sight (which takes tiles, not fractions). Matches
-        // the 6502's `&344a JSR check_for_obstruction_between_objects_A`
-        // where A = acceleration_power (in &20 fractions).
         uint8_t max_tiles = static_cast<uint8_t>(power / 8);
-        for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+        for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+            if (i == ctx.this_slot) continue;
             Object& other = ctx.mgr.object(i);
             if (!other.is_active()) continue;
-            int8_t dx = static_cast<int8_t>(obj.x.whole - other.x.whole);
-            int8_t dy = static_cast<int8_t>(obj.y.whole - other.y.whole);
-            uint8_t adx = static_cast<uint8_t>(std::abs(dx));
-            uint8_t ady = static_cast<uint8_t>(std::abs(dy));
-            uint8_t dist_tiles = adx > ady ? adx : ady;
-            if (dist_tiles > max_tiles) continue;
+
+            // Distance in &20 fractions = Chebyshev(dfx,dfy)/0x20, the
+            // 6502's `&83 distance` from check_for_obstruction_between_
+            // objects_A at &35bb-&35cc.
+            int sfx = int(obj.x.whole) * 256 + int(obj.x.fraction);
+            int sfy = int(obj.y.whole) * 256 + int(obj.y.fraction);
+            int ofx = int(other.x.whole) * 256 + int(other.x.fraction);
+            int ofy = int(other.y.whole) * 256 + int(other.y.fraction);
+            int dfx = ofx - sfx;
+            int dfy = ofy - sfy;
+            int distance = std::max(std::abs(dfx), std::abs(dfy)) / 0x20;
+            if (distance > power) continue;
             if (!NPC::has_line_of_sight(obj, static_cast<uint8_t>(i),
                                         max_tiles, ctx)) continue;
 
-            // &3461-&3476: acceleration = power - (weight*2 + 8 + distance).
-            // Distance is in &20 fractions, so convert our tile count
-            // back. Weight of 7 means "static" (the 6502 sets its static
-            // bit at &346b and skips the velocity write at &348c).
+            // &3461-&3476: weight_factor = weight*2 + 8 + distance.
+            // weight == 7 marks static targets (&346b sets the static
+            // bit) which never get a velocity write.
             uint8_t w = other.weight();
-            bool is_static = (w == 7);
-            int dist_fracs = static_cast<int>(dist_tiles) * 8;
-            int eff = static_cast<int>(power) - (w * 2 + 8 + dist_fracs);
-            if (eff <= 0) continue;
-            if (is_static) continue;
+            if (w == 7) continue;
+            int weight_factor = w * 2 + 8 + distance;
+            if (weight_factor > power) continue;
+            uint8_t magnitude = static_cast<uint8_t>((power - weight_factor) / 2);
 
-            // Velocity nudge toward / away from nest. `dx > 0` means the
-            // nest is east of the candidate -> attract pulls the
-            // candidate east (velocity_x++). Repel flips the sign.
-            int8_t step_x = 0, step_y = 0;
-            if (dx > 0) step_x = attract ?  1 : -1;
-            if (dx < 0) step_x = attract ? -1 :  1;
-            if (dy > 0) step_y = attract ?  1 : -1;
-            if (dy < 0) step_y = attract ? -1 :  1;
-            if (step_x > 0 && other.velocity_x <  4) other.velocity_x++;
-            if (step_x < 0 && other.velocity_x > -4) other.velocity_x--;
-            if (step_y > 0 && other.velocity_y <  4) other.velocity_y++;
-            if (step_y < 0 && other.velocity_y > -4) other.velocity_y--;
+            // &344f-&3453: angle from source to target, XOR with the
+            // sign byte to attract (target moves opposite to that
+            // vector). int8 whole-tile deltas are enough for angle_from_
+            // deltas — it only cares about ratio + signs.
+            int8_t dx_t = static_cast<int8_t>(other.x.whole - obj.x.whole);
+            int8_t dy_t = static_cast<int8_t>(other.y.whole - obj.y.whole);
+            uint8_t angle = NPC::angle_from_deltas(dx_t, dy_t);
+            if (attract) angle ^= 0x80;
+
+            int8_t vx = 0, vy = 0;
+            NPC::vector_from_magnitude_and_angle(magnitude, angle, vx, vy);
+
+            int new_vx = int(other.velocity_x) + int(vx);
+            int new_vy = int(other.velocity_y) + int(vy);
+            if (new_vx >  127) new_vx =  127;
+            if (new_vx < -128) new_vx = -128;
+            if (new_vy >  127) new_vy =  127;
+            if (new_vy < -128) new_vy = -128;
+            other.velocity_x = static_cast<int8_t>(new_vx);
+            other.velocity_y = static_cast<int8_t>(new_vy);
         }
 
         // &4e1f-&4e25: random h-flip per frame + 1-in-256 chance of
@@ -884,7 +932,11 @@ void update_sucking_nest(Object& obj, UpdateContext& ctx) {
     // rare roll above). remove_object approximates the full damage
     // chain — a cannonball-strength hit is enough to kill most things
     // and lighter victims end up deleted by the nest's touch regardless.
-    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS && obj.touching != 0) {
+    // Player (slot 0) gated by [creatures] sucking_nest_damages_player.
+    bool victim_is_player = (obj.touching == 0);
+    bool victim_allowed = obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS &&
+                          (!victim_is_player || ctx.sucking_nest_damages_player);
+    if (victim_allowed) {
         Object& victim = ctx.mgr.object(obj.touching);
         if (victim.energy > damage_amount) {
             victim.energy = static_cast<uint8_t>(victim.energy - damage_amount);
@@ -913,23 +965,12 @@ void update_bush(Object& obj, UpdateContext& ctx) {
 // range and pointed at it (check_if_object_hit_by_other_control at &0bc7,
 // invoked with A=&4f). Without that gate the cannon never fires.
 void update_cannon(Object& obj, UpdateContext& ctx) {
-    // &40ee-&40f3 check_if_object_hit_by_other_control(CANNON_CONTROL).
-    // Port-only: drops the &0bc7 aim-cone test, uses Chebyshev distance
-    // (same simplification as the door RCD path above).
-    bool triggered = false;
-    if (ctx.player_object_fired < GameConstants::PRIMARY_OBJECT_SLOTS) {
-        const Object& fired = ctx.mgr.object(ctx.player_object_fired);
-        if (fired.is_active() &&
-            fired.type == ObjectType::CANNON_CONTROL_DEVICE) {
-            int8_t dx = static_cast<int8_t>(fired.x.whole - obj.x.whole);
-            int8_t dy = static_cast<int8_t>(fired.y.whole - obj.y.whole);
-            int adx = dx < 0 ? -dx : dx;
-            int ady = dy < 0 ? -dy : dy;
-            if (adx <= 3 && ady <= 3) triggered = true;
-        }
-    }
-
-    if (triggered) {
+    // &40ee-&40f3 check_if_object_hit_by_other_control(CANNON_CONTROL):
+    // the cannon fires iff the player aimed at it within the aim cone
+    // and a CANNON_CONTROL_DEVICE is in flight. 3-tile range, tolerance
+    // narrows with distance — see hit_by_aim_cone at the top of this
+    // TU. The flight is one-frame, so the trigger fires exactly once.
+    if (hit_by_aim_cone(obj, ctx, ObjectType::CANNON_CONTROL_DEVICE)) {
         // &40f5-&40f9 create_projectile_with_zero_velocity_y(CANNONBALL,
         // vx=0x40). fire_projectile inverts vx via x_flip (matches &33ad).
         int slot = NPC::fire_projectile(obj, ObjectType::CANNONBALL, ctx);
