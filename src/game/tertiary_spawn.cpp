@@ -150,12 +150,16 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
         if (!(tile_flip & TileFlip::VERTICAL)) {
             y_frac = static_cast<uint8_t>(yhi << 4);
         }
-        // Per-state sub-pixel nudge on top of the tile_flip baseline.
-        // Replacing the baseline puts the button on the wrong side of
-        // h-flipped switch tiles, so add to it instead.
+        // Sub-pixel nudge to align the button on the left-facing tile
+        // baseline. Right-facing (bit 0 of the data byte set, sprite
+        // h-flipped by update_switch) needs no offset — the 6502
+        // doesn't apply one and our previous -16-for-both was leaving
+        // the button slightly offset from where it should sit.
         bool facing_right = data_offset > 0 &&
             (object_mgr_.tertiary_data_byte(data_offset) & 0x01);
-        x_frac = static_cast<uint8_t>(x_frac + (facing_right ? -16 : -16));
+        if (!facing_right) {
+            x_frac = static_cast<uint8_t>(x_frac);
+        }
     }
 
     // &3e39-&3e3e nest/pipe BUSH override both fractions to 0x40 after

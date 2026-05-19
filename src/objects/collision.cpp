@@ -403,19 +403,20 @@ uint8_t substitute_door_for_obstruction(
 
     // Live primary owns authoritative state; tertiary fallback keeps
     // bit 7 (needs-creating gate) — &3ead reads it BEFORE stripping.
-    // Port deviation: when energy hits 0 the slot mutates to EXPLOSION
-    // and tertiary_data_offset is reused as a duration counter — treat
-    // SLOW_OR_DESTROYED as permanently open.
+    // EXPLOSION-typed slot here = a door that hit step 12's energy=0
+    // mutation; its tertiary_data_offset has been clobbered into a
+    // duration counter, so DON'T copy it forward. update_door's
+    // every-frame mirror at environment.cpp:240 puts the destruction-
+    // frame data (with SLOW_OR_DESTROYED + MOVING set) into the
+    // tertiary store before step 12 fires, so the fallback below
+    // carries the right state on its own.
     uint8_t raw_data = tertiary_byte_fallback;
-    bool destroyed_explosion = false;
     if (data_offset > 0) {
         for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
             const Object& obj = all_objects[i];
             if (obj.is_active() &&
                 obj.tertiary_slot == static_cast<uint16_t>(data_offset)) {
-                if (obj.type == ObjectType::EXPLOSION) {
-                    destroyed_explosion = true;
-                } else {
+                if (obj.type != ObjectType::EXPLOSION) {
                     // Primaries store the data byte with bit 7 already
                     // stripped by the spawn path (&408a in 6502).
                     raw_data = obj.tertiary_data_offset;
@@ -439,7 +440,6 @@ uint8_t substitute_door_for_obstruction(
     bool door_open = still_tertiary
         ? (raw_data & 0x02) != 0    // tertiary: read OPENING
         : (raw_data & 0x04) != 0;   // primary:  read MOVING
-    bool destroyed = (raw_data & 0x08) != 0; // SLOW_OR_DESTROYED
     bool fh = (tile_and_flip & TileFlip::HORIZONTAL) != 0;
     bool fv = (tile_and_flip & TileFlip::VERTICAL)   != 0;
     bool vertical = (fh != fv);
@@ -449,7 +449,12 @@ uint8_t substitute_door_for_obstruction(
     // nibble + &247a collision-flip XOR — without this the substitute's
     // obstruction band lands on the wrong half of the tile.
     uint8_t flip_bits = tile_and_flip & ~TileFlip::TYPE_MASK;
-    if (door_open || destroyed || destroyed_explosion) {
+    // 6502 &3eaf-&3eb0 only tests OPENING (tertiary) / MOVING (primary).
+    // A destroyed door has MOVING latched on by update_door's last
+    // mirror at environment.cpp:233 (`if energy==0 data |= MOVING`),
+    // which is what makes the obstruction read "open" without a
+    // separate SLOW_OR_DESTROYED check.
+    if (door_open) {
         return static_cast<uint8_t>(TileType::SPACE) | flip_bits;
     }
     uint8_t sub_type = vertical
