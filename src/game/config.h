@@ -50,10 +50,12 @@ struct StartupConfig {
     bool whistle_two_collected = false;
 
     // [distances] activation-ring radii (tiles). See &1bb7 check_demotion +
-    // tertiary_spawn.cpp. demote_tertiary 6502:1 / Port:12 (statics —
-    // bumped for wider viewport, avoid spawn/demote churn). spawn_tertiary
-    // matched to demote_settled so settled objects don't oscillate.
-    uint8_t demote_tertiary   = 12;
+    // tertiary_spawn.cpp. Internally there are five rings; exile.ini
+    // exposes just two collapsed keys (radius_static / radius_moving)
+    // that fan out — the four static-related rings track together so
+    // the port's wider viewport doesn't trigger spawn/demote churn.
+    // Defaults are 6502 ROM (4 static, 12 moving).
+    uint8_t demote_tertiary   = 4;
     uint8_t demote_moving     = 12;
     uint8_t demote_settled    = 4;
     uint8_t promote_secondary = 4;
@@ -93,6 +95,12 @@ struct StartupConfig {
     // start with no Triax in the world — useful when level-walking the
     // upper world without the intro snatching the player on frame 1.
     bool spawn_initial_triax = true;
+
+    // [creatures] — sucking nest damage-on-touch covers the player. The
+    // 6502's &4e29-&4e34 path damages anything in this_object_touching
+    // including slot 0; default false here so a sucked-in player isn't
+    // chipped to death frame-by-frame while sucking/pushing is tuned.
+    bool sucking_nest_damages_player = false;
 
     // [debug] stress_test — when true, scatter one of every animated
     // creature type in a grid around the player's spawn at startup. The

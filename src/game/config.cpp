@@ -202,14 +202,22 @@ StartupConfig load_startup_config(const std::string& path) {
                 }
             }
         } else if (section == "distances") {
+            // Two collapsed keys: radius_static fans out to all four
+            // static/settled distances, radius_moving stays independent.
+            // Keeping the four internal fields tied prevents the
+            // spawn / demote oscillation the wider port-viewport
+            // introduced (see exile.ini comment).
             unsigned long v;
             if (parse_uint(value, v) && v <= 0xff) {
                 uint8_t u = static_cast<uint8_t>(v);
-                if      (key == "demote_tertiary")   cfg.demote_tertiary   = u;
-                else if (key == "demote_moving")     cfg.demote_moving     = u;
-                else if (key == "demote_settled")    cfg.demote_settled    = u;
-                else if (key == "promote_secondary") cfg.promote_secondary = u;
-                else if (key == "spawn_tertiary")    cfg.spawn_tertiary    = u;
+                if (key == "radius_static") {
+                    cfg.demote_tertiary   = u;
+                    cfg.demote_settled    = u;
+                    cfg.promote_secondary = u;
+                    cfg.spawn_tertiary    = u;
+                } else if (key == "radius_moving") {
+                    cfg.demote_moving = u;
+                }
             }
         } else if (section == "whistles") {
             bool b;
@@ -260,6 +268,8 @@ StartupConfig load_startup_config(const std::string& path) {
                 cfg.pipe_198_190_crab = b;
             } else if (key == "spawn_initial_triax" && parse_bool(value, b)) {
                 cfg.spawn_initial_triax = b;
+            } else if (key == "sucking_nest_damages_player" && parse_bool(value, b)) {
+                cfg.sucking_nest_damages_player = b;
             }
         } else if (section == "audio") {
             bool b = false;
