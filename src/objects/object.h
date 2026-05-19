@@ -44,6 +44,12 @@ struct Object {
     // ~0x10 which fires a smaller threshold but the unbounced velocity
     // was still tame).
     uint8_t    pre_collision_magnitude = 0;
+    // 6502 &1e this_object_pre_collision_velocity_angle. Captured at
+    // &30b6 right before the tile-collision bounce reflects the
+    // velocity. Drives the player's "knocked-spinning" rotation in
+    // update_rotating_player (&3814-&3856) — the angle of incidence
+    // chooses which way to tumble.
+    uint8_t    pre_collision_angle = 0;
 
     bool is_active() const { return y.whole != 0; }
     bool is_flipped_h() const { return flags & ObjectFlags::FLIP_HORIZONTAL; }
