@@ -54,7 +54,12 @@ private:
 
     // Player-specific state
     uint8_t player_weapon_ = 0;   // 0=jetpack, 1=pistol, etc.
-    uint8_t player_aim_angle_ = 0;
+    // &32 player_aiming_angle_without_flip — uint8 interpreted as int8,
+    // clamped to [-0x3f, +0x3f] by &30fc.
+    uint8_t player_aim_angle_       = 0;
+    // &33 player_aiming_angle_velocity — integrates accel toward
+    // ±0x10, zeroed the frame no aim key is held.
+    int8_t  player_aim_velocity_    = 0;
     uint8_t player_angle_  = 0xc0;  // &de: current body angle (0xc0 = upright head-up)
     uint8_t player_facing_ = 0x00;  // &df: facing as an x_flip byte (0x00 right, 0x80 left)
     // Damage-flash bookkeeping (port-only). 6502's continuous low-energy
@@ -62,6 +67,19 @@ private:
     // event; track previous energy and trigger a short strobe instead.
     uint8_t player_prev_energy_     = 0xff;
     uint8_t player_damage_flash_    = 0;
+    // &ba / &bb player_immobility_timers. Set by damage_object at &24b7
+    // (movement timer = raw damage, 1-in-2 chance) and consumed in
+    // update_player_angle_facing_and_sprite at &3810: while non-zero,
+    // movement is suppressed and player_angle rotates ("knocked spinning"
+    // visual). The thrust timer (&bb) gates jetpack thrust separately.
+    uint8_t player_immobility_movement_ = 0;
+    uint8_t player_immobility_thrust_   = 0;
+    // &b9 player_immobility_rotation_velocity. Signed (int8 in
+    // disguise). Accumulated each spin frame from the collision-angle /
+    // pre-collision-magnitude math, clamped to ±0x20 (&3840), decayed
+    // 7/8 every 4 frames when |rv| >= 4. Added to player_angle each
+    // spin tick — that's what makes the player tumble.
+    uint8_t player_immobility_rotation_velocity_ = 0;
     // State-change snapshots for the walk-vs-fly debug log. We log only
     // when one of these flips, plus a one-shot "walk-blocked" line on
     // each frame the player presses left/right but the walking gate
@@ -126,6 +144,12 @@ private:
     // radiation). Set from cfg.invincible at startup.
     bool invincible_ = false;
 
+    // [creatures] sucking_nest_damages_player — when true, sucking-nest
+    // damage-on-touch (&4e29-&4e34) is allowed to land on the player
+    // slot. Default false to avoid frame-by-frame chip damage while the
+    // suck/push tuning is in flight. Plumbed via UpdateContext.
+    bool sucking_nest_damages_player_ = false;
+
     // [debug] show_fps — top-right FPS readout. Measured in Game::run
     // over a 30-frame rolling window (actual wall-clock cadence,
     // includes the per-frame sleep). Set from cfg.show_fps at startup.
@@ -159,6 +183,20 @@ private:
     bool whistle_one_collected_ = false;  // &0816
     bool whistle_two_collected_ = false;  // &0817
     uint8_t chatter_energy_reserve_ = 0;  // &081c
+
+    // Port of &080e..&0813 player_weapons_collected. Index 0 is the
+    // jetpack booster, 1..4 are pistol/icer/blaster/plasma gun, 5 is the
+    // protection suit. 0x80 = collected, 0 = not. update_collectable's
+    // &4b8e-&4b91 path stamps the flag when an item of the matching type
+    // is held. &2c81 gates the Right-Ctrl boost on entry 0; &2cef gates
+    // weapon select (1-5 keys) on entries 1..5.
+    uint8_t player_weapons_collected_[6] = {0, 0, 0, 0, 0, 0};
+
+    // &0814 player_fire_immunity_device_collected (&4af9 gate: fireball
+    // touch damage to slot 0 zeroes out). &0818 radiation immunity (gate
+    // at &41f5: coronium 8-damage hit on hold skipped).
+    bool fire_immunity_collected_      = false;
+    bool radiation_immunity_collected_ = false;
 
     // Port of &0806 player_keys_collected. Eight entries, 0x80 = key
     // collected, 0 = not. Index 0..5 are the six visible key object
@@ -456,10 +494,42 @@ private:
     bool save_game(const std::string& path) const;
     bool load_game(const std::string& path);
 
+    // Stream-based variants used by the rewind ring buffer. snapshot()
+    // serialises the same payload save_game writes to disk;
+    // restore_snapshot() is the inverse. dump_ring_buffer() concatenates
+    // every captured frame to a single file with `=== frame N ===`
+    // delimiters — useful when bisecting a bug across many frames.
+    void        write_state(std::ostream& f) const;
+    bool        read_state(std::istream& f);
+    std::string snapshot() const;
+    bool        restore_snapshot(const std::string& s);
+    bool        dump_ring_buffer(const std::string& path) const;
+
     // Rising-edge state for save/load keys. Without these, holding down
-    // ';' would overwrite the save every frame.
-    bool save_key_prev_ = false;
-    bool load_key_prev_ = false;
+    // ';' would overwrite the save every frame. Scrub keys deliberately
+    // do NOT use edge detection — holding them auto-repeats one frame
+    // per tick so the user can sweep through the rewind buffer.
+    bool save_key_prev_     = false;
+    bool load_key_prev_     = false;
+    bool dump_key_prev_     = false;
+    bool bridge_key_prev_   = false;
+    // 'J' toggles jsbeeb mirror mode. The frame J flips on, process_
+    // input pushes a full world snapshot; subsequent frames push only
+    // the BBC's action_keys_pressed table so jsbeeb runs its own
+    // simulation from our inputs.
+    bool bridge_sync_on_      = false;
+
+    // Rewind ring buffer. capacity == 600 frames (~10 sec at 60fps);
+    // head_ is the next write slot, count_ is the number of valid entries
+    // (capped at capacity). scrub_offset_ counts frames back from the
+    // most recently written entry; 0 means "live", non-zero freezes the
+    // sim until the user presses Esc.
+    static constexpr size_t SNAPSHOT_RING_CAPACITY = 600;
+    std::vector<std::string> snapshot_ring_{SNAPSHOT_RING_CAPACITY};
+    size_t snapshot_ring_head_  = 0;
+    size_t snapshot_ring_count_ = 0;
+    bool   scrubbing_           = false;
+    size_t scrub_offset_        = 0;
 
     // Spawn a primary object from a tertiary when its tile comes into view.
     // Port of create_primary_object_from_tertiary (&4042) plus the per-tile

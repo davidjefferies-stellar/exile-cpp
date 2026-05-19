@@ -249,6 +249,18 @@ void Game::render() {
     // scroll around.
     std::string overlay;
     if (paused_) overlay = "[PAUSED]\n";
+    // Rewind scrubber readout — shown only while scrubbing so the live
+    // HUD doesn't get a constant "+0 / 600" decoration. Numpad +/- step,
+    // Esc commits and resumes from this frame.
+    if (scrubbing_) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "[SCRUB -%zu / %zu]\n",
+                      scrub_offset_, snapshot_ring_count_);
+        overlay += buf;
+    }
+    // jsbeeb bridge sync indicator. J toggles; while on, ~640 byte
+    // writes go out to localhost:5173 every tick via SSE.
+    if (bridge_sync_on_) overlay += "[JSBEEB SYNC]\n";
     // Editor save-feedback banner: "Saved exile.map" / "Save FAILED" for
     // ~2-4 seconds after pressing '\'.
     if (frame_counter_ < editor_save_msg_until_frame_) {
@@ -1065,7 +1077,7 @@ void Game::render() {
     PlayerState ps;
     ps.energy = object_mgr_.player().energy;
     ps.weapon = player_weapon_;
-    ps.has_jetpack_booster = false;
+    ps.has_jetpack_booster = (player_weapons_collected_[0] & 0x80) != 0;
     for (int i = 0; i < 5; i++) ps.pockets[i] = pockets_[i];
     ps.pockets_used = pockets_used_;
     for (int i = 0; i < 8; i++) ps.keys[i] = player_keys_collected_[i];
