@@ -254,6 +254,13 @@ void Game::update_objects() {
                               every_sixty_four_frames_,
                               whistle_one_active_, &whistle_two_activator_,
                               &whistle_one_collected_, &whistle_two_collected_,
+                              player_weapons_collected_,
+                              weapon_energy_,
+                              &player_immobility_movement_,
+                              &player_immobility_thrust_,
+                              &fire_immunity_collected_,
+                              &radiation_immunity_collected_,
+                              &mushroom_immunity_collected_,
                               player_mushroom_timers_,
                               player_keys_collected_,
                               &particles_,
@@ -272,7 +279,8 @@ void Game::update_objects() {
                                   ? &damage_events_ : nullptr,
                               &explosion_timer_,
                               &flooding_state_,
-                              &floating_labels_};
+                              &floating_labels_,
+                              sucking_nest_damages_player_};
             update_fn(obj, uctx);
         }
 
@@ -344,6 +352,21 @@ void Game::update_objects() {
             }
 
             Behaviors::explode_object_with_duration(obj, duration);
+            // &1ce3-&1cf3 dispatch top 2 bits of object_types_update_
+            // routine_addresses_high: 0x40 = loud squeal + squeal +
+            // explosion (&40be), 0xc0 = squeal + explosion (&40c5),
+            // 0x80 = fireball-no-sound (&40bb, not split out yet).
+            uint8_t exp_flag = object_types_update_routine_addresses_high[t] & 0xc0;
+            if (exp_flag == 0x40) {
+                static constexpr uint8_t kSoundLoudSqueal[4] = { 0x57, 0x07, 0x43, 0xf6 };
+                Audio::play_at(Audio::CH_ANY, kSoundLoudSqueal,
+                               obj.x.whole, obj.y.whole);
+            }
+            if (exp_flag == 0x40 || exp_flag == 0xc0) {
+                static constexpr uint8_t kSoundSqueal[4] = { 0x33, 0x03, 0x2d, 0x84 };
+                Audio::play_at(Audio::CH_ANY, kSoundSqueal,
+                               obj.x.whole, obj.y.whole);
+            }
             static constexpr uint8_t kSoundExplosion[4] = { 0x17, 0x03, 0x11, 0x04 };
             Audio::play_at(Audio::CH_PRIORITY, kSoundExplosion,
                            obj.x.whole, obj.y.whole);
