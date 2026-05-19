@@ -40,6 +40,9 @@
     <Filter Include="Game\game">
       <UniqueIdentifier>{b001000b-0000-0000-0000-00000000001b}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Game\bridge">
+      <UniqueIdentifier>{b001000c-0000-0000-0000-00000000001b}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <!-- Tests -->
@@ -104,6 +107,9 @@
     <!-- Game / audio -->
     <ClCompile Include="src\audio\audio.cpp">                     <Filter>Game\audio</Filter> </ClCompile>
     <ClCompile Include="src\audio\fenster_audio_impl.c">          <Filter>Game\audio</Filter> </ClCompile>
+
+    <!-- Game / bridge -->
+    <ClCompile Include="src\bridge\jsbeeb_bridge.cpp">            <Filter>Game\bridge</Filter> </ClCompile>
 
     <!-- Game / game -->
     <ClCompile Include="src\game\game.cpp">                       <Filter>Game\game</Filter> </ClCompile>

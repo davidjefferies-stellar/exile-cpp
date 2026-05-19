@@ -131,6 +131,7 @@
     <ClCompile Include="src\player\player_sprite.cpp" />
     <ClCompile Include="src\game\object_update.cpp" />
     <ClCompile Include="src\game\render.cpp" />
+    <ClCompile Include="src\bridge\jsbeeb_bridge.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\core\types.h" />
@@ -176,6 +177,7 @@
     <ClInclude Include="src\player\input.h" />
     <ClInclude Include="src\game\game.h" />
     <ClInclude Include="src\game\config.h" />
+    <ClInclude Include="src\bridge\jsbeeb_bridge.h" />
   </ItemGroup>
   <ItemGroup>
     <!-- Non-code files surfaced in Solution Explorer for easy editing.

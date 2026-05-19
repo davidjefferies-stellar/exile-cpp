@@ -31,6 +31,9 @@
     <Filter Include="src\audio">
       <UniqueIdentifier>{a001000e-0000-0000-0000-00000000001a}</UniqueIdentifier>
     </Filter>
+    <Filter Include="src\bridge">
+      <UniqueIdentifier>{a001000f-0000-0000-0000-00000000001a}</UniqueIdentifier>
+    </Filter>
     <Filter Include="data">
       <UniqueIdentifier>{a001000c-0000-0000-0000-00000000001a}</UniqueIdentifier>
     </Filter>
@@ -106,6 +109,9 @@
     <!-- src\audio\ -->
     <ClCompile Include="src\audio\audio.cpp">                    <Filter>src\audio</Filter> </ClCompile>
     <ClCompile Include="src\audio\fenster_audio_impl.c">         <Filter>src\audio</Filter> </ClCompile>
+
+    <!-- src\bridge\ -->
+    <ClCompile Include="src\bridge\jsbeeb_bridge.cpp">           <Filter>src\bridge</Filter> </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <!-- src\core\ -->
@@ -174,6 +180,9 @@
 
     <!-- src\audio\ -->
     <ClInclude Include="src\audio\audio.h">                      <Filter>src\audio</Filter> </ClInclude>
+
+    <!-- src\bridge\ -->
+    <ClInclude Include="src\bridge\jsbeeb_bridge.h">             <Filter>src\bridge</Filter> </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <!-- Non-code files at the project root — left without <Filter> so
