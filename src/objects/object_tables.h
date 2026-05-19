@@ -46,7 +46,7 @@ inline int get_range_for_object_type(uint8_t object_type) {
 static constexpr int8_t weapon_bullet_type[] = {
     0x00,  // 0: Jetpack (no bullet)
     0x18,  // 1: Pistol -> OBJECT_PISTOL_BULLET
-    0x13,  // 2: Icer -> OBJECT_ICER_BULLET
+    0x13,  // 2: Icer -> OBJECT_ICER_BULLET (6502 &2cdc table)
     -5,    // 3: Blaster (discharge mode, not bullet)
     0x19,  // 4: Plasma gun -> OBJECT_PLASMA_BALL
     0x00,  // 5: Protection suit (no firing)
