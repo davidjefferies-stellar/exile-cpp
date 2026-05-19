@@ -29,6 +29,28 @@ struct UpdateContext {
     // &4b90 DEC player_collected; apply_player_input gates Y/U playback.
     bool* whistle_one_collected;
     bool* whistle_two_collected;
+    // &080e..&0813 player_weapons_collected. Index 0 = jetpack booster,
+    // 1..4 = pistol/icer/blaster/plasma_gun, 5 = protection suit. Stamped
+    // by update_collectable's auto-collect &4b8e-&4b91 path; read by the
+    // Right-Ctrl boost (&2c81) and weapon-select (&2cef) gates.
+    uint8_t* player_weapons_collected;
+    // &084e..&0853 player_weapons_energy (16-bit per slot in our port,
+    // split into low &084e / high &0854 on the BBC). Needed by
+    // damage_player_if_touching to drain the protection suit (slot 5)
+    // by 2× damage per hit, matching &24c2-&24c5.
+    uint16_t* player_weapon_energy;
+    // &ba / &bb player_immobility_timers (movement / thrust). Pointer so
+    // damage_player_if_touching can set the movement timer on hit.
+    uint8_t* player_immobility_movement;
+    uint8_t* player_immobility_thrust;
+    // &0814 fire / &0818 radiation immunity flags. Gate the per-touch
+    // damage paths at &4af9 (fireball) and &41f5 (coronium).
+    bool* fire_immunity_collected;
+    bool* radiation_immunity_collected;
+    // &0815 mushroom immunity (red/blue pill). 6502 reads at &400f to
+    // skip the immobility timer set; this port doesn't yet wire the
+    // immobility timer so the gate is just stamped for save persistence.
+    bool* mushroom_immunity_collected;
     // Pointer to Game::player_mushroom_timers_ [0]=red, [1]=blue. May be null.
     uint8_t* player_mushroom_timers;
     // &0806 player_keys_collected. 8 entries (0x80 = picked up); read by
@@ -77,6 +99,10 @@ struct UpdateContext {
     // when a rare gameplay event needs visual feedback (e.g. imp fed).
     // Renderer draws regardless of debug-overlay toggles.
     std::vector<FloatingLabel>* floating_labels;
+    // [creatures] sucking_nest_damages_player. When false, the &4e29
+    // damage-on-touch path skips slot 0 so the player can be sucked
+    // in without taking 2 hp per frame.
+    bool sucking_nest_damages_player;
 };
 
 // Common NPC movement helpers
@@ -96,8 +122,12 @@ void animate_walking(Object& obj, uint8_t base_sprite, uint8_t frame_counter);
 
 // Apply damage to player if touching. When damage_events is non-null
 // and damage actually lands, push a DamageVisual for the debug overlay.
+// `ctx` is the file-scope UpdateContext (defined above the NPC namespace
+// in this header); we use ::UpdateContext so the qualified name doesn't
+// resolve to a shadowed NPC::UpdateContext.
 void damage_player_if_touching(Object& obj, Object& player, uint8_t damage,
-                               std::vector<DamageVisual>* damage_events = nullptr);
+                               std::vector<DamageVisual>* damage_events = nullptr,
+                               ::UpdateContext* ctx = nullptr);
 
 // Check if object has minimum energy, gain if below
 void enforce_minimum_energy(Object& obj, uint8_t min_energy);

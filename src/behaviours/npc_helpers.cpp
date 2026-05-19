@@ -52,12 +52,70 @@ void animate_walking(Object& obj, uint8_t base_sprite, uint8_t frame_counter) {
 // Our helper folds in the "touching the player?" guard so callers
 // don't have to repeat it at every site.
 void damage_player_if_touching(Object& obj, Object& player, uint8_t damage,
-                               std::vector<DamageVisual>* damage_events) {
+                               std::vector<DamageVisual>* damage_events,
+                               ::UpdateContext* ctx) {
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
         if (obj.touching == 0) { // Touching player (slot 0)
-            uint16_t hurt = std::min<uint16_t>(damage, player.energy);
-            if (player.energy > damage) {
-                player.energy -= damage;
+            // Port of the player branch of &24a6 damage_object.
+            // 1) &24ad: 1-in-2 chance (rnd_state+1 bit 7) of skipping
+            //    the immobility-timer set.
+            // 2) &24b3: only RAISE the timer; smaller damage doesn't
+            //    overwrite a higher pending one.
+            // 3) &24bb: protection-suit branch — drains 2× damage from
+            //    the suit, then a reliability roll. If reliable, the
+            //    suit absorbs the multiplier and damage stays 1×; if
+            //    not, fall through to the 8× hit.
+            // 4) &24cf: ASL ×3 -> damage *= 8 when unprotected, with
+            //    a saturating cap (ROR on overflow).
+            // 5) Finally subtract the multiplied damage from energy.
+            if (ctx) {
+                bool skip_immobility = false;
+                // Use the same rng we get on the BBC by reading bit 7
+                // of a fresh roll. ctx.rng is the shared Random.
+                uint8_t rnd1 = ctx->rng.next();
+                if (rnd1 & 0x80) skip_immobility = true;
+                if (!skip_immobility && ctx->player_immobility_movement) {
+                    if (damage > *ctx->player_immobility_movement) {
+                        *ctx->player_immobility_movement = damage;
+                    }
+                }
+            }
+            // &24bb suit branch.
+            bool suit_absorbs = false;
+            if (ctx && ctx->player_weapons_collected &&
+                ctx->player_weapon_energy &&
+                (ctx->player_weapons_collected[5] & 0x80)) {
+                // &24c2-&24c5: reduce suit energy by 2× damage. The
+                // 6502 calls reduce_energy_of_weapon_X twice; each
+                // call is a 16-bit decrement with floor at zero.
+                uint16_t cost = static_cast<uint16_t>(damage) * 2;
+                if (ctx->player_weapon_energy[5] > cost) {
+                    ctx->player_weapon_energy[5] -= cost;
+                } else {
+                    ctx->player_weapon_energy[5] = 0;
+                }
+                // &24c8 check_reliability — 6502's exact bit pattern
+                // isn't worth porting; we approximate with a coin flip
+                // weighted by remaining suit energy (full suit = always
+                // reliable; empty suit = always fails).
+                uint16_t remaining = ctx->player_weapon_energy[5];
+                uint8_t rnd2 = ctx->rng.next();
+                if ((static_cast<uint16_t>(rnd2) << 8) < remaining) {
+                    suit_absorbs = true;
+                }
+            }
+            // &24cd-&24d8: if no suit / unreliable, damage *= 8 with
+            // saturation.
+            uint16_t scaled = damage;
+            if (!suit_absorbs) {
+                for (int i = 0; i < 3; ++i) {
+                    if (scaled & 0x80) { scaled = 0xff; break; }
+                    scaled <<= 1;
+                }
+            }
+            uint16_t hurt = std::min<uint16_t>(scaled, player.energy);
+            if (player.energy > scaled) {
+                player.energy -= static_cast<uint8_t>(scaled);
             } else {
                 player.energy = 0;
             }
