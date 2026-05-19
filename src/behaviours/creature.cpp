@@ -428,9 +428,14 @@ void update_imp(Object& obj, UpdateContext& ctx) {
             // accept earlier despawn as the cost of any drop firing.
 
             // &4527-&4529 tile_collision_y_flags bit 7 (landed-this-frame).
-            // Approximate with is_supported() — close enough since the imp
-            // settles within the gift counter's first window.
-            bool landed = obj.is_supported();
+            // Approximate with is_supported() AND not NEWLY_CREATED — the
+            // 6502 flag fires only on the airborne→ground transition, so
+            // an imp spawned centred on a PIPE tile (which physics reports
+            // as supported on frame 1) wouldn't trigger it. Without the
+            // newly-created guard every nest-spawned imp despawns on the
+            // same frame it appears.
+            bool landed = obj.is_supported() &&
+                          !(obj.flags & ObjectFlags::NEWLY_CREATED);
             ctx.mgr.log_diag(
                 "imp p%d AT-PIPE @%u,%u landed=%d fed=%d gifts=%u",
                 ctx.this_slot, obj.x.whole, obj.y.whole,
@@ -440,12 +445,18 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                     ? static_cast<unsigned>(ctx.imp_gifts_remaining[tidx])
                     : 0xffu);
 
-            if (landed) {
+            // Port deviation: 6502 despawns both fed AND unfed imps when
+            // they land on a pipe (the &452b-&4531 unfed path still
+            // falls through to &453f set_object_as_far_away). We require
+            // WAS_FED so a freshly-spawned imp standing on its own pipe
+            // doesn't immediately vanish back to the nest the moment
+            // physics reports SUPPORTED. Unfed imps will keep wandering
+            // until the player feeds them.
+            if (landed && (obj.state & kNPC_WAS_FED)) {
                 // &452b-&4531: gift-spawn is fed-gated and counter-gated.
                 // 6502 DECs first then BMI; we check >0 then DEC, same
                 // arithmetic outcome (initial N -> N drops).
-                if ((obj.state & kNPC_WAS_FED) &&
-                    ctx.imp_gifts_remaining &&
+                if (ctx.imp_gifts_remaining &&
                     ctx.imp_gifts_remaining[tidx] > 0) {
                     ctx.imp_gifts_remaining[tidx]--;
                     int gslot = ctx.mgr.create_object_at(
@@ -585,7 +596,7 @@ void update_imp(Object& obj, UpdateContext& ctx) {
     // imp brushing past the player doesn't hurt them — mirror by skipping
     // when WAS_FED is latched.
     if (obj.touching == 0 && !(obj.state & kNPC_WAS_FED)) {
-        NPC::damage_player_if_touching(obj, ctx.mgr.player(), 5, ctx.damage_events);
+        NPC::damage_player_if_touching(obj, ctx.mgr.player(), 5, ctx.damage_events, &ctx);
     }
 
     // &45c7-&45d3 find_a_target_and_fire (A=8 -> fires when rng<=4, ~2%/frame).
@@ -620,6 +631,18 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                 // (type 0x4a..0x64) inherits energy bit 7 from
                 // init_object_from_type; step 15 would zero our velocity.
                 b.energy &= 0x7f;
+                // Initialise common_bullet_update's timer-based lifespan
+                // (port-only — 6502 uses energy from the range table).
+                // Only RED_BULLET in this list goes through that path;
+                // CORONIUM_CRYSTAL has its own (timer += 2 to 0x80) and
+                // mushroom balls use energy, so leaving their timer at 0
+                // is correct. Without this the imp's red bullet explodes
+                // on frame 2 (NEWLY_CREATED protects frame 1, then
+                // `timer == 0` immediately fires the explode path).
+                if (proj_type == static_cast<uint8_t>(ObjectType::RED_BULLET)) {
+                    b.timer = 0x40;   // ~64 frames, matches the 6502
+                                      // RED_BULLET energy floor at &0387
+                }
                 NPC::offset_child_from_parent(b, obj);
             }
         }
@@ -682,7 +705,7 @@ static void frogman_common(Object& obj, UpdateContext& ctx, uint8_t damage) {
 
     if (mood == NPCMood::MINUS_TWO) {
         NPC::seek_player(obj, ctx.mgr.player(), 6);
-        NPC::damage_player_if_touching(obj, ctx.mgr.player(), damage, ctx.damage_events);
+        NPC::damage_player_if_touching(obj, ctx.mgr.player(), damage, ctx.damage_events, &ctx);
     } else {
         if (ctx.every_sixteen_frames) {
             obj.velocity_x = (ctx.rng.next() & 0x07) - 3;
@@ -739,7 +762,7 @@ void update_invisible_frogman(Object& obj, UpdateContext& ctx) {
 // abs((frame16 / 2) - 4). Drop initial offset at &47e2: x_frac=0x30/0x90
 // per slime's h-flip, y_frac=0x40, vy=4.
 void update_red_slime(Object& obj, UpdateContext& ctx) {
-    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 3, ctx.damage_events);
+    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 3, ctx.damage_events, &ctx);
     NPC::enforce_minimum_energy(obj, 0x7f);
 
     uint8_t frame16 = ctx.frame_counter & 0x0f;
@@ -780,7 +803,7 @@ void update_green_slime(Object& obj, UpdateContext& ctx) {
     if (ctx.every_sixteen_frames) {
         obj.velocity_x = (ctx.rng.next() & 0x03) - 1;
     }
-    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 2, ctx.damage_events);
+    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 2, ctx.damage_events, &ctx);
     NPC::face_movement_direction(obj);
     NPC::enforce_minimum_energy(obj, 0x3f);
     // If absorbs coronium crystal, becomes yellow slime
@@ -789,7 +812,7 @@ void update_green_slime(Object& obj, UpdateContext& ctx) {
 // &4266: Yellow slime - can be picked up
 void update_yellow_slime(Object& obj, UpdateContext& ctx) {
     // Yellow slime is heavier, doesn't move much
-    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 1, ctx.damage_events);
+    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 1, ctx.damage_events, &ctx);
 }
 
 // &4761 update_big_fish — swims, eats piranhas. 
@@ -840,7 +863,7 @@ void update_worm(Object& obj, UpdateContext& ctx) {
         else if (dx < 0) obj.velocity_x = -2;
         obj.velocity_y = (dy > 0) ? 2 : -2;
     }
-    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 3, ctx.damage_events);
+    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 3, ctx.damage_events, &ctx);
     NPC::face_movement_direction(obj);
 
     // &4ea1-&4eb3 squeal pair: two pitches layered into one warble.
@@ -905,7 +928,7 @@ void update_piranha_or_wasp(Object& obj, UpdateContext& ctx) {
     uint8_t roll = ctx.rng.next();
     bool damaging = (roll < obj.state) && (obj.touching == 0);
     if (damaging) {
-        NPC::damage_player_if_touching(obj, ctx.mgr.player(), 24, ctx.damage_events);
+        NPC::damage_player_if_touching(obj, ctx.mgr.player(), 24, ctx.damage_events, &ctx);
         // &4f57-&4f5a: piranha / wasp attack sting sound (always plays
         // when damage was inflicted).
         static constexpr uint8_t kSoundPiranhaWasp[4] = { 0x33, 0xf3, 0x4f, 0x35 };
@@ -987,7 +1010,7 @@ static void update_bird_common(Object& obj, UpdateContext& ctx) {
     if (obj.touching == 0) {
         NPC::damage_player_if_touching(obj, ctx.mgr.player(),
                                        birds_damage_table[tidx],
-                                       ctx.damage_events);
+                                       ctx.damage_events, &ctx);
     }
 
     // &464a-&4652: clamp minimum energy. All four birds use 0, so this
