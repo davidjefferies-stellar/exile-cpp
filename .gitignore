@@ -19,3 +19,11 @@ CLAUDE.md
 
 # Local porting notes — kept out of the repo so they can stay rough.
 docs/
+
+# Per-developer Claude Code session state.
+.claude/
+
+# Runtime artefacts (save files, log output, scratch disassembly dumps).
+*.sav
+*.log
+exile-EXILE1-disassembly.txt
