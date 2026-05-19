@@ -8,36 +8,21 @@
 
 namespace Weapon {
 
-// Port of &2357 calculate_vector_from_magnitude_and_angle — diamond trig
-// satisfying |vx|+|vy| = magnitude (rotated-square approximation; no
-// trig tables). magnitude <= 0x7f. Bullet fire 0x40+rng3, AIM particles
-// 0x20.
-static void diamond_vector(uint8_t angle, int magnitude,
-                           int8_t& vx, int8_t& vy) {
-    uint8_t quad = angle >> 6;        // 0..3
-    uint8_t rel  = angle & 0x3f;      // 0..0x3f within the quadrant
-    int a = std::min<int>(magnitude, rel);
-    int b = std::min<int>(magnitude, 0x40 - rel);
-    switch (quad) {
-        case 0: vx =  static_cast<int8_t>(b); vy =  static_cast<int8_t>(a); break; // right -> down
-        case 1: vx = -static_cast<int8_t>(a); vy =  static_cast<int8_t>(b); break; // down  -> left
-        case 2: vx = -static_cast<int8_t>(b); vy = -static_cast<int8_t>(a); break; // left  -> up
-        case 3: vx =  static_cast<int8_t>(a); vy = -static_cast<int8_t>(b); break; // up    -> right
-    }
-}
-
 void get_firing_velocity(uint8_t aim_angle, bool facing_left,
                          int8_t& vel_x, int8_t& vel_y, int magnitude) {
     // aim_angle is a signed -0x3f..+0x3f offset from the facing direction
     // (negative = up, positive = down). Fold facing into the 8-bit angle
-    // used by diamond_vector: 0x00 = right, 0x80 = left. For left-facing we
-    // mirror across the vertical axis so "aim up" still maps into the upper
-    // hemisphere.
+    // convention: 0x00 = right, 0x80 = left. For left-facing we mirror
+    // across the vertical axis so "aim up" still maps into the upper
+    // hemisphere. Use the shared 6502 port at &2357 (max-norm rotation:
+    // max(|vx|,|vy|) = magnitude) — the previous local diamond_vector
+    // helper used a sum-norm and capped off-axis bullets at half speed.
     int8_t s = static_cast<int8_t>(aim_angle);
     uint8_t angle = facing_left
         ? static_cast<uint8_t>(0x80 - s)
         : static_cast<uint8_t>(s);
-    diamond_vector(angle, magnitude, vel_x, vel_y);
+    NPC::vector_from_magnitude_and_angle(
+        static_cast<uint8_t>(magnitude), angle, vel_x, vel_y);
 }
 
 // Saturating int8_t add — port of &327f prevent_overflow:
@@ -135,11 +120,12 @@ int fire(ObjectManager& mgr, const Object& player,
         bullet.y.whole    = static_cast<uint8_t>((ny >> 8) & 0xff);
         bullet.y.fraction = static_cast<uint8_t>(ny & 0xff);
     }
-    // Initial lifespan — common_bullet_update explodes the bullet the instant
-    // its timer hits zero, and the icer/pistol updaters re-arm the timer
-    // while the bullet is still moving. Starting at 0 (as init_object_from_type
-    // leaves it) would blow the bullet up on its very first frame.
-    bullet.timer = 0x30;
+    // Initial lifespan = 0x3f, matching the 6502's projectile range energy
+    // (object_type_ranges_energy[4]). common_bullet_update's tile-collision
+    // path at &4439 uses this same value for the "fresh hit = explode"
+    // threshold (>= 0x3e) and the per-bounce decay (-0x15), so the bullet
+    // gets a couple of ricochets before energy underflow detonates it.
+    bullet.timer = 0x3f;
 
     // &2d58-&2d72: per-weapon firing sound. The 6502 dispatch is
     //   weapon_type-1 == 0 -> pistol, == 1 -> icer, else plasma.

@@ -99,8 +99,11 @@ void exercise_projectile_weapon(uint8_t weapon_type,
     // 4. Impact: force the bullet's terminal condition and confirm it
     //    mutates to EXPLOSION within a couple of ticks. The trigger
     //    differs by type:
-    //      - PISTOL_BULLET / ICER_BULLET share common_bullet_update,
-    //        which zeros energy on tile_collision.
+    //      - PISTOL_BULLET / ICER_BULLET share common_bullet_update.
+    //        &443d takes the BCS explode_bullet path only when timer
+    //        (post-decrement) >= 0x3e, so bump timer to 0x3f before
+    //        stamping tile_collision; otherwise the bullet ricochets
+    //        (timer -= 0x15) instead of exploding.
     //      - PLASMA_BALL (&4a88) doesn't consume tile_collision at all
     //        — its terminal path is the per-frame energy decrement
     //        running out, so force energy directly. Object-touch would
@@ -112,6 +115,7 @@ void exercise_projectile_weapon(uint8_t weapon_type,
         if (expected_bullet == ObjectType::PLASMA_BALL) {
             bullet.energy = 0;
         } else {
+            bullet.timer = 0x3f;
             bullet.tile_collision = true;
         }
         h.tick_n(2);
