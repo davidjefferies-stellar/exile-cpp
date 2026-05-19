@@ -1,4 +1,5 @@
 #include "behaviours/collectable.h"
+#include "behaviours/projectile.h"   // for explode_object_with_duration
 #include "objects/object_data.h"
 #include "particles/particle_system.h"
 #include "audio/audio.h"
@@ -31,6 +32,39 @@ void update_collectable(Object& obj, UpdateContext& ctx) {
         }
         if (obj.type == ObjectType::WHISTLE_TWO && ctx.whistle_two_collected) {
             *ctx.whistle_two_collected = true;
+            obj.flags |= ObjectFlags::PENDING_REMOVAL;
+            Audio::play(Audio::CH_ANY, kSoundCollect);
+            return;
+        }
+        // &4b8e-&4b91 DEC &07b5,X for X = type. The disassembly tags
+        // &080e..&0818 as one logical band: weapons (0..5) + the three
+        // immunity flags. Same auto-stamp pattern — sets the flag,
+        // plays the collect chime, removes the held object.
+        uint8_t t = static_cast<uint8_t>(obj.type);
+        uint8_t booster = static_cast<uint8_t>(ObjectType::JETPACK_BOOSTER);
+        if (t >= booster && t <= booster + 5 && ctx.player_weapons_collected) {
+            ctx.player_weapons_collected[t - booster] = 0x80;
+            obj.flags |= ObjectFlags::PENDING_REMOVAL;
+            Audio::play(Audio::CH_ANY, kSoundCollect);
+            return;
+        }
+        if (obj.type == ObjectType::FIRE_IMMUNITY_DEVICE &&
+            ctx.fire_immunity_collected) {
+            *ctx.fire_immunity_collected = true;
+            obj.flags |= ObjectFlags::PENDING_REMOVAL;
+            Audio::play(Audio::CH_ANY, kSoundCollect);
+            return;
+        }
+        if (obj.type == ObjectType::MUSHROOM_IMMUNITY_PILL &&
+            ctx.mushroom_immunity_collected) {
+            *ctx.mushroom_immunity_collected = true;
+            obj.flags |= ObjectFlags::PENDING_REMOVAL;
+            Audio::play(Audio::CH_ANY, kSoundCollect);
+            return;
+        }
+        if (obj.type == ObjectType::RADIATION_IMMUNITY_PILL &&
+            ctx.radiation_immunity_collected) {
+            *ctx.radiation_immunity_collected = true;
             obj.flags |= ObjectFlags::PENDING_REMOVAL;
             Audio::play(Audio::CH_ANY, kSoundCollect);
             return;
@@ -274,6 +308,11 @@ void update_control_device(Object& obj, UpdateContext& ctx) {
     // emit() inherits the held RCD's ~0 velocity, leaving AIM particles
     // stuck at the player's hands instead of streaming along aim angle.
     if (ctx.particles) {
+        ctx.mgr.log_diag("RCD fire: aim_with_flip=0x%02x obj.sprite=%u "
+                         "obj.flags=0x%02x obj.vy=%d obj.y=%u.%u\n",
+                         (unsigned)ctx.player_aim_angle, (unsigned)obj.sprite,
+                         (unsigned)obj.flags, (int)obj.velocity_y,
+                         (unsigned)obj.y.whole, (unsigned)obj.y.fraction);
         ctx.particles->emit_directed(
             ParticleType::AIM, ctx.player_aim_angle, obj, ctx.rng);
     }
@@ -296,19 +335,22 @@ static void coronium_common(Object& obj, UpdateContext& ctx) {
             // Boulder weight=5, crystal weight=2
             uint8_t duration = (obj.weight() + other_weight) * 2 + 3;
 
-            // Create explosion at this location
-            int slot = ctx.mgr.create_object_centered(ObjectType::EXPLOSION, 0, obj);
-            if (slot >= 0) {
-                ctx.mgr.object(slot).tertiary_data_offset = duration;
-            }
-
             // &41e5 flash_background — 11 frames of sky strobe.
             if (ctx.background_flash_cooldown) {
                 *ctx.background_flash_cooldown = 0x0b;
             }
 
-            // This object is also consumed
-            obj.energy = 0;
+            // &41e8 JMP &40db explode_object_with_duration_A — in-place
+            // mutation of THIS slot to OBJECT_EXPLOSION with the
+            // computed duration. Old port spawned a separate EXPLOSION
+            // primary via create_object_centered AND set obj.energy=0
+            // (which step 12 then mutated again) — two explosions at
+            // one spot, and the second used step 12's default
+            // (init_e>>5)+3 duration, losing the weight-based size.
+            static constexpr uint8_t kSoundExplosion[4] = { 0x17, 0x03, 0x11, 0x04 };
+            Audio::play_at(Audio::CH_PRIORITY, kSoundExplosion,
+                           obj.x.whole, obj.y.whole);
+            Behaviors::explode_object_with_duration(obj, duration);
             return;
         }
     }
@@ -331,12 +373,15 @@ static void coronium_common(Object& obj, UpdateContext& ctx) {
     if (touching_player || (player_holding && (ctx.rng.next() & 0xc0) == 0)) {
         // Per-column waterline (radiation blocked by water). SURFACE_Y
         // shortcut would suppress damage in lower-world air pockets.
-        bool immune = false; // Would check player inventory
+        // &41f5 BIT &0818: radiation pill collected → skip damage.
+        bool immune = ctx.radiation_immunity_collected &&
+                      *ctx.radiation_immunity_collected;
         bool underwater = Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole);
 
         if (!immune && !underwater) {
             // Deal 8 radiation damage to player
-            NPC::damage_player_if_touching(obj, ctx.mgr.player(), 8, ctx.damage_events);
+            NPC::damage_player_if_touching(obj, ctx.mgr.player(), 8,
+                                           ctx.damage_events, &ctx);
         }
     }
 
@@ -360,12 +405,13 @@ void update_coronium_crystal(Object& obj, UpdateContext& ctx) {
     // Lifespan countdown: timer increases by 2, explodes at overflow (&41c4-&41c8)
     obj.timer += 2;
     if (obj.timer & 0x80) {
-        // Timer overflowed: explode with duration 10
-        int slot = ctx.mgr.create_object_centered(ObjectType::EXPLOSION, 0, obj);
-        if (slot >= 0) {
-            ctx.mgr.object(slot).tertiary_data_offset = 10;
-        }
-        obj.energy = 0;
+        // &41c8 BMI &41e8 JMP &40db — in-place mutation with duration 10.
+        // Same fix as the boulder chain: don't double-spawn via
+        // create_object_centered + step 12.
+        static constexpr uint8_t kSoundExplosion[4] = { 0x17, 0x03, 0x11, 0x04 };
+        Audio::play_at(Audio::CH_PRIORITY, kSoundExplosion,
+                       obj.x.whole, obj.y.whole);
+        Behaviors::explode_object_with_duration(obj, 10);
         return;
     }
 
