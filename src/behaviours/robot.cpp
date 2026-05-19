@@ -10,6 +10,29 @@
 
 namespace Behaviors {
 
+// Port of &353a gain_energy_Y_and_flash_if_damaged + &4ddf
+// use_damaged_palette_if_carry_clear. Three things in one call:
+//   1) every 4 frames, if energy < &c0, energy += 1
+//   2) floor to per-type minimum (the &4f18-&4f1d table value)
+//   3) while energy < &80, strobe the damaged palette (base ^ &30) for
+//      2-in-8 frames so the sprite visibly flickers
+// The energy < &80 gate also drives the "stunned, doesn't fire"
+// behaviour at &4efb — callers check obj.energy < 0x80 to skip firing.
+static void regen_and_flash_if_damaged(Object& obj, UpdateContext& ctx,
+                                        uint8_t min_energy) {
+    if (ctx.every_four_frames && obj.energy != 0 && obj.energy < 0xc0) {
+        obj.energy++;
+    }
+    NPC::enforce_minimum_energy(obj, min_energy);
+    uint8_t base_palette = object_types_palette_and_pickup[
+        static_cast<uint8_t>(obj.type)] & 0x7f;
+    bool low_energy    = obj.energy < 0x80;
+    bool damaged_phase = (ctx.frame_counter & 0x07) < 0x02;
+    obj.palette = (low_energy && damaged_phase)
+                      ? static_cast<uint8_t>(base_palette ^ 0x30)
+                      : base_palette;
+}
+
 // Debug log helper: record actual flip transitions only. before_flip is
 // the FLIP_HORIZONTAL bit captured before a flip-candidate call. Encodes
 // velocity_x in event.x ("why"), new facing in event.y.
@@ -25,14 +48,52 @@ static void log_flip_if_changed(Object& obj, UpdateContext& ctx,
         after ? 1 : 0);
 }
 
+// &4f0b LDA #&81 / JSR find_a_target_and_fire_at_it. find_object at
+// &3c2a picks the nearest of (player, ACTIVE_CHATTER) with LOS;
+// returns -1 if none reachable. Chebyshev nearest; LOS via the
+// randomised cap (&3cb5).
+static int pick_chatter_or_player_target(const Object& obj,
+                                          UpdateContext& ctx) {
+    int best_slot = -1;
+    int best_dist = 0xff;
+    const Object& player = ctx.mgr.player();
+    if (player.is_active() &&
+        NPC::has_line_of_sight_randomized(obj, 0, ctx)) {
+        int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
+        int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);
+        int adx = dx < 0 ? -dx : dx;
+        int ady = dy < 0 ? -dy : dy;
+        best_dist = adx > ady ? adx : ady;
+        best_slot = 0;
+    }
+    for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
+        const Object& cand = ctx.mgr.object(i);
+        if (!cand.is_active()) continue;
+        if (cand.type != ObjectType::ACTIVE_CHATTER) continue;
+        int8_t dx = static_cast<int8_t>(cand.x.whole - obj.x.whole);
+        int8_t dy = static_cast<int8_t>(cand.y.whole - obj.y.whole);
+        int adx = dx < 0 ? -dx : dx;
+        int ady = dy < 0 ? -dy : dy;
+        int dist = adx > ady ? adx : ady;
+        if (dist >= best_dist) continue;
+        if (!NPC::has_line_of_sight_randomized(
+                obj, static_cast<uint8_t>(i), ctx)) continue;
+        best_dist = dist;
+        best_slot = i;
+    }
+    return best_slot;
+}
+
 // &4ED8: Turret (green/white and cyan/red). Stationary emplacement that
 // rotates (via h-flip) to face the player and fires angled projectiles
 // whose velocity is random within the 6502's `[0x2d, 0x3c]` band.
 void update_turret(Object& obj, UpdateContext& ctx) {
-    // Minimum-energy backstop for the green/white turret (&4f1b = 0x14).
-    // Energy regenerates toward this value every frame; firing doesn't
-    // drain it, but taking damage from the player does.
-    NPC::enforce_minimum_energy(obj, 0x14);
+    // Per-type minimum from &4f1b / &4f1c: green/white 0x14, cyan/red
+    // 0x7f. The regen + flash runs every frame even on inactive turrets
+    // so a damaged turret visibly recovers.
+    uint8_t min_energy = (obj.type == ObjectType::CYAN_RED_TURRET)
+                             ? 0x7f : 0x14;
+    regen_and_flash_if_damaged(obj, ctx, min_energy);
 
     // &4ed8-&4ed9 LSR A; BCS leave. Bit 0 of the tertiary data byte is
     // the "inactive" flag — a wired-off turret recharges but never
@@ -40,8 +101,9 @@ void update_turret(Object& obj, UpdateContext& ctx) {
     // shot at the player as soon as energy reached 0x80.
     if (obj.tertiary_data_offset & 0x01) return;
 
-    // &4efb: don't try to fire until energy >= 0x80. Below that the
-    // turret is "recharging" and silently does nothing.
+    // &4efb: don't try to fire until energy >= 0x80 ("stunned"). Below
+    // that the turret is recharging — palette flashes via the helper
+    // above and firing is skipped.
     if (obj.energy < 0x80) return;
 
     // &276a-&2773 RNG gate: prob ((energy>>3)+2)/256 per frame. Gives
@@ -100,12 +162,15 @@ void update_turret(Object& obj, UpdateContext& ctx) {
 
 // &4EDE: Rolling robot (magenta and red variants)
 void update_rolling_robot(Object& obj, UpdateContext& ctx) {
-    // Minimum energy varies by type
-    uint8_t min_energy = 0x14; // Magenta
-    if (obj.type == ObjectType::RED_ROLLING_ROBOT) min_energy = 0x46;
-    NPC::enforce_minimum_energy(obj, min_energy);
+    // Per-type minimum from &4f18 (magenta 0x14) / &4f19 (red 0x46).
+    // Magenta and red short-circuit the whole update when energy < &80
+    // (&4ee0 BPL leave) so the helper runs *before* the gate and the
+    // sprite still flashes while the robot is stunned and stationary.
+    uint8_t min_energy = (obj.type == ObjectType::RED_ROLLING_ROBOT)
+                             ? 0x46 : 0x14;
+    regen_and_flash_if_damaged(obj, ctx, min_energy);
 
-    // Only move if energy >= 0x80
+    // Stunned: skip movement + firing while recharging.
     if (obj.energy < 0x80) return;
 
     // On vx==0, resume in facing direction so a post-bounce robot rolls
@@ -148,6 +213,14 @@ void update_rolling_robot(Object& obj, UpdateContext& ctx) {
 // max_accel=4, weight=1, turn_prob/jump_prob=0) -> ground-walking only;
 // gravity owns velocity_y. Only set velocity_x.
 void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
+    // Blue rolling robot min energy &4f1a = 0x46. Unlike magenta/red,
+    // the blue variant doesn't short-circuit on low energy — it keeps
+    // walking, only the consider_firing branch (&4ef9 BIT &15 / BPL)
+    // gates on energy >= &80. So the helper drives the flash + regen
+    // while the existing per-frame firing check inside the body handles
+    // the "stunned" state.
+    regen_and_flash_if_damaged(obj, ctx, 0x46);
+
     // &4ee4: check_for_npc_stimuli (mood / phobia / interest reactions).
     Mood::update_mood(obj, ctx);
 
@@ -155,14 +228,17 @@ void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
     // the LOS-gated directness chain.
     NPC::update_npc_path(obj, ctx);
 
-    // &4eea-&4eee update_walking_npc reduced port. Speed lowered from
-    // 0x18 to 4 (port-only) so the blue isn't ~6x faster than red/magenta
-    // siblings. Supported gate matches the 6502 walker's &3b10 exit.
-    constexpr int8_t kSpeed = 4;
-    // &3201 apply_weight_and_limit_to_acceleration. max_accel=4 is the
-    // CAP, not 1 — at 1 a heavy hit takes ~25f to recover vs the 6502's
-    // ~6f, making the robot read light.
+    // &4eea-&4eee update_walking_npc with walking_type=4, speed=0x18.
+    //   npc_walking_types_maximum_acceleration_table[4] = 0x04 (max accel cap)
+    //   npc_walking_types_weight_table[4]               = 0x01 (divide by 2)
+    // &3b25-&3b2d: target_vx = sign(rel_tx) * speed, then
+    // &3201 apply_weight_and_limit_to_acceleration divides diff by
+    // 2^weight BEFORE clamping to ±max_accel. The divide produces the
+    // gentle approach to target velocity near the cap — without it the
+    // robot snaps to ±0x18 in one frame (felt like a teleport).
+    constexpr int8_t kSpeed    = 0x18;
     constexpr int8_t kMaxAccel = 4;
+    constexpr int    kWeight   = 1;
     if (obj.is_supported()) {
         // Read obj.tx (output of update_npc_path), NOT target.x. When LOS
         // is blocked, directness decays to 0 and use_relaxed_path puts
@@ -175,10 +251,12 @@ void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
                          : (dx < 0) ? static_cast<int8_t>(-kSpeed)
                          : 0;
         int diff = int(target_vx) - int(obj.velocity_x);
-        int step = (diff >  kMaxAccel) ?  kMaxAccel
-                 : (diff < -kMaxAccel) ? -kMaxAccel
-                 : diff;
-        obj.velocity_x = static_cast<int8_t>(int(obj.velocity_x) + step);
+        int sign = (diff < 0) ? -1 : 1;
+        int abs_diff = diff < 0 ? -diff : diff;
+        abs_diff >>= kWeight;                       // &3208 LSR ×(weight)
+        if (abs_diff > kMaxAccel) abs_diff = kMaxAccel;
+        obj.velocity_x = static_cast<int8_t>(
+            int(obj.velocity_x) + sign * abs_diff);
     }
 
     // &4ef1: 1-in-4 gated flip (shared path with magenta/red rolling robot).
@@ -188,21 +266,25 @@ void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
         log_flip_if_changed(obj, ctx, before_flip);
     }
 
-    // &4ef9 consider_firing: tracer bullets, gated on energy >= 0x80
-    // (BIT this_object_energy / BPL skips). LOS-gated via the &3cb5
-    // randomised cap.
-    if (ctx.every_sixteen_frames && obj.energy >= 0x80 &&
-        NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
-        const Object& player = ctx.mgr.player();
-        int8_t pdx = static_cast<int8_t>(player.x.whole - obj.x.whole);
-        if (std::abs(pdx) < 16) {
-            int slot = NPC::fire_projectile(obj, ObjectType::TRACER_BULLET, ctx);
-            if (slot >= 0) {
-                Object& b = ctx.mgr.object(slot);
-                b.velocity_x = (pdx > 0) ? 0x18 : -0x18;
-                b.velocity_y = 0;
-                NPC::offset_child_from_parent(b, obj);
-                b.timer = 96;
+    // &4ef9-&4f0d consider_firing. Energy>=0x80 gate, then per-frame
+    // probability ((energy>>3)+2)>=rnd via &276a-&2773. Targets
+    // ACTIVE_CHATTER + player (A=&81 to find_a_target). Range-4
+    // secondary targets (projectiles, hovering balls) not ported.
+    if (obj.energy >= 0x80) {
+        uint8_t prob = static_cast<uint8_t>((obj.energy >> 3) + 2);
+        if (prob >= ctx.rng.next()) {
+            int target_slot = pick_chatter_or_player_target(obj, ctx);
+            if (target_slot >= 0) {
+                const Object& tgt = ctx.mgr.object(target_slot);
+                int8_t tdx = static_cast<int8_t>(tgt.x.whole - obj.x.whole);
+                int slot = NPC::fire_projectile(obj, ObjectType::TRACER_BULLET, ctx);
+                if (slot >= 0) {
+                    Object& b = ctx.mgr.object(slot);
+                    b.velocity_x = (tdx > 0) ? 0x18 : -0x18;
+                    b.velocity_y = 0;
+                    NPC::offset_child_from_parent(b, obj);
+                    b.timer = 96;
+                }
             }
         }
     }
@@ -212,15 +294,28 @@ void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
     NPC::enforce_minimum_energy(obj, 0x46);
 }
 
-// Port of &4804 update_hovering_robot (3-inst head, falls through to
-// shared hovering-NPC body):
-//   &4804 JSR &4f10 set_turret_or_robot_energy   ; carry clear if low
-//   &4807 BCC &47c2 ; leave                       ; idle this frame
-//   &4809 LDA &dc ; rnd_state+3
-//         (continues into the fire / move chain)
+// Port of &4804 update_hovering_robot. The entire body is gated on
+// &4807 BCC &47c2 ; leave — if set_turret_or_robot_energy returns
+// carry clear (energy < &80) the robot idles for the frame, drawing
+// the damaged palette but doing nothing else.
+//
+// set_turret_or_robot_energy (&4f10) -> gain_energy_Y_and_flash_if_
+// damaged (&353a), with Y = &14 (hovering-robot minimum from &4f1d):
+//   - every 4 frames, if energy < &c0, energy += 1
+//   - floor to &14 (skipped while exploding, energy == 0)
+//   - ASL A sets carry from energy bit 7 → carry CLEAR if low
+//   - if low: 2-in-8 frames (frame_counter & 7 < 2) use damaged palette
+//   - use_damaged_palette_if_carry_clear (&4ddf): base = palette table
+//     entry & 0x7f, XOR #&30 when carry clear (toggles colour-3 entry)
 void update_hovering_robot(Object& obj, UpdateContext& ctx) {
+    // &4804 JSR &4f10 set_turret_or_robot_energy → &353a. Min &4f1d =
+    // 0x14. helper handles regen + the &30-XOR palette flash; the
+    // &4807 BCC leave gate (whole update skipped while energy < &80)
+    // is the early return below.
+    regen_and_flash_if_damaged(obj, ctx, 0x14);
+    if (obj.energy < 0x80) return;
+
     NPC::cancel_gravity(obj);
-    NPC::enforce_minimum_energy(obj, 0x81);
 
     // &480c-&4811: 1-in-128 chance per frame of the ambient hover whine.
     if ((ctx.rng.next() & 0x7f) == 0) {
@@ -246,23 +341,21 @@ void update_hovering_robot(Object& obj, UpdateContext& ctx) {
         log_flip_if_changed(obj, ctx, before_flip);
     }
 
-    // Fire at player. LOS-gated — 6502 hovering robot fires through the
-    // shared find_a_target_and_fire_at_it path (&486b), which internally
-    // calls find_object (&3c2a) with carry clear = consider obstructions
-    // and a randomised cap (&3cb5 AND #&4f / EOR NOD).
-    if (ctx.every_sixteen_frames && obj.energy >= 0x80 &&
+    // &4815-&4819 LDA &d9 / CMP #&40 / BCS move_hovering_npc — 1-in-4
+    // chance per frame to consider firing. &481b LDA #&18 picks
+    // OBJECT_PISTOL_BULLET; &4868 TAY suppresses the range cap so
+    // find_a_target_and_fire_at_it only gates on LOS.
+    if ((ctx.rng.next() & 0xc0) == 0 &&
         NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
-        const Object& player = ctx.mgr.player();
-        int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
-        if (std::abs(dx) < 12) {
-            int slot = NPC::fire_projectile(obj, ObjectType::RED_BULLET, ctx);
-            if (slot >= 0) {
-                Object& b = ctx.mgr.object(slot);
-                b.velocity_x = (dx > 0) ? 0x20 : -0x20;
-                b.velocity_y = 0;
-                NPC::offset_child_from_parent(b, obj);
-                b.timer = 48;
-            }
+        int8_t dx = static_cast<int8_t>(
+            ctx.mgr.player().x.whole - obj.x.whole);
+        int slot = NPC::fire_projectile(obj, ObjectType::PISTOL_BULLET, ctx);
+        if (slot >= 0) {
+            Object& b = ctx.mgr.object(slot);
+            b.velocity_x = (dx > 0) ? 0x20 : -0x20;
+            b.velocity_y = 0;
+            NPC::offset_child_from_parent(b, obj);
+            b.timer = 48;
         }
     }
 
@@ -352,7 +445,8 @@ void update_clawed_robot(Object& obj, UpdateContext& ctx) {
     }
 
     // Melee damage on contact
-    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 15, ctx.damage_events);
+    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 15,
+                                   ctx.damage_events, &ctx);
 
     // &4885 consider_hovering_over_ground — clawed robots reach the
     // shared &487a thrust_towards_target path via &4864 consider_
