@@ -37,10 +37,105 @@ bool Game::try_store_held(Object& player, bool drain_power_pod) {
 // frame's acceleration vector (which integrate_player_motion will feed
 // into the physics chain) and handles all discrete actions: weapon fire,
 // pickup/drop, pocket store/retrieve, aim, whistle, weapon select.
-void Game::apply_player_input(Object& player, const InputState& inp,
+void Game::apply_player_input(Object& player, const InputState& inp_in,
                               int8_t& accel_x, int8_t& accel_y) {
     accel_x = 0;
     accel_y = 0;
+
+    // &3810-&3856 update_rotating_player. Movement-immobility timer is
+    // set by &24b7 in damage_object; while > 0, the 6502 suppresses
+    // movement / thrust / jetpack AND rotates player_angle (the
+    // "knocked spinning" visual). Faithful port of the rotation chain.
+    bool immobile = player_immobility_movement_ > 0;
+    if (immobile) {
+        player_immobility_movement_--;
+
+        // Pick the rotation base. Three cases, see &381b-&3827:
+        //   tile_collision  → use the captured pre_collision_angle
+        //                     (which direction we were moving when we
+        //                     hit the floor / ceiling).
+        //   else touching   → 0x40 (180° / 2, pivot off the object).
+        //   else            → no new step, just decay the existing rv.
+        bool new_step = true;
+        uint8_t base  = 0x40;
+        if (player.tile_collision) {
+            base = player.pre_collision_angle;
+        } else if (player.touching >= GameConstants::PRIMARY_OBJECT_SLOTS) {
+            // Not touching anything — fall through to the every-4-frame
+            // decay only, no new acceleration into rotation_velocity.
+            new_step = false;
+        }
+
+        if (new_step) {
+            // &3829-&382d: bit 7 of (ROR after SBC) encodes which way
+            // to spin. We replicate by computing the 6502's exact
+            // SBC + ROR rather than re-deriving in C — the wrap-around
+            // semantics matter on the boundary.
+            uint8_t base2 = static_cast<uint8_t>(base << 1);
+            uint8_t pa2   = static_cast<uint8_t>(player_angle_ << 1);
+            bool no_borrow = base2 >= pa2;
+            uint8_t sub    = static_cast<uint8_t>(base2 - pa2);
+            uint8_t rored  = static_cast<uint8_t>(
+                (sub >> 1) | (no_borrow ? 0x80 : 0));
+            bool sign_neg  = (rored & 0x80) != 0;
+
+            // &382f-&3833: speed = (pre_collision_magnitude / 4) | 1.
+            uint8_t speed_u = static_cast<uint8_t>(
+                (player.pre_collision_magnitude >> 2) | 0x01);
+            int8_t  speed   = static_cast<int8_t>(speed_u);
+            if (sign_neg) speed = static_cast<int8_t>(-speed);
+
+            // &3839-&383d: rotation_velocity += speed, clamp to ±0x20.
+            int rv = static_cast<int8_t>(
+                         player_immobility_rotation_velocity_) + speed;
+            if (rv >  0x20) rv =  0x20;
+            if (rv < -0x20) rv = -0x20;
+            player_immobility_rotation_velocity_ =
+                static_cast<uint8_t>(rv & 0xff);
+        }
+
+        // &3840-&384c: every 4 frames, if |rv| >= 4, decay 7/8.
+        if (every_four_frames_) {
+            int8_t rv_s = static_cast<int8_t>(
+                player_immobility_rotation_velocity_);
+            if (rv_s >= 4 || rv_s <= -4) {
+                int rv = rv_s;
+                rv = rv - (rv >> 3);  // calculate_seven_eighths
+                player_immobility_rotation_velocity_ =
+                    static_cast<uint8_t>(rv & 0xff);
+            }
+        }
+
+        // &3852: player_angle += rotation_velocity (wraps mod 256).
+        player_angle_ = static_cast<uint8_t>(
+            player_angle_ + player_immobility_rotation_velocity_);
+    } else {
+        // Not immobilised: damp the residual rotation so a tiny leftover
+        // doesn't drift the angle once the spin stops. The 6502 doesn't
+        // need this — its skip_immobility_rotating path overwrites
+        // player_angle with the upright / lying-down target.
+        player_immobility_rotation_velocity_ = 0;
+    }
+    if (player_immobility_thrust_ > 0) player_immobility_thrust_--;
+
+    // Build a working copy of the input with movement / thrust masked
+    // off while immobilised. lie_down also clears (per &24b1 LSR &31).
+    InputState inp = inp_in;
+    if (immobile) {
+        inp.move_left = false;
+        inp.move_right = false;
+        inp.move_up = false;
+        inp.move_down = false;
+        inp.boost = false;
+        inp.lie_down = false;
+        player_lying_down_ = false;
+    }
+    // &37b6 CMP #&06 / BCS LSR &358a — at high immobility the jetpack
+    // is disabled outright. Mirror by clearing the jetpack-active flag.
+    if (player_immobility_movement_ >= 0x06 ||
+        player_immobility_thrust_ > 0) {
+        jetpack_active_ = false;
+    }
 
     // Tab: turn around (&1e19 handle_swapping_direction). Edge-triggered.
     // Toggle player_facing_ — update_player_sprite rewrites the flag from
@@ -68,7 +163,9 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     // the 6502's &15 action). Held-key — while down, acceleration gets
     // a multiplier; the 6502 uses it in the jumping and jetpack-thrust
     // paths to increase max velocity (&3ba1 LDA #&f0 / &3ba3 ADC weight).
-    const int accel_scale = inp.boost ? 2 : 1;
+    // &2c84 gates the boost on player_weapons_collected[0] (&080e).
+    bool boost_active = inp.boost && (player_weapons_collected_[0] & 0x80);
+    const int accel_scale = boost_active ? 2 : 1;
 
     // &2c7a set_object_jumping_or_flying triggers on jetpack/up-thrust or
     // booster+horizontal, setting state low nibble to 0x0f so &3b0b sees
@@ -76,7 +173,7 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     // walking — let thrust handle vertical motion.
     bool flying =
         inp.jetpack || inp.move_up || inp.move_down ||
-        (inp.boost && (inp.move_left || inp.move_right));
+        (boost_active && (inp.move_left || inp.move_right));
 
     if (inp.jetpack || inp.move_up) {
         accel_y = static_cast<int8_t>(-6 * accel_scale); // Thrust upward
@@ -250,24 +347,45 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         Audio::play(Audio::CH_ANY, kSoundWhistleLow);
     }
 
-    // Aim control — port of &30fc + the I/K/O handlers at &3120-&3129.
-    // Port deviation: fixed-step instead of the 6502's accel->velocity->
-    // angle chain; clamped to ±0x3f.
+    // Aim control — port of &30fc update_player_aiming_angle + the
+    // I/K/O action handlers at &3120-&3129.
+    //   &3126 raise:  accel--
+    //   &3129 lower:  accel++
+    //   &3120 centre: angle = 0; velocity = 0
+    //   &30fc per-frame: if accel==0, velocity = 0 (BEQ skip path falls
+    //                    through into STA velocity with A=0); else
+    //                    velocity = clamp(velocity + accel, ±0x10).
+    //                    angle = clamp(angle + velocity, ±0x3f).
+    // Our input model exposes K / O as single-frame bools so we
+    // re-derive accel each frame and run the same integrator.
     {
-        constexpr int AIM_STEP = 2;
+        int8_t accel = 0;
+        if (inp.aim_up)   accel = -1;
+        if (inp.aim_down) accel = +1;
+
         int8_t angle = static_cast<int8_t>(player_aim_angle_);
         if (inp.aim_centre) {
             angle = 0;
-        } else {
-            // Raising aim = angle becomes more negative (points up); lowering
-            // = more positive (points down). Matches the sign convention of
-            // &3126 (DEC accel) / &3129 (INC accel).
-            if (inp.aim_up)   angle -= AIM_STEP;
-            if (inp.aim_down) angle += AIM_STEP;
+            player_aim_velocity_ = 0;
         }
-        if (angle >  0x3f) angle =  0x3f;
-        if (angle < -0x3f) angle = -0x3f;
-        player_aim_angle_ = static_cast<uint8_t>(angle);
+
+        // &30fe BEQ skip_acceleration: with accel==0 the velocity gets
+        // reset to 0 (A=0 falls through to STA velocity). Holding K/O
+        // ramps velocity by ±1 per frame, clamped to ±0x10.
+        if (accel == 0) {
+            player_aim_velocity_ = 0;
+        } else {
+            int v = int(player_aim_velocity_) + int(accel);
+            if (v >  0x10) v =  0x10;
+            if (v < -0x10) v = -0x10;
+            player_aim_velocity_ = static_cast<int8_t>(v);
+        }
+
+        // &310a-&3112 angle += velocity, clamp to ±0x3f.
+        int a = int(angle) + int(player_aim_velocity_);
+        if (a >  0x3f) a =  0x3f;
+        if (a < -0x3f) a = -0x3f;
+        player_aim_angle_ = static_cast<uint8_t>(static_cast<int8_t>(a));
 
         // &312b create_aim_particle: every aim key press emits a PARTICLE_AIM
         // travelling along the current aim vector. Spawn from the held
@@ -296,11 +414,15 @@ void Game::apply_player_input(Object& player, const InputState& inp,
     // &2d33 handle_firing + &2d36-&2d3b branch: firing while holding sets
     // player_object_fired = held_slot (one-frame flag read by doors /
     // transporters / RCD) instead of launching a bullet. SPACE is
-    // repeat=no in the &0d action table — edge-gate on 0->1.
+    // repeat=no in the &0d action table — edge-gate on 0->1. Port-only:
+    // blaster auto-repeats while held — re-fire when blaster_timer_
+    // returns to 0 so the discharge stays continuous.
     bool fire_down = inp.fire;
     bool fire_edge = fire_down && !fire_key_prev_;
     fire_key_prev_ = fire_down;
-    if (fire_edge) {
+    bool blaster_repeat = fire_down && player_weapon_ == 3 &&
+                          blaster_timer_ == 0 && held_object_slot_ >= 0x80;
+    if (fire_edge || blaster_repeat) {
         if (held_object_slot_ < 0x80) {
             player_object_fired_ = held_object_slot_;
         } else {
@@ -552,8 +674,13 @@ void Game::apply_player_input(Object& player, const InputState& inp,
         handle_player_teleporting(player);
     }
 
-    // Weapon select
+    // Weapon select — port of &2ce8 change_weapon. Slot 0 (jetpack) is
+    // always present per &2ce9 skip; slots 1..5 read player_weapons_
+    // collected[X] at &2cef and refuse the switch if the bit isn't set.
     if (inp.weapon_select < 6) {
-        player_weapon_ = inp.weapon_select;
+        uint8_t w = inp.weapon_select;
+        if (w == 0 || (player_weapons_collected_[w] & 0x80)) {
+            player_weapon_ = w;
+        }
     }
 }
