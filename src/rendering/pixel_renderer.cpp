@@ -385,6 +385,17 @@ void PixelRenderer::begin_frame() {
     events_processed = true;
     key_scan_idx = 0;
 
+#if defined(_WIN32)
+    // Numpad '*'/'-' deliver the same ASCII char as the regular keys.
+    // Suppress the char path when VK_MULTIPLY / VK_SUBTRACT are held so
+    // the synthetic KEYPAD_STAR / KEYPAD_MINUS slots are the only
+    // signal — otherwise the same press would also trigger the editor's
+    // tert_data_dec binding on '-' (regular '*' is unbound but cleared
+    // for symmetry).
+    if (GetAsyncKeyState(VK_MULTIPLY) & 0x8000) f.keys['*'] = 0;
+    if (GetAsyncKeyState(VK_SUBTRACT) & 0x8000) f.keys['-'] = 0;
+#endif
+
     apply_pending_resize();
 
     if (f.wheel != 0) {
@@ -743,7 +754,7 @@ int PixelRenderer::get_key() {
     // we probe OS). Indices 256..262 are synthetic for ctrl + arrows on
     // Windows — fenster's scancode table overruns 0x14X extended codes
     // so arrow f.keys[] never get set; macOS/Linux work via 19/20/17/18.
-    while (key_scan_idx < 263) {
+    while (key_scan_idx < 265) {
         int i = key_scan_idx++;
 
         if (i < 256) {
@@ -797,6 +808,14 @@ int PixelRenderer::get_key() {
                 // scancode table doesn't separate LSHIFT from RSHIFT.
                 if (GetAsyncKeyState(VK_LSHIFT) & 0x8000)
                     return InputKey::SHIFT_LEFT;
+                break;
+            case 263:
+                if (GetAsyncKeyState(VK_MULTIPLY) & 0x8000)
+                    return InputKey::KEYPAD_STAR;
+                break;
+            case 264:
+                if (GetAsyncKeyState(VK_SUBTRACT) & 0x8000)
+                    return InputKey::KEYPAD_MINUS;
                 break;
             default: break;
         }

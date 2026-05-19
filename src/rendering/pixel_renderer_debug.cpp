@@ -439,7 +439,7 @@ static constexpr int GRID_PANEL_W       = 150;
 static constexpr int GRID_PANEL_PAD     = 4;
 static constexpr int GRID_BUTTON_H      = 16;
 static constexpr int GRID_BUTTON_GAP    = 2;
-static constexpr int GRID_PANEL_TOP     = 80;   // below the overlay text
+static constexpr int GRID_PANEL_TOP     = 120;  // below the overlay text
 
 static int grid_panel_height() {
     return GRID_PANEL_PAD * 2 +

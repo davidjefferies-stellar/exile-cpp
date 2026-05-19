@@ -41,8 +41,12 @@ void InputHandler::process_key(int key) {
         case InputKey::CLOSE_REQUESTED: state_.quit = true; break;
         case 'y': case 'Y': state_.whistle_one   = true; break;
         case 'u': case 'U': state_.whistle_two   = true; break;
-        case ';': case ':': state_.save_game     = true; break;
-        case '\'': case '"': state_.load_game    = true; break;
+        case 'j': case 'J': state_.bridge_push   = true; break;  // jsbeeb sync
+        case ';': state_.save_game        = true; break;
+        case ':': state_.dump_all_frames  = true; break;  // Shift+;
+        case '\'': case '"': state_.load_game = true; break;
+        case InputKey::KEYPAD_STAR:  state_.scrub_forward = true; break;
+        case InputKey::KEYPAD_MINUS: state_.scrub_back    = true; break;
         case '\\': case '|': state_.save_map     = true; break;
         // Editor data-byte bump. `[` was the natural pair for `]` but
         // is now the jetpack-boost alias, so the editor side keeps

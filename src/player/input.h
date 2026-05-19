@@ -43,6 +43,16 @@ struct InputState {
     bool tert_data_dec = false;   // '[' key: editor — decrement the data byte
                                   // of the tertiary at the highlighted cell.
     bool tert_data_inc = false;   // ']' key: editor — increment that data byte.
+    // Frame-rewind scrubber. Numpad '+' / '-' step through the snapshot
+    // ring buffer; pressing Esc while scrubbing resumes the sim from the
+    // scrubbed frame (branching timeline). dump_all_frames (':' = Shift+';')
+    // writes the entire ring buffer as a multi-frame trace.
+    bool scrub_forward    = false;
+    bool scrub_back       = false;
+    bool dump_all_frames  = false;
+    // 'J' (for jsbeeb): one-shot manual sync — POSTs the player's current
+    // x/y position to the jsbeeb dev server's /bridge/poke endpoint.
+    bool bridge_push      = false;
     uint8_t weapon_select = 0xff; // 0xff = no change, 0-5 = select weapon
 };
 
@@ -52,6 +62,10 @@ public:
     void process_key(int key);
     void clear();
     const InputState& state() const { return state_; }
+    // Used by save/load restore — overwrite the per-frame state directly
+    // instead of replaying key presses. Cleared again at the next frame's
+    // begin so loaded-into state lasts a single frame unless re-asserted.
+    void set_state(const InputState& s) { state_ = s; }
 
 private:
     InputState state_;

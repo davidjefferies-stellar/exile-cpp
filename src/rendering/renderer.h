@@ -84,6 +84,11 @@ namespace InputKey {
     // Synthetic — set when the window's close button was clicked;
     // surfaces to input as state_.quit so Game::run can exit.
     constexpr int CLOSE_REQUESTED = 0x10a;
+    // Numpad '*'/'-' — distinct from regular '*'/'-' (which stay bound
+    // to editor tert_data_inc/dec on '-'). Used by the frame-rewind
+    // scrub UI; both auto-repeat while held to scrub continuously.
+    constexpr int KEYPAD_STAR     = 0x10b;
+    constexpr int KEYPAD_MINUS    = 0x10c;
 }
 
 class IRenderer {
