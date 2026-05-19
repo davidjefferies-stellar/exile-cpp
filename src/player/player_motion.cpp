@@ -182,6 +182,11 @@ static int find_lighter_overlap(const Object& player, ObjectManager& mgr,
         if (tflags & ObjectTypeFlags::INTANGIBLE) continue;
         uint8_t ow = tflags & ObjectTypeFlags::WEIGHT_MASK;
         if (ow == 0 || ow >= pw_weight) continue;
+        // Port deviation: skip just-fired bullets sitting inside the
+        // player AABB. The 6502 fires after &1b54 collision so they
+        // never appear here; we fire before physics, so without the
+        // skip apply_mass_ratio_velocity drags pistol vx 0x40->0x38.
+        if (other.flags & ObjectFlags::NEWLY_CREATED) continue;
         int8_t tdx = static_cast<int8_t>(player.x.whole - other.x.whole);
         int8_t tdy = static_cast<int8_t>(player.y.whole - other.y.whole);
         if (std::abs(tdx) > 2 || std::abs(tdy) > 2) continue;
@@ -248,6 +253,26 @@ void Game::integrate_player_motion(Object& player,
     player.x.add_velocity(player.velocity_x);
     player.y.add_velocity(player.velocity_y);
 
+    // &2a64 check_for_collisions fires BEFORE tile collision (it jumps
+    // to &2ee8 via the &2a61 tail call when done). Static objects skip
+    // their own collision pass (&1b50), so the player's stamp is the
+    // only path that puts the player into switch.touching / door.touching
+    // — and it has to happen on the pre-revert position, or the tile
+    // bounce will have pushed the player out of AABB overlap by the
+    // time we get here.
+    {
+        auto obj_coll_pre = Collision::check_object_collision(
+            player, 0,
+            reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(object_mgr_.object(0)));
+        if (obj_coll_pre.collided) {
+            player.touching = static_cast<uint8_t>(obj_coll_pre.other_slot);
+            Object& other = object_mgr_.object(obj_coll_pre.other_slot);
+            other.touching = 0;
+        } else {
+            player.touching = 0x80;
+        }
+    }
+
     int8_t pre_resolve_vx = player.velocity_x;
     int8_t pre_resolve_vy = player.velocity_y;
     Fixed8_8 pre_resolve_x = player.x;
@@ -304,6 +329,10 @@ void Game::integrate_player_motion(Object& player,
                 const Object& other = all[i];
                 if (!other.is_active()) continue;
                 if (other.weight() <= player.weight()) continue;
+                // Same NEWLY_CREATED skip as find_lighter_overlap — plasma
+                // fires a heavier bullet that would otherwise revert the
+                // player's position and drag bullet velocity on spawn.
+                if (other.flags & ObjectFlags::NEWLY_CREATED) continue;
                 blocker = i;
                 break;
             }
@@ -569,15 +598,10 @@ void Game::integrate_player_motion(Object& player,
     Wind::apply_tile_environment(player, landscape_, object_mgr_,
                                  frame_counter_, rng_, particles_);
 
-    // Object-object collision for player
-    auto obj_coll = Collision::check_object_collision(
-        player, 0,
-        reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(object_mgr_.object(0)));
-    if (obj_coll.collided) {
-        player.touching = static_cast<uint8_t>(obj_coll.other_slot);
-    } else {
-        player.touching = 0x80;
-    }
+    // Object-object touching was stamped before tile collision above —
+    // matches the 6502's &2a64 → &2ee8 ordering. Don't re-stamp here, or
+    // a tile bounce that pushed the player out of overlap would wipe
+    // the touching field that update_switch / update_door needs.
 
     // Update camera
     camera_.follow_player(player.x.whole, player.y.whole);
