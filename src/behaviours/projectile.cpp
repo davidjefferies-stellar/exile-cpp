@@ -1,5 +1,6 @@
 #include "behaviours/projectile.h"
 #include "behaviours/mood.h"
+#include "behaviours/path.h"
 #include "audio/audio.h"
 #include "core/types.h"
 #include "objects/collision.h"
@@ -236,8 +237,15 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
         return;
     }
 
-    // &4439: tile collision -> explode. The 6502's SBC #&14 / distance check
-    // isn't ported yet; we just explode on any solid-tile collision.
+    // &4439-&4445 tile-collision bounce vs explode. Energy >= 0x3e at the
+    // moment of impact = fresh shot fired into a wall = explode (BCS path).
+    // Otherwise the bullet keeps moving with energy reduced by 0x15 (SBC
+    // #&14 with C=0 borrow → cost of 21). Underflow on the subtract also
+    // explodes (BCC path). Tile collision physics already reflects the
+    // velocity, so deducting timer here gives the bullet a couple of
+    // ricochets before energy depletion finally detonates it.
+    bool should_explode = false;
+    bool damaged_door   = false;
     if (obj.tile_collision) {
         // Port-only: tile-collision-vs-door-substitute tile -> damage door
         // primary. Substituted obstruction sits above the primary AABB so
@@ -247,8 +255,6 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
         int sprite_h_frac = (sprite_h > 0 ? sprite_h - 1 : 0) * 8;
         int feet_abs_y = static_cast<int>(obj.y.whole) * 256 +
                          static_cast<int>(obj.y.fraction) + sprite_h_frac;
-        // Probe the bullet's bottom-edge tile and one tile down — the
-        // bullet might have just nicked into the door tile from above.
         for (int dy = 0; dy <= 1; dy++) {
             uint8_t probe_ty = static_cast<uint8_t>(
                 ((feet_abs_y >> 8) + dy) & 0xff);
@@ -259,7 +265,6 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
                 type == static_cast<uint8_t>(TileType::METAL_DOOR) ||
                 type == static_cast<uint8_t>(TileType::STONE_DOOR);
             if (!is_door) continue;
-            // Find the primary owning this tertiary slot.
             int door_slot = -1;
             for (int j = 1; j < GameConstants::PRIMARY_OBJECT_SLOTS; j++) {
                 Object& cand = ctx.mgr.object(j);
@@ -285,8 +290,30 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
                 ev.amount = hurt;
                 ctx.damage_events->push_back(ev);
             }
+            damaged_door = true;
             break;
         }
+
+        if (damaged_door) {
+            // Door-substitute hit consumes the bullet immediately, same
+            // as a damageable-target touch above.
+            should_explode = true;
+        } else if (obj.timer >= 0x3e) {
+            // &443d CMP #&3e / BCS explode_bullet.
+            should_explode = true;
+        } else {
+            // &4441 SBC #&14 with carry clear (BCS not taken => C=0), so
+            // the effective subtraction is 0x14 + 1 = 0x15.
+            int new_timer = static_cast<int>(obj.timer) - 0x15;
+            if (new_timer < 0) {
+                should_explode = true;  // &4443 BCC explode_bullet
+            } else {
+                obj.timer = static_cast<uint8_t>(new_timer);
+            }
+        }
+    }
+
+    if (should_explode) {
         obj.energy = 0;
         return;
     }
@@ -354,12 +381,42 @@ void update_active_grenade(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &46d9-&46e9 trail emission inside update_bullet_with_particle_trail.
-// Port simplification: skips the per-bullet colour override table at
-// &46ec (icer/tracer/cannonball/blue death ball) — uses type default.
+// &46d9-&46e9 create_projectile_particle_trail. The 6502 looks the
+// per-bullet cf byte up at &46ec (indexed by object type - &13) and
+// writes it into particle_types_colour_and_flags_table + &2c (the
+// PROJECTILE_TRAIL cf_base) before calling add_particle. We pass the
+// byte through cf_base_override.
+//   &46ec 02 ICER       : colour 2 / 3   (green / yellow)
+//   &46ed 04 TRACER     : colour 4 / 5   (blue / magenta)
+//   &46ee 08 CANNONBALL : 0x08 cycle bit + colour 0 / 1
+//   &46ef 08 BLUE_DEATH : 0x08 cycle bit + colour 0 / 1
+// RED_BULLET (&17) reads one byte past the table — the next byte is
+// 0x20 (the JSR opcode at &46f0). With PROJECTILE_TRAIL's cf_rand=0x01
+// the per-particle byte alternates between 0x20 (FOREGROUND + colour 0
+// = invisible) and 0x21 (FOREGROUND + colour 1 = red). Net effect: a
+// sparse red trail plotted in front of foliage. Same accidental
+// behaviour as the 6502.
+static uint8_t projectile_trail_cf(ObjectType type) {
+    switch (type) {
+        case ObjectType::ICER_BULLET:     return 0x02;
+        case ObjectType::TRACER_BULLET:   return 0x04;
+        case ObjectType::CANNONBALL:      return 0x08;
+        case ObjectType::BLUE_DEATH_BALL: return 0x08;
+        case ObjectType::RED_BULLET:      return 0x20;
+        default:                          return 0x82; // type stock cf_base
+    }
+}
 static void emit_projectile_trail(Object& obj, UpdateContext& ctx) {
     if (!ctx.particles) return;
-    ctx.particles->emit(ParticleType::PROJECTILE_TRAIL, 1, obj, ctx.rng);
+    // &46d9-&46dd: trail leaves the rear of the bullet — start from the
+    // bullet's motion angle (&b5 set by the &4447 orient step) then EOR
+    // #&80. A pistol bullet moving right (angle 0x00) emits particles at
+    // angle 0x80 (drifting left, behind the bullet).
+    uint8_t bullet_angle = calculate_angle_from_velocities(
+        obj.velocity_x, obj.velocity_y);
+    uint8_t trail_angle = static_cast<uint8_t>(bullet_angle ^ 0x80);
+    ctx.particles->emit(ParticleType::PROJECTILE_TRAIL, 1, obj, ctx.rng,
+                        trail_angle, projectile_trail_cf(obj.type));
 }
 
 // &46BF: Icer bullet - freezes on contact, 2 frame explosion
@@ -374,33 +431,37 @@ void update_icer_bullet(Object& obj, UpdateContext& ctx) {
 
 // &4614 Tracer bullet. Never expires (pre-increment timer to cancel
 // move_bullet's decrement), homes on player, explodes for 8/damage 15.
-// Re-orient AFTER homing — our +1/frame nudge changes direction often
-// enough that the 6502's one-frame staleness becomes visible.
 void update_tracer_bullet(Object& obj, UpdateContext& ctx) {
     // &4614 increase_energy_by_one — but timer is the equivalent here.
     if (obj.timer < 0xff) obj.timer++;
 
     common_bullet_update(obj, ctx, 15);
 
-    // &4686 DEC acceleration_y — tracers are flying enemies (no
-    // gravity); without this the tracer can't rise toward a player above.
+    // &467a-&4683 consider_moving_towards_player. 6502 chain:
+    //   &467a JSR &3d26 consider_updating_npc_path -> NPC::update_npc_path
+    //   &467d LDY #&08          maximum acceleration
+    //   &467f LDA #&40          magnitude
+    //   &4681 LDX #&40          1-in-4 probability gate (rnd < 0x40)
+    //   &4683 JSR &31da move_towards_target_with_probability_X
+    //   &4686 DEC accel_y       cancel gravity (handled below)
+    // Tracers home on slot 0 (player); seed the target slot before the
+    // path/move calls. The old per-frame ±1 nudge is replaced with the
+    // 6502's every-4-frame +8 with RNG gate, which gives the slower,
+    // more arc-like homing path the original is known for.
+    obj.target_and_flags =
+        (obj.target_and_flags & ~TargetFlags::OBJECT_MASK) | 0x00;
+    NPC::update_npc_path(obj, ctx);
+    NPC::move_towards_target_with_probability(obj, ctx,
+                                              /*magnitude=*/0x40,
+                                              /*max_accel=*/0x08,
+                                              /*prob_threshold=*/0x40);
+
+    // &4686 DEC accel_y. Tracers are flying enemies (no gravity).
     NPC::cancel_gravity(obj);
 
-    // &467a-&4683 consider_moving_towards_player: homing on player.
-    const Object& player = ctx.mgr.player();
-    int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
-    int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);
-    if (dx > 0 && obj.velocity_x <  0x20) obj.velocity_x++;
-    if (dx < 0 && obj.velocity_x > -0x20) obj.velocity_x--;
-    if (dy > 0 && obj.velocity_y <  0x20) obj.velocity_y++;
-    if (dy < 0 && obj.velocity_y > -0x20) obj.velocity_y--;
-
-    // Port-only extra orient: cheaper sprite-sync than porting the
-    // every-4-frame +8 homing and rng gate from
-    // move_towards_target_with_probability.
-    uint8_t angle = calculate_angle_from_velocities(obj.velocity_x,
-                                                    obj.velocity_y);
-    orient_bullet_to_angle(obj, angle);
+    // The 6502 doesn't re-orient after the homing nudge — move_bullet's
+    // &4447 orient at the top of next frame's update reads the new
+    // velocity, so the sprite is at most one frame stale.
 
     emit_projectile_trail(obj, ctx);
 }
@@ -453,10 +514,12 @@ void update_red_bullet(Object& obj, UpdateContext& ctx) {
     emit_projectile_trail(obj, ctx);
 }
 
-// &441B: Pistol bullet - standard
+// &441B: Pistol bullet - standard. The 6502 update tail at &4447-&4460
+// is just calculate_angle / orient — no JMP &46d9, so the pistol has
+// no trail particles in the original. common_bullet_update already
+// covers the orient step for us.
 void update_pistol_bullet(Object& obj, UpdateContext& ctx) {
     common_bullet_update(obj, ctx, 10);
-    emit_projectile_trail(obj, ctx);
 }
 
 // &4A88 update_plasma_ball. Contact -> duration-13 fireball, except for
@@ -478,7 +541,10 @@ void update_plasma_ball(Object& obj, UpdateContext& ctx) {
             obj.type   = ObjectType::FIREBALL;
             obj.timer  = 0x0d;
             obj.energy = 0x0d;
-            obj.state  = 0; // zero target-object — "from exploding object"
+            // &4ac1 STA &0e: clear this_object_target_object to mark the
+            // fireball as "from exploding object". That's the low 5 bits
+            // of target_and_flags (&0906), not state (&0976).
+            obj.target_and_flags &= ~TargetFlags::OBJECT_MASK;
             return;
         }
     }
@@ -784,37 +850,26 @@ void update_red_drop(Object& obj, UpdateContext& ctx) {
     if (obj.velocity_y < 0x40) obj.velocity_y++;
 }
 
-// &4AD6 update_fireball. Stationary fire: palette cycle, random flip,
-// one upward PARTICLE_FIREBALL/frame (angle=0xc0) for the ember effect.
-void update_fireball(Object& obj, UpdateContext& ctx) {
-    // &4ade-&4ae0: state (this_object_target_object) zero = temporary
-    // fireball from exploding object (plasma_ball / grenade); non-zero =
-    // permanent fireball from a tertiary. Only the temporary path
-    // decrements timer and self-removes.
-    bool permanent = (obj.state != 0);
-
-    // &4ae2-&4ae4 update_temporary_fireball: DEC timer; BMI removal.
-    if (!permanent) {
-        if (obj.timer == 0) {
-            obj.flags |= ObjectFlags::PENDING_REMOVAL;
-            return;
-        }
-        obj.timer--;
-    }
-
-    // &4ae6 / &4b60: default damage 10 (temporary), 20 (permanent). The
-    // &4ae8-&4af2 big-damage path: every 16 frames, if timer >= 8, damage
-    // jumps to 90 ("big damage at start of long explosions").
-    uint8_t damage = permanent ? 20 : 10;
+// &4ae8 consider_fireball_damage_and_animate. Shared tail of FIREBALL
+// (&4ad6) and MOVING_FIREBALL (&4b26): damage the touched slot, cycle the
+// warm palette, random flip, emit one PARTICLE_FIREBALL. base_damage is
+// 10/20 for fireball temp/perm, 4 for moving; bumps to 90 at timer>=8.
+static void fireball_damage_and_animate(Object& obj, UpdateContext& ctx,
+                                         uint8_t base_damage) {
+    uint8_t damage = base_damage;
     if (ctx.every_sixteen_frames && obj.timer >= 0x08) {
         damage = 90;
     }
 
     // &4af4-&4b00 damage_object on the touched slot — any object, not
-    // just the player. Without this, plasma-ball-derived fireballs sit
-    // on robots without hurting them.
+    // just the player. &4af9 fire-immunity gate: if touching player AND
+    // device collected, zero out the damage.
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
         Object& target = ctx.mgr.object(obj.touching);
+        if (obj.touching == 0 &&
+            ctx.fire_immunity_collected && *ctx.fire_immunity_collected) {
+            damage = 0;
+        }
         uint16_t hurt = std::min<uint16_t>(damage, target.energy);
         target.energy = (target.energy > damage)
                       ? static_cast<uint8_t>(target.energy - damage)
@@ -832,17 +887,15 @@ void update_fireball(Object& obj, UpdateContext& ctx) {
         }
     }
 
-    // Port of &4b13-&4b1b palette pick. Indexed by (timer & 7) into the
-    // 6502's &4ace fireball_palettes_table: { kyR, rwY, rwY, rwY, kyR,
-    // rwY, kyR, rwY } — 5 red/white/yellow, 3 black/yellow/red, so the
-    // flame stays in the warm half of the palette as the timer ticks.
+    // &4b13-&4b1b: palette indexed by (timer & 7) into fireball_palettes_
+    // table: { kyR, rwY, rwY, rwY, kyR, rwY, kyR, rwY }. The flame stays
+    // in the warm half of the palette as the timer ticks.
     static constexpr uint8_t kFireballPalettes[8] = {
         0x10, 0x34, 0x34, 0x34, 0x10, 0x34, 0x10, 0x34,
     };
     obj.palette = kFireballPalettes[obj.timer & 0x07];
 
-    // &4b0b-&4b11: random horizontal/vertical flip every frame — keeps
-    // the flames looking chaotic.
+    // &4b0b-&4b11: random h/v flip every frame.
     uint8_t r = ctx.rng.next();
     obj.flags = (obj.flags & ~(ObjectFlags::FLIP_HORIZONTAL |
                                ObjectFlags::FLIP_VERTICAL)) |
@@ -856,9 +909,47 @@ void update_fireball(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4B26: Moving fireball - fire that moves
+// &4AD6 update_fireball. Stationary fire: gate on permanent vs temporary,
+// then run the shared damage/animate tail.
+void update_fireball(Object& obj, UpdateContext& ctx) {
+    // &4ade reads this_object_target_object: zero = temporary fireball
+    // (from plasma_ball mutation), non-zero = permanent (from tertiary).
+    // That's the low 5 bits of target_and_flags (&0906), NOT state
+    // (&0976) — &1edf seeds it with the slot index on nest spawn.
+    bool permanent = (obj.target_and_flags & TargetFlags::OBJECT_MASK) != 0;
+
+    // &4ae2-&4ae4 update_temporary_fireball: DEC timer; BMI removal.
+    if (!permanent) {
+        if (obj.timer == 0) {
+            obj.flags |= ObjectFlags::PENDING_REMOVAL;
+            return;
+        }
+        obj.timer--;
+    }
+
+    // &4ae6 / &4b60: temporary=10, permanent=20. MOVING_FIREBALL uses 4
+    // via the &4b26 entry and never lands here.
+    fireball_damage_and_animate(obj, ctx, permanent ? 20 : 10);
+}
+
+// &4B26 update_moving_fireball. Enters consider_fireball_damage_and_
+// animate with X=4 (skipping the &4ade permanent/temporary gate), then
+// runs &4672 move_fireball — find/avoid targets, update path, nudge
+// velocity toward the player 1-in-4 frames, cancel gravity.
 void update_moving_fireball(Object& obj, UpdateContext& ctx) {
-    update_fireball(obj, ctx);
+    fireball_damage_and_animate(obj, ctx, 4);
+
+    // &4672 move_fireball. Same shape as update_red_tracer (also at
+    // &46d9 -> &4672): seed target = player (slot 0) so the OBJECT_MASK
+    // override here doesn't disturb the permanent-fireball marker the
+    // 6502 stores in the same byte for OBJECT_FIREBALL.
+    obj.target_and_flags =
+        (obj.target_and_flags & ~TargetFlags::OBJECT_MASK) | 0x00;
+    NPC::update_npc_path(obj, ctx);
+    NPC::move_towards_target_with_probability(obj, ctx,
+                                              /*magnitude=*/0x40,
+                                              /*max_accel=*/0x08,
+                                              /*prob_threshold=*/0x40);
     NPC::cancel_gravity(obj);
 }
 
