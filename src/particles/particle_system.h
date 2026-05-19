@@ -62,8 +62,12 @@ public:
     // &218c/&218e add_particle(s). `angle` is the 6502 zp &b5 byte;
     // overridden from src velocity (EOR #&80) when flags use_src_vel
     // bit is set. Default 0xc0 (upward) is the common call-site value.
+    // `cf_base_override` < 0 keeps the type's stock cf_base from the
+    // TYPES table; >= 0 substitutes the byte directly (port of the
+    // 6502's &46e4 STA particle_types_colour_and_flags_table+&2c
+    // trick used by per-bullet projectile-trail colours at &46e1).
     void emit(ParticleType type, int count, const Object& src, Random& rng,
-              uint8_t angle = 0xc0);
+              uint8_t angle = 0xc0, int cf_base_override = -1);
 
     // Emit a single particle at an explicit world tile (whole coords only,
     // fractions = 0). Used by the star-field at &26ce-&26e3 which fills
@@ -86,6 +90,15 @@ public:
         if (i < 0 || i >= n_) return;
         pool_[i] = pool_[n_ - 1];
         n_--;
+    }
+
+    // Restore a single particle byte-for-byte. Used by save/load and the
+    // rewind ring buffer — bypasses the random allocator since the saved
+    // state has the slot's full velocity/position/colour already.
+    bool push_raw(const Particle& p) {
+        if (n_ >= MAX_PARTICLES) return false;
+        pool_[n_++] = p;
+        return true;
     }
 
 private:
