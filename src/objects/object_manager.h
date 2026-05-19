@@ -35,11 +35,6 @@ public:
     // Create with position copied from another object
     int create_object_at(ObjectType type, int min_free_slots, const Object& source);
 
-    // Create centred on the source's sprite-centre (port-only — the 6502
-    // mutated the source slot in-place via explode_object_with_duration).
-    int create_object_centered(ObjectType type, int min_free_slots,
-                                const Object& source);
-
     // ========================================================================
     // Secondary Object Management (ports of &0c6e and &0c38)
     // ========================================================================

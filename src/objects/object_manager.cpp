@@ -1,7 +1,6 @@
 #include "objects/object_manager.h"
 #include "objects/object_data.h"
 #include "objects/object_tables.h"
-#include "rendering/sprite_atlas.h"
 #include "world/landscape.h"
 #include <algorithm>
 #include <cstdlib>
@@ -186,32 +185,6 @@ int ObjectManager::create_object_at(ObjectType type, int min_free_slots, const O
     return create_object(type, min_free_slots,
                          source.x.whole, source.x.fraction,
                          source.y.whole, source.y.fraction);
-}
-
-int ObjectManager::create_object_centered(ObjectType type, int min_free_slots,
-                                           const Object& source) {
-    int slot = create_object_at(type, min_free_slots, source);
-    if (slot < 0) return slot;
-    Object& dst = primary_[slot];
-    // Shift = (src_size − dst_size) / 2 so the two sprites share a centre.
-    auto sprite_size = [](uint8_t sid, int& w_units, int& h_units) {
-        if (sid > 0x80) { w_units = h_units = 0; return; }
-        const SpriteAtlasEntry& e = sprite_atlas[sid];
-        w_units = (e.w > 0 ? (e.w - 1) : 0) * 16;
-        h_units = (e.h > 0 ? (e.h - 1) : 0) * 8;
-    };
-    int sw = 0, sh = 0, dw = 0, dh = 0;
-    sprite_size(source.sprite, sw, sh);
-    sprite_size(dst.sprite,    dw, dh);
-    auto shift_axis = [](uint8_t& whole, uint8_t& frac, int delta) {
-        int sum = (int(whole) << 8) + int(frac) + delta;
-        sum &= 0xffff;
-        whole = static_cast<uint8_t>((sum >> 8) & 0xff);
-        frac  = static_cast<uint8_t>(sum & 0xff);
-    };
-    shift_axis(dst.x.whole, dst.x.fraction, (sw - dw) / 2);
-    shift_axis(dst.y.whole, dst.y.fraction, (sh - dh) / 2);
-    return slot;
 }
 
 // ============================================================================
