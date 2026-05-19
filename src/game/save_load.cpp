@@ -1,4 +1,6 @@
 #include "game/game.h"
+#include "particles/particle_system.h"
+#include "player/input.h"
 #include "rendering/debug_names.h"
 #include "world/water.h"
 #include <fstream>
@@ -142,7 +144,36 @@ static void apply_object_field(Object& o, const std::vector<std::string>& t) {
 bool Game::save_game(const std::string& path) const {
     std::ofstream f(path);
     if (!f) return false;
+    write_state(f);
+    return true;
+}
 
+std::string Game::snapshot() const {
+    std::ostringstream f;
+    write_state(f);
+    return f.str();
+}
+
+bool Game::dump_ring_buffer(const std::string& path) const {
+    std::ofstream f(path);
+    if (!f) return false;
+    f << "# exile-cpp multi-frame trace\n";
+    f << "# Frames written in chronological order, oldest first.\n";
+    f << "frame_count " << snapshot_ring_count_ << "\n\n";
+    // snapshot_ring_head_ is the next write slot; the oldest frame sits
+    // there when the ring is full, otherwise the oldest is at index 0.
+    size_t start = (snapshot_ring_count_ == snapshot_ring_.size())
+                  ? snapshot_ring_head_ : 0;
+    for (size_t i = 0; i < snapshot_ring_count_; ++i) {
+        size_t idx = (start + i) % snapshot_ring_.size();
+        f << "=== frame " << i << " ===\n";
+        f << snapshot_ring_[idx];
+        f << "\n";
+    }
+    return true;
+}
+
+void Game::write_state(std::ostream& f) const {
     f << "# exile-cpp save file v1\n";
     f << "# Position format: whole.fraction, both hex.\n";
     f << "version 1\n";
@@ -167,6 +198,11 @@ bool Game::save_game(const std::string& path) const {
     f << "whistle_two_activator " << hex_byte(whistle_two_activator_) << "\n";
     f << "whistle_one_collected " << (whistle_one_collected_ ? 1 : 0) << "\n";
     f << "whistle_two_collected " << (whistle_two_collected_ ? 1 : 0) << "\n";
+    f << "weapons_collected";
+    for (int i = 0; i < 6; i++) f << " " << hex_byte(player_weapons_collected_[i]);
+    f << "\n";
+    f << "fire_immunity_collected "      << (fire_immunity_collected_ ? 1 : 0) << "\n";
+    f << "radiation_immunity_collected " << (radiation_immunity_collected_ ? 1 : 0) << "\n";
     f << "chatter_reserve "     << hex_byte(chatter_energy_reserve_) << "\n";
     f << "mushroom_timers "     << hex_byte(player_mushroom_timers_[0])
                                 << " " << hex_byte(player_mushroom_timers_[1]) << "\n";
@@ -229,18 +265,83 @@ bool Game::save_game(const std::string& path) const {
     if (n_entries == 0 || (n_entries % 16) != 0) f << "\n";
     f << std::dec << "\n";
 
+    // -------- particles --------------------------------------------------
+    // Per-frame snapshot fodder; also useful when reloading a save mid-
+    // explosion. Format: one line per live particle as `vx vy xf yf x y
+    // ttl cf`, decimal int8 for velocities, hex for the rest.
+    f << "[particles]\n";
+    f << "count " << particles_.count() << "\n";
+    for (int i = 0; i < particles_.count(); ++i) {
+        const Particle& p = particles_.get(i);
+        f << (int)p.velocity_x << " " << (int)p.velocity_y << " "
+          << hex_byte(p.x_fraction) << " " << hex_byte(p.y_fraction) << " "
+          << hex_byte(p.x) << " " << hex_byte(p.y) << " "
+          << hex_byte(p.ttl) << " " << hex_byte(p.colour_and_flags) << "\n";
+    }
+    f << "\n";
+
+    // -------- input ------------------------------------------------------
+    // The current frame's input state, captured for replay / inspection.
+    // weapon_select sentinel 0xff means "no change this frame".
+    {
+        const InputState& s = input_.state();
+        f << "[input]\n";
+        f << "move_left "    << (int)s.move_left    << "\n";
+        f << "move_right "   << (int)s.move_right   << "\n";
+        f << "move_up "      << (int)s.move_up      << "\n";
+        f << "move_down "    << (int)s.move_down    << "\n";
+        f << "jetpack "      << (int)s.jetpack      << "\n";
+        f << "fire "         << (int)s.fire         << "\n";
+        f << "turn_around "  << (int)s.turn_around  << "\n";
+        f << "lie_down "     << (int)s.lie_down     << "\n";
+        f << "boost "        << (int)s.boost        << "\n";
+        f << "pickup_drop "  << (int)s.pickup_drop  << "\n";
+        f << "pickup "       << (int)s.pickup       << "\n";
+        f << "drop "         << (int)s.drop         << "\n";
+        f << "throw_obj "    << (int)s.throw_obj    << "\n";
+        f << "store "        << (int)s.store        << "\n";
+        f << "retrieve "     << (int)s.retrieve     << "\n";
+        f << "remember_pos " << (int)s.remember_pos << "\n";
+        f << "teleport "     << (int)s.teleport     << "\n";
+        f << "aim_up "       << (int)s.aim_up       << "\n";
+        f << "aim_down "     << (int)s.aim_down     << "\n";
+        f << "aim_centre "   << (int)s.aim_centre   << "\n";
+        f << "toggle_pause " << (int)s.toggle_pause << "\n";
+        f << "whistle_one "  << (int)s.whistle_one  << "\n";
+        f << "whistle_two "  << (int)s.whistle_two  << "\n";
+        f << "weapon_select " << hex_byte(s.weapon_select) << "\n";
+        f << "\n";
+    }
+
     // -------- RNG state ---------------------------------------------------
     f << "[rng]\n";
     f << "state " << hex_byte(rng_.state(0)) << " " << hex_byte(rng_.state(1))
       << " "      << hex_byte(rng_.state(2)) << " " << hex_byte(rng_.state(3)) << "\n";
-
-    return true;
 }
 
 bool Game::load_game(const std::string& path) {
     std::ifstream f(path);
     if (!f) return false;
+    bool ok = read_state(f);
+    if (ok) {
+        // The rewind ring holds snapshots from BEFORE the load and
+        // would jump the player back across the load boundary if we
+        // didn't reset. restore_snapshot deliberately doesn't touch
+        // the ring, so we clear only on the explicit path-based load.
+        snapshot_ring_head_  = 0;
+        snapshot_ring_count_ = 0;
+        scrubbing_           = false;
+        scrub_offset_        = 0;
+    }
+    return ok;
+}
 
+bool Game::restore_snapshot(const std::string& s) {
+    std::istringstream f(s);
+    return read_state(f);
+}
+
+bool Game::read_state(std::istream& f) {
     // Reset the world so partial loads don't leave stale primaries. We
     // re-run init() to regenerate the landscape from the seed, then
     // overwrite the mutable state from the save.
@@ -263,6 +364,10 @@ bool Game::load_game(const std::string& path) {
     Object* cur_object = nullptr;
     SecondaryObject* cur_secondary = nullptr;
     std::vector<uint8_t> tertiary_buf;
+    // Particles get cleared up front; we accumulate parsed entries via
+    // ParticleSystem::push_raw as we read [particles].
+    particles_.clear();
+    InputState restored_input{};
 
     while (std::getline(f, line)) {
         // Strip comments past '#'
@@ -332,6 +437,18 @@ bool Game::load_game(const std::string& path) {
             else if (k == "whistle_two_activator") whistle_two_activator_ = parse_u8(t[1]);
             else if (k == "whistle_one_collected") whistle_one_collected_ = parse_num(t[1]) != 0;
             else if (k == "whistle_two_collected") whistle_two_collected_ = parse_num(t[1]) != 0;
+            else if (k == "weapons_collected" && t.size() >= 7) {
+                for (int i = 0; i < 6; i++) {
+                    player_weapons_collected_[i] = parse_u8(t[i + 1]);
+                }
+            }
+            else if (k == "jetpack_booster_collected") {
+                // Back-compat for saves written before the array refactor.
+                player_weapons_collected_[0] =
+                    (parse_num(t[1]) != 0) ? 0x80 : 0x00;
+            }
+            else if (k == "fire_immunity_collected") fire_immunity_collected_ = parse_num(t[1]) != 0;
+            else if (k == "radiation_immunity_collected") radiation_immunity_collected_ = parse_num(t[1]) != 0;
             else if (k == "chatter_reserve")     chatter_energy_reserve_ = parse_u8(t[1]);
             else if (k == "mushroom_timers" && t.size() >= 3) {
                 player_mushroom_timers_[0] = parse_u8(t[1]);
@@ -412,7 +529,56 @@ bool Game::load_game(const std::string& path) {
             }
             continue;
         }
+
+        // --- [particles] ---
+        if (section == "particles") {
+            if (t[0] == "count") continue;
+            if (t.size() < 8) continue;
+            Particle p;
+            p.velocity_x       = static_cast<int8_t>(parse_num(t[0]));
+            p.velocity_y       = static_cast<int8_t>(parse_num(t[1]));
+            p.x_fraction       = parse_u8(t[2]);
+            p.y_fraction       = parse_u8(t[3]);
+            p.x                = parse_u8(t[4]);
+            p.y                = parse_u8(t[5]);
+            p.ttl              = parse_u8(t[6]);
+            p.colour_and_flags = parse_u8(t[7]);
+            particles_.push_raw(p);
+            continue;
+        }
+
+        // --- [input] ---
+        if (section == "input") {
+            const std::string& k = t[0];
+            bool v = parse_num(t[1]) != 0;
+            if      (k == "move_left")    restored_input.move_left    = v;
+            else if (k == "move_right")   restored_input.move_right   = v;
+            else if (k == "move_up")      restored_input.move_up      = v;
+            else if (k == "move_down")    restored_input.move_down    = v;
+            else if (k == "jetpack")      restored_input.jetpack      = v;
+            else if (k == "fire")         restored_input.fire         = v;
+            else if (k == "turn_around")  restored_input.turn_around  = v;
+            else if (k == "lie_down")     restored_input.lie_down     = v;
+            else if (k == "boost")        restored_input.boost        = v;
+            else if (k == "pickup_drop")  restored_input.pickup_drop  = v;
+            else if (k == "pickup")       restored_input.pickup       = v;
+            else if (k == "drop")         restored_input.drop         = v;
+            else if (k == "throw_obj")    restored_input.throw_obj    = v;
+            else if (k == "store")        restored_input.store        = v;
+            else if (k == "retrieve")     restored_input.retrieve     = v;
+            else if (k == "remember_pos") restored_input.remember_pos = v;
+            else if (k == "teleport")     restored_input.teleport     = v;
+            else if (k == "aim_up")       restored_input.aim_up       = v;
+            else if (k == "aim_down")     restored_input.aim_down     = v;
+            else if (k == "aim_centre")   restored_input.aim_centre   = v;
+            else if (k == "toggle_pause") restored_input.toggle_pause = v;
+            else if (k == "whistle_one")  restored_input.whistle_one  = v;
+            else if (k == "whistle_two")  restored_input.whistle_two  = v;
+            else if (k == "weapon_select") restored_input.weapon_select = parse_u8(t[1]);
+            continue;
+        }
     }
+    input_.set_state(restored_input);
 
     // Commit tertiary data bytes back into the live landscape entries.
     // Entries beyond the saved buffer's length keep whatever value
