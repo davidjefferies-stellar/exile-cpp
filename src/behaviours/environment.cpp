@@ -654,20 +654,50 @@ void update_hive(Object& obj, UpdateContext& ctx) {
     obj.state = spawn_type_id;
 
     // &4bb3 / &3be1 consider_absorbing_object_touched: hives absorb
-    // their own spawn type on contact. The 6502 gates on a touching-
-    // angle check at &3bd5 (object must be on the hive's facing side);
-    // skipped here — wasps/piranhas only ever exit the spawn-side anyway.
+    // their own spawn type on contact, BUT only on the hive's back side.
+    // The 6502 gates with check_object_touching_angle (&3bd5):
+    //   angle = angle_of_other_to_this; A = angle + &40; A EOR x_flip;
+    //   bit 7 set -> not viable, leave (don't absorb).
+    // Without this gate the just-spawned wasp's frame-1 self-touch makes
+    // the hive eat it before it can move clear.
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS &&
         obj.touching != 0) {
         Object& touched = ctx.mgr.object(obj.touching);
         if (touched.is_active() &&
             static_cast<uint8_t>(touched.type) == spawn_type_id) {
-            ctx.mgr.remove_object(obj.touching);
-            // &3bf2 play_low_beep — 4-byte sound block at &14b0.
-            static constexpr uint8_t kSoundLowBeep[4] =
-                { 0x5d, 0x04, 0xff, 0x05 };
-            Audio::play_at(Audio::CH_ANY, kSoundLowBeep,
-                           obj.x.whole, obj.y.whole);
+            // &3bd5 check_object_touching_angle. The 6502 uses sprite
+            // centres; we use the high byte of the (a - b) delta across
+            // (whole, fraction) so that two objects in the same tile
+            // still get a meaningful direction. Saturating clamp keeps
+            // dx/dy in int8_t range — the absorb decision only needs the
+            // half-plane (front vs back), not a precise angle.
+            int dx_abs = (static_cast<int>(obj.x.whole) * 256 +
+                          static_cast<int>(obj.x.fraction)) -
+                         (static_cast<int>(touched.x.whole) * 256 +
+                          static_cast<int>(touched.x.fraction));
+            int dy_abs = (static_cast<int>(obj.y.whole) * 256 +
+                          static_cast<int>(obj.y.fraction)) -
+                         (static_cast<int>(touched.y.whole) * 256 +
+                          static_cast<int>(touched.y.fraction));
+            if (dx_abs >  127) dx_abs =  127;
+            if (dx_abs < -128) dx_abs = -128;
+            if (dy_abs >  127) dy_abs =  127;
+            if (dy_abs < -128) dy_abs = -128;
+            uint8_t angle =
+                NPC::angle_from_deltas(static_cast<int8_t>(dx_abs),
+                                       static_cast<int8_t>(dy_abs));
+            uint8_t a = static_cast<uint8_t>(angle + 0x40);
+            uint8_t x_flip = obj.is_flipped_h() ? 0x80 : 0x00;
+            bool viable = ((a ^ x_flip) & 0x80) == 0;
+
+            if (viable) {
+                ctx.mgr.remove_object(obj.touching);
+                // &3bf2 play_low_beep — 4-byte sound block at &14b0.
+                static constexpr uint8_t kSoundLowBeep[4] =
+                    { 0x5d, 0x04, 0xff, 0x05 };
+                Audio::play_at(Audio::CH_ANY, kSoundLowBeep,
+                               obj.x.whole, obj.y.whole);
+            }
         }
     }
 
@@ -1045,7 +1075,7 @@ void update_engine_fire(Object& obj, UpdateContext& ctx) {
     }
 
     // &4c34-&4c49: emit a single engine-fire particle.
-    if (ctx.particles) ctx.particles->emit(ParticleType::ENGINE, 1, obj, ctx.rng);
+    if (ctx.particles) ctx.particles->emit(ParticleType::ENGINE, 1, obj, ctx.cosmetic_rng);
 
     // &4c4c-&4c64: 1-in-4 frames, accelerate nearby objects with damage.
     if (((ctx.frame_counter + obj.y.whole) & 0x03) == 0) {

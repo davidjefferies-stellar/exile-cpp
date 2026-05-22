@@ -39,8 +39,13 @@ void InputHandler::process_key(int key) {
         case 'o': case 'O': state_.aim_up       = true; break;
         case InputKey::ESCAPE: state_.toggle_pause = true; break;
         case InputKey::CLOSE_REQUESTED: state_.quit = true; break;
-        case 'y': case 'Y': state_.whistle_one   = true; break;
-        case 'u': case 'U': state_.whistle_two   = true; break;
+        // BBC ROM key table: Y -> &2c99 handle_playing_whistle_two
+        // (chatter produces power pod). U -> &2cac handle_playing_
+        // whistle_one (activates chatter). Annotator comments in the
+        // disassembly's key table swap the names but the routines at
+        // those addresses are as above (see &2c99 / &2cac at line 7700).
+        case 'y': case 'Y': state_.whistle_two   = true; break;
+        case 'u': case 'U': state_.whistle_one   = true; break;
         case 'j': case 'J': state_.bridge_push   = true; break;  // jsbeeb sync
         case ';': state_.save_game        = true; break;
         case ':': state_.dump_all_frames  = true; break;  // Shift+;

@@ -26,11 +26,14 @@ void surface_wind_vector(const Object& obj, int8_t& vx, int8_t& vy);
 // downdraft), &3f41 TILE_CONSTANT_WIND (nibbles = vy/vx in tert data),
 // &3fa3 TILE_WATER (water_velocities_table &1e44 by flip bits). Wind
 // gated bit 4 of frame_counter for airborne; water acts every frame.
+// `rng` drives the 6502-equivalent rolls (wind magnitude + particle-gate
+// at &3f73); `cosmetic_rng` drives particle internals only.
 void apply_tile_environment(Object& obj,
                             const Landscape& landscape,
                             const ObjectManager& mgr,
                             uint8_t frame_counter,
                             Random& rng,
+                            Random& cosmetic_rng,
                             ParticleSystem& particles);
 
 } // namespace Wind

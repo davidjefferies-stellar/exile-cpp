@@ -618,3 +618,57 @@ void Game::spawn_test_rigs(bool stress_test, bool grenade_chain, bool icer_drop)
             tx, 0x80, ty, 0x80);
     }
 }
+
+// ---------- Rewind ring scrubbing ---------------------------------------
+
+// Resolve scrub_offset_ frames back from the most recently captured entry
+// (head_-1 mod size). Shared between the back / forward / commit paths so
+// the index arithmetic lives in one place.
+size_t Game::scrubbed_ring_index() const {
+    size_t cap     = snapshot_ring_.size();
+    size_t live    = (snapshot_ring_head_ + cap - 1) % cap;
+    return (live + cap - scrub_offset_) % cap;
+}
+
+// Esc while scrubbing snaps the ring to the currently-restored frame
+// (subsequent ticks overwrite the now-stale future entries) and resumes
+// the sim from there, branching the timeline. Returns true when it has
+// taken the press; the caller falls back to a pause toggle otherwise.
+bool Game::commit_scrub_if_active() {
+    if (!scrubbing_) return false;
+    size_t cap = snapshot_ring_.size();
+    snapshot_ring_head_   = (scrubbed_ring_index() + 1) % cap;
+    snapshot_ring_count_ -= scrub_offset_;
+    scrub_offset_         = 0;
+    scrubbing_            = false;
+    return true;
+}
+
+// Numpad '-' steps back through the ring, numpad '*' steps forward. Both
+// auto-repeat (one frame per tick) so the user can sweep continuously.
+// Entering scrub mode freezes the sim until commit_scrub_if_active runs.
+void Game::tick_scrub_keys() {
+    bool back = input_.state().scrub_back;
+    bool fwd  = input_.state().scrub_forward;
+    if (back && scrub_offset_ + 1 < snapshot_ring_count_) {
+        scrubbing_ = true;
+        scrub_offset_++;
+        restore_snapshot(snapshot_ring_[scrubbed_ring_index()]);
+    }
+    if (fwd && scrubbing_ && scrub_offset_ > 0) {
+        scrub_offset_--;
+        restore_snapshot(snapshot_ring_[scrubbed_ring_index()]);
+        if (scrub_offset_ == 0) scrubbing_ = false;
+    }
+}
+
+// Capture post-tick state into the ring. When the buffer is full, head_
+// wraps and the oldest entry is overwritten in place.
+void Game::capture_rewind_snapshot() {
+    snapshot_ring_[snapshot_ring_head_] = snapshot();
+    snapshot_ring_head_ =
+        (snapshot_ring_head_ + 1) % snapshot_ring_.size();
+    if (snapshot_ring_count_ < snapshot_ring_.size()) {
+        snapshot_ring_count_++;
+    }
+}

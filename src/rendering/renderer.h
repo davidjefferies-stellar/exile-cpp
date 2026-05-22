@@ -4,6 +4,7 @@
 #include "core/types.h"
 #include "core/damage_visual.h"
 #include <vector>
+#include <string>
 #include "core/fixed_point.h"
 
 struct TileRenderInfo {
@@ -115,7 +116,8 @@ public:
     // above/on/below waterline since blit_sprite leaves colour-0 pixels
     // transparent. Default no-op for renderers without water support.
     virtual void render_water_column(uint8_t /*world_x*/,
-                                     uint8_t /*waterline_y*/) {}
+                                     uint8_t /*waterline_y*/,
+                                     uint8_t /*waterline_y_frac*/ = 0) {}
 
     // Render one object at world position
     virtual void render_object(Fixed8_8 world_x, Fixed8_8 world_y,
@@ -274,6 +276,17 @@ public:
     virtual bool events_panel_enabled() const { return false; }
     virtual bool consume_event_click(int& event_id) {
         event_id = 0;
+        return false;
+    }
+
+    // "Saves" panel — left-side scrollable list populated by Game from
+    // save_disks/. Game pushes the file list via set_save_files when the
+    // panel toggles on, then polls consume_save_load_request each tick;
+    // a true return means the user picked `path` (load it).
+    virtual bool saves_panel_enabled() const { return false; }
+    virtual void set_save_files(const std::vector<std::string>& /*paths*/) {}
+    virtual bool consume_save_load_request(std::string& path) {
+        path.clear();
         return false;
     }
 

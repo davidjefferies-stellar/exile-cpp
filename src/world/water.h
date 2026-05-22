@@ -28,6 +28,11 @@ void update_waterlines(uint8_t frame_counter);
 // drain everything above it.
 uint8_t get_waterline_y(uint8_t x);
 
+// Sub-tile fraction (0..255) paired with get_waterline_y for the same x.
+// Lets the renderer animate the waterline at sub-tile resolution instead
+// of snapping at whole-tile boundaries during fill/drain.
+uint8_t get_waterline_y_fraction(uint8_t x);
+
 // &2ef7-&2f53 this_object_in_water (&1f). Below waterline OR tile is
 // WATER — the tile check catches upper-world ponds that sit above the
 // global waterline (without it flasks don't fill).

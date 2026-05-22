@@ -100,6 +100,14 @@ public:
         return tertiary_source_count_[src] > 1;
     }
 
+    // ROM source-table index (0..254) for the tertiary attached to this
+    // cell, or NO_TERTIARY. BBC save loaders use this to map the 6502's
+    // 255-entry shared tertiary_objects_data array onto our per-cell
+    // entries (multiple cells share a source).
+    uint16_t tertiary_source_idx_at(uint8_t tile_x, uint8_t tile_y) const {
+        return tertiary_source_idx_[(static_cast<int>(tile_y) << 8) | tile_x];
+    }
+
     // SWITCH cell sharing X column — runtime state aliases regardless
     // of whether the tertiary x-scan finds a source entry.
     bool switch_x_aliased(uint8_t tile_x, uint8_t tile_y) const {

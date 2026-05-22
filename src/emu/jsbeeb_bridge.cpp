@@ -4,7 +4,7 @@
 // are independent. Paste this into the jsbeeb tab's DevTools console:
 //   const es=new EventSource('http://localhost:5173/bridge/events');es.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='poke')m.writes.forEach(w=>processor.writemem(w.addr,w.value));};
 
-#include "bridge/jsbeeb_bridge.h"
+#include "emu/jsbeeb_bridge.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>

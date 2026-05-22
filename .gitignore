@@ -25,5 +25,6 @@ docs/
 
 # Runtime artefacts (save files, log output, scratch disassembly dumps).
 *.sav
+*.dec
 *.log
 exile-EXILE1-disassembly.txt

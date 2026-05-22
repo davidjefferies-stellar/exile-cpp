@@ -168,6 +168,8 @@ StartupConfig load_startup_config(const std::string& path) {
             else if (key == "weapon") {
                 int w = parse_weapon(value);
                 if (w >= 0) cfg.weapon = static_cast<uint8_t>(w);
+            } else if (key == "bbc_save") {
+                cfg.bbc_save_path = value;
             } else {
                 bool b = false;
                 if (key == "give_protection_suit" && parse_bool(value, b)) {

@@ -76,7 +76,8 @@ public:
     void render_tile(uint8_t world_x, uint8_t world_y,
                      const TileRenderInfo& info) override;
     void render_water_column(uint8_t world_x,
-                             uint8_t waterline_y) override;
+                             uint8_t waterline_y,
+                             uint8_t waterline_y_frac = 0) override;
     void render_object(Fixed8_8 world_x, Fixed8_8 world_y,
                        const SpriteRenderInfo& info) override;
     void render_particle(uint8_t wx, uint8_t wx_frac,
@@ -122,6 +123,9 @@ public:
     bool consume_palette_click(uint8_t& tile_type) override;
     bool events_panel_enabled() const override { return events_panel_on; }
     bool consume_event_click(int& event_id) override;
+    bool saves_panel_enabled() const override { return saves_panel_on; }
+    void set_save_files(const std::vector<std::string>& paths) override;
+    bool consume_save_load_request(std::string& path) override;
     void set_debug_log(std::ostream* log) override { debug_log_ = log; }
     std::ostream* debug_log_ = nullptr;
     bool consume_palette_flip_click(int& which) override;
@@ -194,6 +198,22 @@ public:
     // for ~30 frames so the user sees the click registered).
     int  last_event_clicked      = -1;
     int  event_flash_remaining   = 0;
+    // "Saves" panel state. saves_panel_on toggles the left-side file
+    // browser; saves_list_ is pushed by Game on toggle-on; saves_highlight_
+    // is the keyboard / hover cursor; saves_scroll_ is the topmost visible
+    // entry. has_pending_save_load / pending_save_load_path_ are popped by
+    // Game::consume_save_load_request.
+    bool saves_panel_on   = false;
+    std::vector<std::string> saves_list_;
+    int  saves_highlight_ = 0;
+    int  saves_scroll_    = 0;
+    bool has_pending_save_load   = false;
+    std::string pending_save_load_path_;
+    // Edge-detection bitmask for saves-panel nav keys (UP=1, DOWN=2, ENTER=4).
+    // handle_saves_key only fires the action on the press edge; the prev/curr
+    // pair is rotated in begin_frame so held keys don't auto-repeat.
+    uint8_t saves_keys_held_prev_ = 0;
+    uint8_t saves_keys_held_curr_ = 0;
     // Highlighted tile — drawn only while the tile grid is on.
     bool has_highlight = false;
     uint8_t highlight_x = 0;
@@ -336,6 +356,14 @@ namespace pr_debug {
     // Right-side test-events panel — visible while the "Events" checkbox
     // is on. Each button posts a pending event id that Game consumes.
     void render_events_panel(PixelRenderer& r);
+
+    // Left-side scrollable saves browser — visible while the "Saves"
+    // checkbox is on. Game populates the file list via set_save_files.
+    void render_saves_panel(PixelRenderer& r);
+
+    // Hover hook — when the cursor is inside the saves panel, track
+    // which row it's over and move the highlight there.
+    void saves_panel_hover(PixelRenderer& r);
 
     // Right-side "Tiles" submenu — visible while the main-strip Tiles
     // box is on. Holds Map mode / Rings / Object lbl / Switches /

@@ -78,11 +78,7 @@ void ObjectManager::init_object_from_type(Object& obj, ObjectType type) {
     uint8_t idx = static_cast<uint8_t>(type);
     if (idx >= static_cast<uint8_t>(ObjectType::COUNT)) idx = 0;
 
-    // Slots are reused; every mutable field needs resetting or stale
-    // state leaks from the previous occupant into the new object. The
-    // tile_collision flag is the worst offender — a bullet slot reused
-    // after the previous bullet exploded inherits `tile_collision = true`
-    // and the new bullet immediately re-explodes on frame 1.
+    // Slots are reused; every mutable field needs resetting
     obj.type = type;
     obj.sprite = object_types_sprite[idx];
     obj.palette = object_types_palette_and_pickup[idx] & 0x7f;
@@ -107,6 +103,14 @@ void ObjectManager::init_object_from_type(Object& obj, ObjectType type) {
     obj.tile_collision = false;
 }
 
+// min_free_slots is a spawn-priority knob, mirroring the 6502's
+// create_new_object_if_{Y}_slots_free entry points (&1e5a / &1e5d / &1e60).
+// N=0 takes any slot (evicts the most-distant replaceable if full); N>=1
+// fails unless N slots are free and uses the Nth one found. The reserve
+// works because low-N callers also iterate from slot 1 and pick the first
+// free slot they hit, so skipping past N-1 leaves those slots untouched —
+// and outright failing when <N are free keeps high-priority spawns alive
+// when the table is full.
 int ObjectManager::create_object(ObjectType type, int min_free_slots,
                                   uint8_t spawn_x, uint8_t spawn_x_frac,
                                   uint8_t spawn_y, uint8_t spawn_y_frac) {
@@ -445,9 +449,9 @@ bool ObjectManager::check_demotion(int primary_slot, uint8_t frame_counter) {
     if (x == 0) return false;  // &1bc7 BEQ skip_distance_check
 
     // &1bca-&1bda: for X=2 (KEEP_AS_PRIMARY_FOR_LONGER only), bump to X=3
-    // (4-tile distance) when the object is slow AND supported. Moving or
-    // airborne objects stick to the 12-tile range so they aren't demoted
-    // while still in travel.
+    // when the object is slow AND supported, so stationary objects use
+    // the tighter demote_distances_[2] radius. Moving or airborne ones
+    // stay on demote_distances_[1] so they aren't demoted in mid-travel.
     if (x == 0x02) {
         uint8_t max_v = std::max<uint8_t>(
             static_cast<uint8_t>(std::abs(obj.velocity_x)),
@@ -457,10 +461,10 @@ bool ObjectManager::check_demotion(int primary_slot, uint8_t frame_counter) {
         if (slow && supported) x = 0x03;
     }
 
-    // &1bdb distances_to_remove_objects_table[X-1] — 6502 ROM {1,12,4}.
-    // Exposed via exile.ini. Port hazard: our wider viewport means
-    // spawn_tertiary_object's radius can exceed demote_distances_[0],
-    // causing 1-in-4-frame demote/respawn churn. Keep [0] >= spawn radius.
+    // &1bdb distances_to_remove_objects_table[X-1]. ROM defaults {1,12,4};
+    // configured via exile.ini's [distances] block. Port hazard: our wider
+    // viewport means spawn_tertiary_object's radius can exceed demote_
+    // distances_[0], causing 1-in-4-frame churn — keep [0] >= spawn radius.
     uint8_t check_distance = demote_distances_[x - 1];
 
     // &1bde-&1be4: gate on (per-object frame counter & 3) == 3. We don't

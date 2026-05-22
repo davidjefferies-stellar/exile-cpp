@@ -31,6 +31,13 @@ struct StartupConfig {
     // testing AI without dying. Defaults off so normal play is unchanged.
     bool    invincible = false;
 
+    // [player] bbc_save — optional path to a BBC-format save file
+    // (1024 bytes, XOR-streamed). When set, Game::init loads it after
+    // the landscape bake and overwrites the [player] / [weapon_energy]
+    // / [pockets] / [keys] starting state. Empty = no BBC save load.
+    // Extract these via tools/extract_ssd_saves.py.
+    std::string bbc_save_path;
+
     // [weapon_energy] — one 16-bit counter per weapon slot.
     std::array<uint16_t, 6> weapon_energy = { 0x0800, 0, 0x0800, 0, 0, 0 };
 

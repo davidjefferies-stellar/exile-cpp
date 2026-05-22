@@ -1,4 +1,5 @@
 #include "game/game.h"
+#include "objects/object_tables.h"
 #include "particles/particle_system.h"
 #include "player/input.h"
 #include "rendering/debug_names.h"
@@ -8,6 +9,8 @@
 #include <iomanip>
 #include <string>
 #include <vector>
+#include <filesystem>
+#include <algorithm>
 
 // Save / load — text format. Landscape is deterministic from the seed,
 // so we persist only mutable state (frame, RNG, player, events, 16
@@ -317,6 +320,9 @@ void Game::write_state(std::ostream& f) const {
     f << "[rng]\n";
     f << "state " << hex_byte(rng_.state(0)) << " " << hex_byte(rng_.state(1))
       << " "      << hex_byte(rng_.state(2)) << " " << hex_byte(rng_.state(3)) << "\n";
+    f << "[cosmetic_rng]\n";
+    f << "state " << hex_byte(cosmetic_rng_.state(0)) << " " << hex_byte(cosmetic_rng_.state(1))
+      << " "      << hex_byte(cosmetic_rng_.state(2)) << " " << hex_byte(cosmetic_rng_.state(3)) << "\n";
 }
 
 bool Game::load_game(const std::string& path) {
@@ -530,6 +536,18 @@ bool Game::read_state(std::istream& f) {
             continue;
         }
 
+        // --- [cosmetic_rng] --- port-only second stream; absent from old
+        // saves, in which case it keeps its init-time seed.
+        if (section == "cosmetic_rng") {
+            if (t[0] == "state" && t.size() >= 5) {
+                cosmetic_rng_.seed(static_cast<uint8_t>(parse_num(t[1])),
+                                   static_cast<uint8_t>(parse_num(t[2])),
+                                   static_cast<uint8_t>(parse_num(t[3])),
+                                   static_cast<uint8_t>(parse_num(t[4])));
+            }
+            continue;
+        }
+
         // --- [particles] ---
         if (section == "particles") {
             if (t[0] == "count") continue;
@@ -591,3 +609,324 @@ bool Game::read_state(std::istream& f) {
 
     return true;
 }
+
+// --------------------------------------------------------------------------
+// BBC-format save loader
+// --------------------------------------------------------------------------
+//
+// On-disk format documented in docs/save_game_format.md. Briefly:
+//   - exactly 0x400 bytes
+//   - the first 0x37e are XOR-streamed (BCD-keyed); the trailing 0x82
+//     are page-align padding
+//   - decrypted layout maps to supervisor memory &1a20..&1d9d
+//
+// We expose this via Game::load_bbc_save so the ini key
+// [player] bbc_save = ... can drop the player straight into a BBC-era
+// save on startup. The text save_game / load_game pair is unchanged.
+
+namespace {
+
+// 6502 BCD ADC. Returns new accumulator, updates carry by reference.
+static uint8_t bcd_adc(uint8_t a, uint8_t m, uint8_t& carry) {
+    int lo = (a & 0x0f) + (m & 0x0f) + carry;
+    if (lo >= 10) lo += 6;
+    int hi = (a >> 4) + (m >> 4) + (lo >= 0x10 ? 1 : 0);
+    if (hi >= 10) { hi += 6; carry = 1; } else { carry = 0; }
+    return static_cast<uint8_t>(((hi & 0x0f) << 4) | (lo & 0x0f));
+}
+
+// Port of supervisor &2f80 decrypt_temporary_copy_of_game_state. The
+// cipher is symmetric (XOR), so the same routine encrypts on the way
+// out. Only the first 0x37e bytes are run through it.
+static void bbc_decrypt(uint8_t* buf) {
+    uint8_t key = 0x6e;        // &0b
+    uint8_t a   = 0x92;
+    uint8_t carry = 1;         // SEC at &2f92
+    for (int y = 0; y < 0x37e; ++y) {
+        a = bcd_adc(a, key, carry);     // ADC &0b
+        a = bcd_adc(a, 0x15, carry);    // ADC #&15
+        key = a;
+        uint8_t plain = a ^ buf[y];     // EOR &0400,Y
+        buf[y] = plain;                 // STA &1a20,Y
+        a = plain ^ key;                // EOR &0b — feeds next iteration
+    }
+}
+
+// LE little-endian helpers — reading 16-/32-bit fields from offsets.
+static uint16_t rd16(const uint8_t* p) {
+    return static_cast<uint16_t>(p[0] | (p[1] << 8));
+}
+
+} // namespace
+
+bool Game::load_bbc_save(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    std::vector<uint8_t> raw((std::istreambuf_iterator<char>(f)),
+                              std::istreambuf_iterator<char>());
+    if (raw.size() != 0x400) return false;
+
+    bbc_decrypt(raw.data());
+
+    // Reject malformed saves the same way the supervisor does
+    // (&2fbc-&2fc1): the last entry of player_teleports_x / _y must be
+    // the spawn pair (0x99, 0x3c).
+    if (raw[0x2f] != 0x99 || raw[0x34] != 0x3c) return false;
+
+    // Verify checksum_one — XOR of bytes [0x000, 0x35a) starting from
+    // initial value 0xdc (the supervisor's loop seed at &2fd8).
+    uint8_t cs = 0xdc;
+    for (int i = 0; i < 0x35a; ++i) cs ^= raw[i];
+    if (cs != raw[0x35a]) return false;
+
+    const uint8_t* d = raw.data();
+
+    // Reset the world before populating from the save (same dance as
+    // read_state — clear all primaries, all secondaries, all
+    // particles, the rewind ring).
+    object_mgr_.init();
+    for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+        object_mgr_.object(i) = Object{};
+        object_mgr_.object(i).y.whole = 0;
+    }
+    for (int i = 0; i < GameConstants::SECONDARY_OBJECT_SLOTS; i++) {
+        object_mgr_.secondary(i) = SecondaryObject{};
+    }
+    particles_.clear();
+    snapshot_ring_head_  = 0;
+    snapshot_ring_count_ = 0;
+    scrubbing_           = false;
+    scrub_offset_        = 0;
+
+    // -- Top-level scalars --
+    rng_.seed(d[0x000], d[0x001], d[0x002], d[0x003]);
+    held_object_slot_      = d[0x004];
+    player_angle_          = d[0x005];
+    player_facing_         = d[0x006];
+    // d[0x007..0x00a] = game_time (4 bytes) — our port doesn't track this.
+    player_deaths_         = static_cast<uint16_t>(
+        d[0x00b] | (d[0x00c] << 8)); // top byte (d[0x00d]) is unused
+
+    // Keys (8 entries, &1a2e)
+    for (int i = 0; i < 8; i++) player_keys_collected_[i] = d[0x00e + i];
+
+    // Weapons (6 entries) + immunity / whistle / radiation flags (5)
+    for (int i = 0; i < 6; i++) player_weapons_collected_[i] = d[0x016 + i];
+    fire_immunity_collected_     = (d[0x01c] != 0);
+    mushroom_immunity_collected_ = (d[0x01d] != 0);
+    whistle_one_collected_       = (d[0x01e] != 0);
+    whistle_two_collected_       = (d[0x01f] != 0);
+    radiation_immunity_collected_= (d[0x020] != 0);
+
+    object_mgr_.door_timer_      = d[0x021];
+    player_mushroom_timers_[0]   = d[0x022];
+    player_mushroom_timers_[1]   = d[0x023];
+    chatter_energy_reserve_      = d[0x024];
+    explosion_timer_             = static_cast<int8_t>(d[0x025]);
+    flooding_state_              = d[0x026];
+    earthquake_state_            = d[0x027];
+    // d[0x028] = unused
+    player_next_teleport_        = d[0x029];
+    player_teleports_remembered_ = d[0x02a];
+    for (int i = 0; i < 5; i++) player_teleports_x_[i] = d[0x02b + i];
+    for (int i = 0; i < 5; i++) player_teleports_y_[i] = d[0x030 + i];
+    // d[0x035] = copy_protection_third_byte — port ignores
+
+    // Waterline (4 ranges)
+    for (int i = 0; i < 4; i++) {
+        Water::set_y(i, d[0x03a + i], d[0x036 + i]);
+        Water::set_desired_y(i, d[0x03e + i]);
+    }
+
+    // Imp gifts + clawed robots
+    for (int i = 0; i < 5; i++) imp_gifts_remaining_[i] = d[0x042 + i];
+    for (int i = 0; i < 4; i++) clawed_robot_availability_[i]   = d[0x047 + i];
+    for (int i = 0; i < 4; i++) clawed_robot_teleport_energy_[i] = d[0x04b + i];
+
+    // Pockets + selected weapon
+    pockets_used_ = d[0x04f];
+    for (int i = 0; i < 5; i++) pockets_[i] = d[0x050 + i];
+    player_weapon_ = d[0x055];
+
+    // Weapon energies (lo+hi byte pair per slot, big-endian when packed)
+    for (int i = 0; i < 6; i++) {
+        weapon_energy_[i] = static_cast<uint16_t>(
+            d[0x056 + i] | (d[0x05c + i] << 8));
+    }
+    // d[0x062..0x067] = weapons_energy_cost — port hard-codes these
+    // (object_tables.h::weapon_energy_cost), so we just verify-and-skip.
+
+    // -- 16 primary slots --
+    // Per-field parallel arrays starting at offset 0x068. Note the BBC
+    // saves objects_x_fraction as 17 entries and objects_x as 18 (same
+    // for y) — we read the first 16 of each, which corresponds to the
+    // live primary slots in the 6502.
+    for (int i = 0; i < 16 && i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+        Object& o = object_mgr_.object(i);
+        o.type            = static_cast<ObjectType>(d[0x068 + i]);
+        o.sprite          = d[0x078 + i];
+        o.x.fraction      = d[0x088 + i];
+        o.x.whole         = d[0x099 + i];
+        o.y.fraction      = d[0x0ab + i];
+        o.y.whole         = d[0x0bc + i];
+        o.flags           = d[0x0ce + i];
+        o.palette         = d[0x0de + i];
+        o.velocity_x      = static_cast<int8_t>(d[0x0ee + i]);
+        o.velocity_y      = static_cast<int8_t>(d[0x0fe + i]);
+        o.target_and_flags= d[0x10e + i];
+        o.tx              = d[0x11e + i];
+        o.energy          = d[0x12e + i];
+        o.ty              = d[0x13e + i];
+        o.touching        = d[0x14e + i];
+        o.timer           = d[0x15e + i];
+        // Semantic mismatch: BBC's `objects_tertiary_data_offset` byte
+        // is an INDEX into the 235-byte tertiary_objects_data array
+        // (the suffix "offset" was literal). Our Object stores the
+        // DATA VALUE inline (the legacy name kept). Dereference here
+        // — without it, update_placeholder reads the index as the
+        // convert-to type and turns a fire_immunity placeholder
+        // (index 0x18 -> value 0x5f) into a pistol bullet (0x18).
+        // Index 0 in the BBC means "no tertiary data byte" (&404b BEQ).
+        uint8_t bbc_data_idx = d[0x16e + i];
+        if (bbc_data_idx == 0 || bbc_data_idx >= 0xeb) {
+            o.tertiary_data_offset = 0;
+        } else {
+            o.tertiary_data_offset = d[0x18e + bbc_data_idx];
+        }
+        o.state           = d[0x17e + i];
+        // Link this primary back to our port's per-cell tertiary entry
+        // ONLY when the BBC saved a non-zero data_offset. The 6502's
+        // &404b BEQ treats objects_tertiary_data_offset == 0 as "not
+        // spawned from a tertiary" — free primaries (held items the
+        // player dropped, projectiles, hive spawns) shouldn't get
+        // re-linked just because their tile happens to have a tertiary.
+        // Without this gate, dropped flasks were getting glued to the
+        // landscape and skipping physics updates that normal free
+        // primaries get.
+        if (bbc_data_idx != 0 && o.y.whole != 0) {
+            uint16_t cell_entry = landscape_.tertiary_index_at(
+                o.x.whole, o.y.whole);
+            o.tertiary_slot = (cell_entry == Landscape::NO_TERTIARY)
+                                ? 0 : cell_entry;
+        } else {
+            o.tertiary_slot = 0;
+        }
+        o.tile_collision         = false;
+        o.pre_collision_magnitude= 0;
+        o.pre_collision_angle    = 0;
+    }
+
+    // -- Tertiary data bytes --
+    // The BBC dumps the 235-byte `tertiary_objects_data` array directly
+    // at offset 0x18e. Its index space is the DATA-array index, not
+    // the source-table index. The translation at bake time was:
+    //   data_idx = (source_idx + tertiary_data_offset[tile_type]) & 0xff
+    // (see bake_tertiary_lookup() at &05dd). Our port has already
+    // applied that translation when populating TertiaryEntry.data from
+    // ROM, so to overlay the save we re-derive data_idx per cell and
+    // read the saved byte at that index.
+    for (int y = 0; y < Landscape::WORLD_SIZE; ++y) {
+        for (int x = 0; x < Landscape::WORLD_SIZE; ++x) {
+            uint16_t entry_idx = landscape_.tertiary_index_at(
+                static_cast<uint8_t>(x), static_cast<uint8_t>(y));
+            if (entry_idx == Landscape::NO_TERTIARY) continue;
+            uint16_t source = landscape_.tertiary_source_idx_at(
+                static_cast<uint8_t>(x), static_cast<uint8_t>(y));
+            if (source == Landscape::NO_TERTIARY) continue;
+            uint8_t tile_type = landscape_.get_tile(
+                static_cast<uint8_t>(x), static_cast<uint8_t>(y))
+                & TileFlip::TYPE_MASK;
+            if (tile_type >= 9) continue;  // not a CHECK_TERTIARY tile
+            uint8_t data_idx = static_cast<uint8_t>(
+                static_cast<int>(source) +
+                static_cast<int8_t>(tertiary_data_offset[tile_type]));
+            if (data_idx >= 0xeb) continue;
+            landscape_.tertiary_entry_mut(entry_idx).data =
+                d[0x18e + data_idx];
+        }
+    }
+
+    // -- 32 secondary slots --
+    for (int i = 0; i < 32 && i < GameConstants::SECONDARY_OBJECT_SLOTS; i++) {
+        SecondaryObject& s = object_mgr_.secondary(i);
+        s.x                    = d[0x2fa + i];
+        s.y                    = d[0x31a + i];
+        s.type                 = d[0x33a + i];
+        s.energy_and_fractions = d[0x35b + i];
+    }
+
+    // d[0x37b] = secondary_object_update_next_object — our port doesn't
+    //            mirror this scheduler byte; promotion is per-frame.
+    // d[0x37c] = secondary_object_update_random_shuffle — same.
+    // d[0x37d] = checksum_two — not verified in the disasm; skipped.
+
+    // Reset transient inputs so the player isn't stuck holding a key
+    // from before the load.
+    input_.set_state(InputState{});
+
+    // Frame counter: BBC saves don't store a frame counter directly
+    // (only game_time at 1/50s ticks). Start from 0; the rewind ring is
+    // already cleared above so nothing references the prior counter.
+    frame_counter_ = 0;
+
+    return true;
+}
+
+// Lowercase ext in place. Lambdas are banned by CLAUDE.md so the
+// std::transform target is a named static helper.
+static char to_lower_ascii(char c) {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : c;
+}
+
+// Natural compare: split each path into runs of digits vs non-digits and
+// compare runs lexically unless both are digits, in which case compare
+// numerically. Makes "10.sav" sort after "2.sav" instead of after "1.sav".
+static bool natural_less(const std::string& a, const std::string& b) {
+    size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        bool a_dig = a[i] >= '0' && a[i] <= '9';
+        bool b_dig = b[j] >= '0' && b[j] <= '9';
+        if (a_dig && b_dig) {
+            // Skip leading zeros on both runs.
+            while (i < a.size() && a[i] == '0') ++i;
+            while (j < b.size() && b[j] == '0') ++j;
+            size_t a_start = i, b_start = j;
+            while (i < a.size() && a[i] >= '0' && a[i] <= '9') ++i;
+            while (j < b.size() && b[j] >= '0' && b[j] <= '9') ++j;
+            size_t a_len = i - a_start, b_len = j - b_start;
+            if (a_len != b_len) return a_len < b_len;     // shorter -> smaller
+            int cmp = a.compare(a_start, a_len, b, b_start, b_len);
+            if (cmp != 0) return cmp < 0;
+        } else {
+            char ca = to_lower_ascii(a[i]);
+            char cb = to_lower_ascii(b[j]);
+            if (ca != cb) return ca < cb;
+            ++i; ++j;
+        }
+    }
+    return a.size() < b.size();
+}
+
+// Recursive directory walk under `root`. Returns paths to *.sav files
+// sorted numerically (so 1.sav, 2.sav, ..., 10.sav, 11.sav). Forward-
+// slashed so the renderer's label-strip works on both Windows and Unix.
+std::vector<std::string> Game::scan_save_files(const std::string& root) {
+    namespace fs = std::filesystem;
+    std::vector<std::string> out;
+    std::error_code ec;
+    if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) return out;
+    for (auto it = fs::recursive_directory_iterator(
+                       root, fs::directory_options::skip_permission_denied, ec);
+         !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        const fs::path& p = it->path();
+        std::string ext = p.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), to_lower_ascii);
+        if (ext != ".sav") continue;
+        out.push_back(p.generic_string());
+    }
+    std::sort(out.begin(), out.end(), natural_less);
+    return out;
+}
+

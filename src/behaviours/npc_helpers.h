@@ -12,7 +12,12 @@ class ParticleSystem;
 struct UpdateContext {
     ObjectManager& mgr;
     const Landscape& landscape;
+    // rng: 6502-aligned stream — any roll the ROM also makes (AI, spawn,
+    // fire, damage, velocity jitter, wind magnitude) goes here.
+    // cosmetic_rng: port-only stream for particle internals + emit gates
+    // so pool-size / viewport differences don't perturb game-rng order.
     Random& rng;
+    Random& cosmetic_rng;
     uint8_t frame_counter;
     bool every_four_frames;
     bool every_eight_frames;
@@ -57,7 +62,7 @@ struct UpdateContext {
     // update_door via &31ac, written by update_collectable. Nullable.
     uint8_t* player_keys_collected;
     // Particle pool. Behaviors that want to spawn particles call
-    // `particles->emit(ParticleType::X, count, obj, rng)`. May be null if
+    // `particles->emit(ParticleType::X, count, obj, cosmetic_rng)`. May be null if
     // the system isn't initialised yet (headless/tests).
     ParticleSystem* particles;
     // Index of the slot the player is currently holding, or 0x80+ if no

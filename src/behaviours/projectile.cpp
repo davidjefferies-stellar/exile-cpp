@@ -186,6 +186,18 @@ static void orient_bullet_to_angle(Object& obj, uint8_t angle) {
     }
 }
 
+// Port of &4425 explode_bullet: play the "ptack" pop sound, then mutate
+// to EXPLOSION via &40e2 explode_object_with_duration_A_but_no_sound
+// (duration 2). The "_but_no_sound" path is key — the BBC bullet path
+// deliberately skips the squeal + explosion sounds that step 12's
+// dispatch would otherwise add for types with explosion-flag bits 0xc0.
+static void explode_bullet(Object& obj) {
+    static constexpr uint8_t kSoundBulletPop[4] = { 0x17, 0x03, 0x1b, 0x02 };
+    Audio::play_at(Audio::CH_PRIORITY, kSoundBulletPop,
+                   obj.x.whole, obj.y.whole);
+    explode_object_with_duration(obj, 2);
+}
+
 // &441b / &46bf bullet main body. Explodes on damage-target touch,
 // solid-tile collision, or timer==0; otherwise faces velocity.
 static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage) {
@@ -222,18 +234,14 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
             ev.amount = hurt;
             ctx.damage_events->push_back(ev);
         }
-        // &4425-&4428 explode_bullet sound (SN76489 noise channel "ptack").
-        static constexpr uint8_t kSoundBulletPop[4] = { 0x17, 0x03, 0x1b, 0x02 };
-        Audio::play_at(Audio::CH_PRIORITY, kSoundBulletPop,
-                       obj.x.whole, obj.y.whole);
-        obj.energy = 0; // explode_bullet
+        explode_bullet(obj);
         return;
     }
 
     // &4434: reduce_energy_by_one (lifespan).
     if (obj.timer > 0) obj.timer--;
     if (obj.timer == 0) {
-        obj.energy = 0;
+        explode_bullet(obj);
         return;
     }
 
@@ -314,7 +322,7 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
     }
 
     if (should_explode) {
-        obj.energy = 0;
+        explode_bullet(obj);
         return;
     }
 
@@ -349,7 +357,7 @@ void update_active_grenade(Object& obj, UpdateContext& ctx) {
         // Immediately seed the explosion with its first burst of
         // particles so the transition frame isn't silent.
         if (ctx.particles) {
-            ctx.particles->emit(ParticleType::EXPLOSION, 8, obj, ctx.rng);
+            ctx.particles->emit(ParticleType::EXPLOSION, 8, obj, ctx.cosmetic_rng);
         }
         return;
     }
@@ -361,7 +369,7 @@ void update_active_grenade(Object& obj, UpdateContext& ctx) {
             ctx.this_slot, static_cast<unsigned>(obj.timer));
         explode_object_with_duration(obj, 0x10);
         if (ctx.particles) {
-            ctx.particles->emit(ParticleType::EXPLOSION, 10, obj, ctx.rng);
+            ctx.particles->emit(ParticleType::EXPLOSION, 10, obj, ctx.cosmetic_rng);
         }
         return;
     }
@@ -415,7 +423,7 @@ static void emit_projectile_trail(Object& obj, UpdateContext& ctx) {
     uint8_t bullet_angle = calculate_angle_from_velocities(
         obj.velocity_x, obj.velocity_y);
     uint8_t trail_angle = static_cast<uint8_t>(bullet_angle ^ 0x80);
-    ctx.particles->emit(ParticleType::PROJECTILE_TRAIL, 1, obj, ctx.rng,
+    ctx.particles->emit(ParticleType::PROJECTILE_TRAIL, 1, obj, ctx.cosmetic_rng,
                         trail_angle, projectile_trail_cf(obj.type));
 }
 
@@ -566,7 +574,7 @@ void update_plasma_ball(Object& obj, UpdateContext& ctx) {
     if (obj.energy == 0) {
         // &4ac8 remove_plasma_ball_or_fireball jumps to the &4aa7
         // 30-particle "death" burst (flag 0xa1 = inherit object velocity).
-        if (ctx.particles) ctx.particles->emit(ParticleType::PLASMA, 30, obj, ctx.rng);
+        if (ctx.particles) ctx.particles->emit(ParticleType::PLASMA, 30, obj, ctx.cosmetic_rng);
         return;
     }
 
@@ -576,7 +584,7 @@ void update_plasma_ball(Object& obj, UpdateContext& ctx) {
     // — our particle system always inherits, so we ignore it here.
     if (ctx.particles) {
         uint8_t count = (obj.energy >= 3) ? 3 : 30;
-        ctx.particles->emit(ParticleType::PLASMA, count, obj, ctx.rng);
+        ctx.particles->emit(ParticleType::PLASMA, count, obj, ctx.cosmetic_rng);
     }
 }
 
@@ -732,7 +740,7 @@ void update_red_mushroom_ball(Object& obj, UpdateContext& ctx) {
         int xf = int(spawn.x.fraction) - 0x40;
         if (xf < 0) { xf += 256; spawn.x.whole--; }
         spawn.x.fraction = static_cast<uint8_t>(xf);
-        ctx.particles->emit(ParticleType::STAR_OR_MUSHROOM, 33, spawn, ctx.rng);
+        ctx.particles->emit(ParticleType::STAR_OR_MUSHROOM, 33, spawn, ctx.cosmetic_rng);
     }
     // &46bc JMP set_object_for_removal (&2529) — sets PENDING_REMOVAL.
     obj.flags |= ObjectFlags::PENDING_REMOVAL;
@@ -905,7 +913,7 @@ static void fireball_damage_and_animate(Object& obj, UpdateContext& ctx,
     // &4b1d-&4b23: emit one PARTICLE_FIREBALL each frame. The 6502 sets
     // angle=&c0 (straight up) so the ember rises out of the flame.
     if (ctx.particles) {
-        ctx.particles->emit(ParticleType::FIREBALL, 1, obj, ctx.rng);
+        ctx.particles->emit(ParticleType::FIREBALL, 1, obj, ctx.cosmetic_rng);
     }
 }
 
@@ -963,7 +971,7 @@ void update_explosion(Object& obj, UpdateContext& ctx) {
     // a duration-0 explosion (e.g. red drop at &47b9) still gets one
     // frame of particles before removal.
     if (ctx.particles)
-        ctx.particles->emit(ParticleType::EXPLOSION, 10, obj, ctx.rng);
+        ctx.particles->emit(ParticleType::EXPLOSION, 10, obj, ctx.cosmetic_rng);
 
     // 6502 &4fca-&4fce: BEQ to_set_object_for_removal if duration==0.
     // The main update loop's PENDING_REMOVAL step reaps the slot next frame.

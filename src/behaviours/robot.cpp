@@ -553,7 +553,7 @@ static void update_hovering_ball_common(Object& obj, UpdateContext& ctx,
 
     // &4888 add_jetpack_thrust_particles — visible exhaust puff.
     if (ctx.particles) {
-        ctx.particles->emit(ParticleType::JETPACK, 1, obj, ctx.rng);
+        ctx.particles->emit(ParticleType::JETPACK, 1, obj, ctx.cosmetic_rng);
     }
 }
 

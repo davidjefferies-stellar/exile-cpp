@@ -319,6 +319,10 @@ void PixelRenderer::process_mouse() {
     }
     left_was_down = left_down;
 
+    // Saves panel: hover updates the keyboard highlight so users can
+    // sweep the mouse over rows and confirm with Enter, or just click.
+    pr_debug::saves_panel_hover(*this);
+
     prev_mouse_x = f.x;
     prev_mouse_y = f.y;
 }
@@ -384,6 +388,12 @@ void PixelRenderer::begin_frame() {
     if (fenster_loop(&f) != 0) should_close = true;
     events_processed = true;
     key_scan_idx = 0;
+
+    // Rotate the saves-panel debounce mask: whatever was held during the
+    // previous frame's get_key sweep becomes the "prev" reference; clear
+    // "curr" so this frame's sweep can record which keys are still held.
+    saves_keys_held_prev_ = saves_keys_held_curr_;
+    saves_keys_held_curr_ = 0;
 
 #if defined(_WIN32)
     // Numpad '*'/'-' deliver the same ASCII char as the regular keys.
@@ -453,6 +463,7 @@ void PixelRenderer::end_frame() {
     pr_debug::render_fps_text(*this);
     pr_debug::render_events_panel(*this);
     pr_debug::render_grid_panel(*this);
+    pr_debug::render_saves_panel(*this);
     InvalidateRect(f.hwnd, NULL, FALSE);
     UpdateWindow(f.hwnd);
 }
@@ -506,8 +517,10 @@ void PixelRenderer::render_tile(uint8_t world_x, uint8_t world_y,
 // mid-scanline, so pre-fill below blits: above=black, waterline row=cyan
 // (&06, 1-line delay_loop), below=blue (&04). Logical 0 blits transparent.
 void PixelRenderer::render_water_column(uint8_t world_x,
-                                        uint8_t waterline_y) {
+                                        uint8_t waterline_y,
+                                        uint8_t waterline_y_frac) {
     int tpx = tile_px_x();
+    int tpy = tile_px_y();
 
     // &16db calculate_waterline_timer tri-state. MUST use signed int,
     // not uint8_t: 6502's unsigned SBC only works because BBC camera
@@ -529,19 +542,25 @@ void PixelRenderer::render_water_column(uint8_t world_x,
     (void)world_to_screen(world_x, waterline_y, top_sx, top_sy);
     if (top_sx + tpx <= 0 || top_sx >= f.width) return;
 
+    // Sub-tile offset: y_fraction is 0..255 over one tile height. Apply
+    // as a screen-pixel offset so the waterline scanline animates pixel-
+    // by-pixel during fill/drain instead of jumping in whole-tile steps.
+    int frac_px = (int(waterline_y_frac) * tpy) / 256;
+
     if (delta_from_top < 0) {
         // Waterline above screen top -> entire column submerged -> blue.
         fill_rect(top_sx, 0, tpx, hud_y, BLUE);
     } else if (delta_from_top < vp_h) {
+        int waterline_sy = top_sy + frac_px;
         // Waterline inside viewport. Cyan on the waterline row's top
         // scanline, blue below.
-        if (top_sy + 1 < hud_y) {
-            int below_y0 = top_sy + 1;
+        if (waterline_sy + 1 < hud_y) {
+            int below_y0 = waterline_sy + 1;
             if (below_y0 < 0) below_y0 = 0;
             fill_rect(top_sx, below_y0, tpx, hud_y - below_y0, BLUE);
         }
-        if (top_sy >= 0 && top_sy < hud_y) {
-            fill_rect(top_sx, top_sy, tpx, 1, CYAN);
+        if (waterline_sy >= 0 && waterline_sy < hud_y) {
+            fill_rect(top_sx, waterline_sy, tpx, 1, CYAN);
         }
     }
     // else: entire column above waterline -> leave black.
@@ -550,6 +569,14 @@ void PixelRenderer::render_water_column(uint8_t world_x,
 void PixelRenderer::render_object(Fixed8_8 world_x, Fixed8_8 world_y,
                                   const SpriteRenderInfo& info) {
     if (!info.visible) return;
+    // Port-only skip for OBJECT_INVISIBLE_DEBRIS. The 6502 draws the
+    // sprite EOR-style with palette &00 (kyK), which collapses to a no-op
+    // against the black cavern backgrounds the debris normally spawns
+    // over. Our LUT-overwrite blit instead paints the 3 logical-0/3
+    // pixels as solid black, which shows up wherever the background
+    // isn't pure black. Skip the blit so the design intent ("invisible")
+    // holds in all contexts.
+    if (info.type == ObjectType::INVISIBLE_DEBRIS) return;
     int sx, sy;
     if (!world_to_screen(world_x.whole, world_y.whole, sx, sy,
                           world_x.fraction, world_y.fraction)) return;
@@ -747,6 +774,36 @@ bool PixelRenderer::consume_right_click(int& tile_dx, int& tile_dy) {
     return true;
 }
 
+// Saves-panel keyboard nav. Eats UP/DOWN/ENTER while the panel is open
+// so the keys don't double-fire into the game (jetpack thrust etc.).
+// Debounced via saves_keys_held_prev_ / saves_keys_held_curr_ so holding
+// a cursor key advances the highlight one row, not one row per frame.
+// Returns true iff the key was consumed.
+static bool handle_saves_key(PixelRenderer& r, int key) {
+    if (!r.saves_panel_on) return false;
+    uint8_t bit = 0;
+    if      (key == InputKey::UP)    bit = 0x01;
+    else if (key == InputKey::DOWN)  bit = 0x02;
+    else if (key == InputKey::ENTER) bit = 0x04;
+    else return false;
+
+    bool was_held = (r.saves_keys_held_prev_ & bit) != 0;
+    r.saves_keys_held_curr_ |= bit;
+    if (was_held) return true;   // swallow the held key, no auto-repeat
+
+    int total = static_cast<int>(r.saves_list_.size());
+    if (key == InputKey::UP && total > 0) {
+        r.saves_highlight_ = (r.saves_highlight_ - 1 + total) % total;
+    } else if (key == InputKey::DOWN && total > 0) {
+        r.saves_highlight_ = (r.saves_highlight_ + 1) % total;
+    } else if (key == InputKey::ENTER &&
+               total > 0 && r.saves_highlight_ < total) {
+        r.has_pending_save_load   = true;
+        r.pending_save_load_path_ = r.saves_list_[r.saves_highlight_];
+    }
+    return true;
+}
+
 int PixelRenderer::get_key() {
     if (should_close) return InputKey::CLOSE_REQUESTED;
 
@@ -757,23 +814,29 @@ int PixelRenderer::get_key() {
     while (key_scan_idx < 265) {
         int i = key_scan_idx++;
 
+        // Decode this scancode to an InputKey, then offer it to the saves
+        // panel before returning it to Game. Eaten keys fall through to
+        // `continue` so the panel can absorb arrows without the game
+        // also seeing them (e.g. arrow keys would otherwise jet-thrust).
+        int decoded = InputKey::NONE;
         if (i < 256) {
             if (!f.keys[i]) continue;
             switch (i) {
-                case 9:  return InputKey::TAB;
-                case 17: return InputKey::UP;
-                case 18: return InputKey::DOWN;
-                case 19: return InputKey::RIGHT;
-                case 20: return InputKey::LEFT;
-                case 10: return InputKey::ENTER;
-                case 27: return InputKey::ESCAPE;
+                case 9:  decoded = InputKey::TAB; break;
+                case 17: decoded = InputKey::UP; break;
+                case 18: decoded = InputKey::DOWN; break;
+                case 19: decoded = InputKey::RIGHT; break;
+                case 20: decoded = InputKey::LEFT; break;
+                case 10: decoded = InputKey::ENTER; break;
+                case 27: decoded = InputKey::ESCAPE; break;
                 default:
-                    // Letters: lowercase so input.cpp's 'a'-case is hit.
-                    if (i >= 'A' && i <= 'Z') return i + 32;
-                    if (i >= 0x20 && i <= 0x80) return i;
+                    if (i >= 'A' && i <= 'Z') decoded = i + 32;
+                    else if (i >= 0x20 && i <= 0x80) decoded = i;
                     break;
             }
-            continue;
+            if (decoded == InputKey::NONE) continue;
+            if (handle_saves_key(*this, decoded)) continue;
+            return decoded;
         }
 
         // Synthetic slots — poll OS for keys fenster's table misses on Windows.
@@ -781,47 +844,50 @@ int PixelRenderer::get_key() {
         switch (i) {
             case 256:
                 if (GetAsyncKeyState(VK_LCONTROL) & 0x8000)
-                    return InputKey::CTRL_LEFT;
+                    decoded = InputKey::CTRL_LEFT;
                 break;
             case 257:
                 if (GetAsyncKeyState(VK_RCONTROL) & 0x8000)
-                    return InputKey::CTRL_RIGHT;
+                    decoded = InputKey::CTRL_RIGHT;
                 break;
             case 258:
                 if (GetAsyncKeyState(VK_LEFT)  & 0x8000)
-                    return InputKey::LEFT;
+                    decoded = InputKey::LEFT;
                 break;
             case 259:
                 if (GetAsyncKeyState(VK_RIGHT) & 0x8000)
-                    return InputKey::RIGHT;
+                    decoded = InputKey::RIGHT;
                 break;
             case 260:
                 if (GetAsyncKeyState(VK_UP)    & 0x8000)
-                    return InputKey::UP;
+                    decoded = InputKey::UP;
                 break;
             case 261:
                 if (GetAsyncKeyState(VK_DOWN)  & 0x8000)
-                    return InputKey::DOWN;
+                    decoded = InputKey::DOWN;
                 break;
             case 262:
                 // Left Shift surfaces only via the OS poll — fenster's
                 // scancode table doesn't separate LSHIFT from RSHIFT.
                 if (GetAsyncKeyState(VK_LSHIFT) & 0x8000)
-                    return InputKey::SHIFT_LEFT;
+                    decoded = InputKey::SHIFT_LEFT;
                 break;
             case 263:
                 if (GetAsyncKeyState(VK_MULTIPLY) & 0x8000)
-                    return InputKey::KEYPAD_STAR;
+                    decoded = InputKey::KEYPAD_STAR;
                 break;
             case 264:
                 if (GetAsyncKeyState(VK_SUBTRACT) & 0x8000)
-                    return InputKey::KEYPAD_MINUS;
+                    decoded = InputKey::KEYPAD_MINUS;
                 break;
             default: break;
         }
 #else
-        if (i == 256 && (f.mod & 1)) return InputKey::CTRL_LEFT;
+        if (i == 256 && (f.mod & 1)) decoded = InputKey::CTRL_LEFT;
 #endif
+        if (decoded == InputKey::NONE) continue;
+        if (handle_saves_key(*this, decoded)) continue;
+        return decoded;
     }
     return InputKey::NONE;
 }

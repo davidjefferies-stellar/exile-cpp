@@ -135,7 +135,7 @@
     <ClCompile Include="src\player\player_sprite.cpp" />
     <ClCompile Include="src\game\object_update.cpp" />
     <ClCompile Include="src\game\render.cpp" />
-    <ClCompile Include="src\bridge\jsbeeb_bridge.cpp" />
+    <ClCompile Include="src\emu\jsbeeb_bridge.cpp" />
     <!-- Test entry point -->
     <ClCompile Include="tests\main.cpp" />
     <!-- Test cases (one *_test.cpp per area) -->

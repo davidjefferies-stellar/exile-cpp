@@ -11,12 +11,13 @@
 #include "world/tile_data.h"
 #include "behaviours/environment.h"
 #include "behaviours/projectile.h"
-#include "bridge/jsbeeb_bridge.h"
+#include "emu/jsbeeb_bridge.h"
 #include "objects/object_tables.h"
 #include "world/water.h"
 #include <algorithm>
 #include <chrono>
 #include <thread>
+#include <fstream>
 
 // Game — lifecycle, top-level loop orchestration, timers, input polling.
 // Big chunks live in siblings: tertiary_spawn / player_* / object_update /
@@ -149,8 +150,10 @@ bool Game::init() {
     object_mgr_.set_active_primary_slots(cfg.primary_slots);
     object_mgr_.set_active_secondary_slots(cfg.secondary_slots);
 
-    // Seed RNG
+    // Seed RNG. cosmetic_rng_ uses a different fixed seed so its first
+    // particle roll doesn't accidentally mirror the game RNG's first AI roll.
     rng_.seed(0x49, 0x52, 0x56, 0x49);
+    cosmetic_rng_.seed(0x43, 0x4f, 0x53, 0x4d);
 
     // &0860-&08b4 initial object table: Triax pre-placed at (&99, &3b)
     // adjacent to the destinator tertiary, so frame-1 update_triax fires
@@ -213,6 +216,22 @@ bool Game::init() {
     // full-scan path at &0c4e. Without this seed, our one-per-frame
     // promote_selective misses the destinator and the Triax intro misfires.
     object_mgr_.promote_distance_check();
+
+    // [player] bbc_save — drop a BBC-format save over the world after
+    // everything else has been set up. Failures are silent (the player
+    // just gets the normal startup state); the lifecycle log records
+    // whether the load succeeded so it's still discoverable.
+    if (!cfg.bbc_save_path.empty()) {
+        bool ok = load_bbc_save(cfg.bbc_save_path);
+        if (debug_log_.is_open()) {
+            debug_log_ << "bbc_save " << cfg.bbc_save_path
+                       << (ok ? " loaded" : " FAILED") << "\n";
+        }
+        // Reset the activation anchor to the loaded player position so
+        // the first promote_distance_check below sees the right centre.
+        object_mgr_.set_activation_anchor(player.x.whole, player.y.whole);
+        object_mgr_.promote_distance_check();
+    }
     flush_debug_log();
 
     running_ = true;
@@ -269,72 +288,20 @@ void Game::tick() {
         // Activation-anchor mode is driven by the "Map mode"
         activation_from_camera_ = renderer_->map_mode_enabled();
 
-        // Rising-edge toggle on Esc: freeze / unfreeze world updates,
-        // OR commit a scrubbed frame as the new "live" state. Esc while
-        // scrubbing snaps the ring buffer to the current scrubbed frame
-        // (subsequent ticks overwrite the now-stale future frames) and
-        // resumes the sim from there, branching the timeline.
+        // Esc: commit a scrubbed frame as the new live state if scrubbing,
+        // otherwise toggle pause. Scrubbing branch lives in game_debug.cpp.
         {
             bool down = input_.state().toggle_pause;
             if (down && !pause_key_prev_) {
-                if (scrubbing_) {
-                    // The state is already restored to the scrubbed
-                    // frame; collapse the ring so head_ points just
-                    // past the scrubbed frame and count_ reflects the
-                    // truncated history.
-                    size_t live_idx = (snapshot_ring_head_ +
-                                       snapshot_ring_.size() - 1) %
-                                      snapshot_ring_.size();
-                    size_t cur_idx = (live_idx +
-                                      snapshot_ring_.size() -
-                                      scrub_offset_) %
-                                     snapshot_ring_.size();
-                    snapshot_ring_head_ = (cur_idx + 1) %
-                                           snapshot_ring_.size();
-                    snapshot_ring_count_ -= scrub_offset_;
-                    scrub_offset_ = 0;
-                    scrubbing_ = false;
-                } else {
+                if (!commit_scrub_if_active()) {
                     paused_ = !paused_;
                 }
             }
             pause_key_prev_ = down;
         }
 
-        // Rewind scrubber. Numpad '-' steps back through the snapshot
-        // ring; numpad '*' steps forward. Both auto-repeat while held —
-        // one frame per game tick — so the user can sweep through the
-        // buffer continuously. Entering scrub mode freezes the sim;
-        // pressing Esc (above) commits the current frame and resumes.
-        {
-            bool back = input_.state().scrub_back;
-            bool fwd  = input_.state().scrub_forward;
-            if (back && scrub_offset_ + 1 < snapshot_ring_count_) {
-                scrubbing_ = true;
-                scrub_offset_++;
-                // Index of the live entry just written = head_-1.
-                size_t live_idx = (snapshot_ring_head_ +
-                                   snapshot_ring_.size() - 1) %
-                                  snapshot_ring_.size();
-                size_t cur_idx = (live_idx +
-                                  snapshot_ring_.size() -
-                                  scrub_offset_) %
-                                 snapshot_ring_.size();
-                restore_snapshot(snapshot_ring_[cur_idx]);
-            }
-            if (fwd && scrubbing_ && scrub_offset_ > 0) {
-                scrub_offset_--;
-                size_t live_idx = (snapshot_ring_head_ +
-                                   snapshot_ring_.size() - 1) %
-                                  snapshot_ring_.size();
-                size_t cur_idx = (live_idx +
-                                  snapshot_ring_.size() -
-                                  scrub_offset_) %
-                                 snapshot_ring_.size();
-                restore_snapshot(snapshot_ring_[cur_idx]);
-                if (scrub_offset_ == 0) scrubbing_ = false;
-            }
-        }
+        // Numpad +/- scrubs through the rewind ring; body in game_debug.cpp.
+        tick_scrub_keys();
 
         // Rising-edge save-map ('\' key) — write the current 256×256
         // landscape grid to exile.map so the next launch picks it up
@@ -451,22 +418,15 @@ void Game::tick() {
             {
                 const Object& p = object_mgr_.player();
                 uint8_t wy = Water::get_waterline_y(p.x.whole);
-                particles_.update(wy, 0, rng_);
+                particles_.update(wy, 0, cosmetic_rng_);
             }
 
             // &4a1c ROR &29d7 — clear player_object_fired at end of tick
             player_object_fired_ = 0xff;
 
-            // Capture this frame into the rewind ring. Writes the
-            // post-tick state so scrubbing back lands on a complete
-            // frame. When the buffer is full, head_ wraps and the
-            // oldest entry is overwritten in place.
-            snapshot_ring_[snapshot_ring_head_] = snapshot();
-            snapshot_ring_head_ =
-                (snapshot_ring_head_ + 1) % snapshot_ring_.size();
-            if (snapshot_ring_count_ < snapshot_ring_.size()) {
-                snapshot_ring_count_++;
-            }
+            // Capture post-tick state into the rewind ring. Body in
+            // game_debug.cpp alongside scrub / commit.
+            capture_rewind_snapshot();
         }
 
         render();
@@ -583,100 +543,36 @@ void Game::process_input() {
     bridge_key_prev_ = bridge_down;
 
     if (just_pressed) {
-        std::vector<JsbeebBridge::Write> writes;
-
-        {
-            // -------- FULL INITIAL SYNC --------
-            // 16 primary slots × 14 fields (bases at &0860..&0936).
-            // Loop hard-capped at 16: our primary_ is 64 wide but the
-            // BBC has only 16 slots' worth of RAM tables.
-            for (int i = 0; i < 16; ++i) {
-                const Object& o = object_mgr_.object(i);
-                const uint16_t s = static_cast<uint16_t>(i);
-                writes.push_back({ uint16_t(0x0860 + s),
-                                   static_cast<uint8_t>(o.type) });
-                writes.push_back({ uint16_t(0x0870 + s), o.sprite });
-                writes.push_back({ uint16_t(0x0880 + s), o.x.fraction });
-                writes.push_back({ uint16_t(0x0891 + s), o.x.whole });
-                writes.push_back({ uint16_t(0x08a3 + s), o.y.fraction });
-                writes.push_back({ uint16_t(0x08b4 + s), o.y.whole });
-                writes.push_back({ uint16_t(0x08c6 + s), o.flags });
-                writes.push_back({ uint16_t(0x08d6 + s), o.palette });
-                writes.push_back({ uint16_t(0x08e6 + s),
-                                   static_cast<uint8_t>(o.velocity_x) });
-                writes.push_back({ uint16_t(0x08f6 + s),
-                                   static_cast<uint8_t>(o.velocity_y) });
-                writes.push_back({ uint16_t(0x0906 + s),
-                                   o.target_and_flags });
-                writes.push_back({ uint16_t(0x0916 + s), o.tx });
-                writes.push_back({ uint16_t(0x0926 + s), o.energy });
-                writes.push_back({ uint16_t(0x0936 + s), o.ty });
-            }
-            // Inventory.
-            writes.push_back({ 0x084d, player_weapon_ });
-            for (int i = 0; i < 6; ++i) {
-                writes.push_back({ uint16_t(0x080e + i),
-                                   player_weapons_collected_[i] });
-            }
-            for (int i = 0; i < 6; ++i) {
-                uint16_t e = weapon_energy_[i];
-                writes.push_back({ uint16_t(0x084e + i),
-                                   static_cast<uint8_t>(e & 0xff) });
-                writes.push_back({ uint16_t(0x0854 + i),
-                                   static_cast<uint8_t>(e >> 8) });
-            }
-            static constexpr uint16_t kKeyAddrs[6] = {
-                0x0806, 0x0807, 0x0808, 0x0809, 0x080b, 0x080c,
-            };
-            for (int i = 0; i < 6; ++i) {
-                writes.push_back({ kKeyAddrs[i],
-                                   player_keys_collected_[i] });
-            }
-            // Zero-page pose, RNG, frame counter, held-object slot.
-            // &dd needs to be negative (top bit set) for the BBC's
-            // &2d36 handle_firing to allow firing; if jsbeeb has a stale
-            // positive value left from earlier gameplay, every fire
-            // press is a silent no-op (&2d3b BPL leave).
-            writes.push_back({ 0x00de, player_angle_ });
-            writes.push_back({ 0x00df, player_facing_ });
-            writes.push_back({ 0x00dd, held_object_slot_ });
-            writes.push_back({ 0x00d9, rng_.state(0) });
-            writes.push_back({ 0x00da, rng_.state(1) });
-            writes.push_back({ 0x00db, rng_.state(2) });
-            writes.push_back({ 0x00dc, rng_.state(3) });
-            writes.push_back({ 0x00c0, frame_counter_ });
-            // Tertiary linkage.
-            for (int i = 0; i < 16; ++i) {
-                const Object& o = object_mgr_.object(i);
-                uint8_t off = (o.tertiary_slot <= 0xff)
-                                  ? static_cast<uint8_t>(o.tertiary_slot)
-                                  : 0u;
-                writes.push_back({ uint16_t(0x0966 + i), off });
-            }
-            int n_tert = landscape_.tertiary_count();
-            if (n_tert > 256) n_tert = 256;
-            for (int i = 0; i < n_tert; ++i) {
-                if (i == 0x28) continue;  // engine activation flag
-                writes.push_back({ uint16_t(0x0986 + i),
-                                   landscape_.tertiary_entry(i).data });
-            }
-            // Secondary objects (capped at BBC's 32 slots).
-            for (int i = 0; i < 32; ++i) {
-                const SecondaryObject& s = object_mgr_.secondary(i);
-                writes.push_back({ uint16_t(0x0af2 + i), s.x });
-                writes.push_back({ uint16_t(0x0b12 + i), s.y });
-                writes.push_back({ uint16_t(0x0b32 + i), s.type });
-                writes.push_back({ uint16_t(0x0b53 + i),
-                                   s.energy_and_fractions });
-            }
-            JsbeebBridge::poke(writes);
-        }
+        push_jsbeeb_snapshot();
     }
 
     // Test-events panel: poll the renderer for clicks each tick.
     int event_id;
     if (renderer_->consume_event_click(event_id)) {
         trigger_event(event_id);
+    }
+
+    // Saves panel: rescan save_disks/ on the rising edge of the toggle,
+    // then poll for a load request each tick. Format auto-detected by
+    // file size (0x400 == BBC binary, else our text format).
+    bool saves_now = renderer_->saves_panel_enabled();
+    if (saves_now && !saves_panel_was_on_) {
+        renderer_->set_save_files(scan_save_files("save_disks"));
+    }
+    saves_panel_was_on_ = saves_now;
+    std::string load_path;
+    if (renderer_->consume_save_load_request(load_path)) {
+        bool ok = false;
+        std::ifstream probe(load_path, std::ios::binary | std::ios::ate);
+        std::streamsize sz = probe ? static_cast<std::streamsize>(probe.tellg()) : 0;
+        if (sz == 0x400) ok = load_bbc_save(load_path);
+        else             ok = load_game(load_path);
+        if (debug_log_.is_open()) {
+            debug_log_ << "[saves] load " << load_path
+                       << " size=" << sz
+                       << " ok=" << (ok ? 1 : 0) << "\n";
+            debug_log_.flush();
+        }
     }
 }
 
@@ -755,8 +651,12 @@ void Game::update_events() {
     bool player_teleporting =
         (player.flags & ObjectFlags::TELEPORTING) != 0;
     {
-        int dx = (rng_.next() % vp_w) - half_w;
-        int dy = (rng_.next() % vp_h) - half_h;
+        // Star-tile pick is cosmetic-only — the 6502 shares this pick with
+        // the mushroom-spawn branch (1 game_rng roll), but our port makes
+        // a separate pick for mushroom below (lines 649-650). Routing the
+        // star pick through cosmetic_rng_ stops it perturbing game_rng.
+        int dx = (cosmetic_rng_.next() % vp_w) - half_w;
+        int dy = (cosmetic_rng_.next() % vp_h) - half_h;
         uint8_t tx = static_cast<uint8_t>(camera_.center_x + dx);
         uint8_t ty = static_cast<uint8_t>(camera_.center_y + dy);
         // &26ca CMP #&4e / BCS skip: sky ends at world y = 0x4e.
@@ -766,7 +666,7 @@ void Game::update_events() {
         // lab (tiles from map_data rather than the algorithm).
         if (ty < 0x4e && !player_teleporting &&
             !landscape_.tile_from_map_data(tx, ty)) {
-            particles_.emit_at(ParticleType::STAR_OR_MUSHROOM, tx, ty, rng_);
+            particles_.emit_at(ParticleType::STAR_OR_MUSHROOM, tx, ty, cosmetic_rng_);
         }
     }
     // Mushroom-tile EVENTS branch below still needs ONE random tile near
@@ -986,14 +886,6 @@ void Game::update_player() {
     // skipped by update_objects, so the object loop's energy-zero branch
     // never catches us; check it explicitly here before anything else.
     //
-    // Gate on !TELEPORTING: if a teleport is already in progress (i.e.
-    // a previous consider_ call this death set the flag + timer), another
-    // damage tick that drives energy back to 0 must NOT re-enter
-    // handle_player_teleporting. Doing so consumes a second remembered
-    // slot — and once remembered hits 0, it picks the fallback (the
-    // spaceship at slot 4), overwriting tx/ty so the in-progress
-    // animation relocates the player to the ship instead of the
-    // intended remembered position.
     if (player.energy == 0 &&
         !(player.flags & ObjectFlags::TELEPORTING)) {
         consider_teleporting_damaged_player(player);
@@ -1080,7 +972,7 @@ void Game::tick_blaster() {
     // overwrite wins for the duration of the discharge, then the suit /
     // damage-flash logic returns once the timer reaches 0.
     player.palette = rng_.next() & 0x13;
-    particles_.emit(ParticleType::EXPLOSION, 2, player, rng_);
+    particles_.emit(ParticleType::EXPLOSION, 2, player, cosmetic_rng_);
 
     // accelerate_all_objects (&343a-&34b0). Duration = 9 matches the
     // 6502: &4a79-&4a7b sets tertiary_data_offset to 10, then
@@ -1233,4 +1125,104 @@ void Game::handle_remembering_position(Object& player) {
     // &2c5b JSR play_middle_beep (&14a0 sound block).
     static constexpr uint8_t kSoundMiddleBeep[4] = { 0x17, 0xe3, 0x2f, 0x72 };
     Audio::play(Audio::CH_ANY, kSoundMiddleBeep);
+}
+
+// One-shot full world-state push to jsbeeb. Mirrors objects (16 BBC slots
+// × 14 fields at &0860..&0936), inventory (&080e weapons-collected,
+// &084d selected, &084e-&0855 packed weapon energies, &0806..&080c keys),
+// zero-page pose / RNG / frame counter / held-object slot, tertiary
+// linkage & data bytes, and the 32 secondary slots. After the snapshot
+// fires jsbeeb runs free — we don't read keys back.
+void Game::push_jsbeeb_snapshot() {
+    std::vector<JsbeebBridge::Write> writes;
+
+    // 16 primary slots × 14 fields. Loop hard-capped at 16: our primary_
+    // is 64 wide but the BBC has only 16 slots' worth of RAM tables.
+    for (int i = 0; i < 16; ++i) {
+        const Object& o = object_mgr_.object(i);
+        const uint16_t s = static_cast<uint16_t>(i);
+        writes.push_back({ uint16_t(0x0860 + s),
+                           static_cast<uint8_t>(o.type) });
+        writes.push_back({ uint16_t(0x0870 + s), o.sprite });
+        writes.push_back({ uint16_t(0x0880 + s), o.x.fraction });
+        writes.push_back({ uint16_t(0x0891 + s), o.x.whole });
+        writes.push_back({ uint16_t(0x08a3 + s), o.y.fraction });
+        writes.push_back({ uint16_t(0x08b4 + s), o.y.whole });
+        writes.push_back({ uint16_t(0x08c6 + s), o.flags });
+        writes.push_back({ uint16_t(0x08d6 + s), o.palette });
+        writes.push_back({ uint16_t(0x08e6 + s),
+                           static_cast<uint8_t>(o.velocity_x) });
+        writes.push_back({ uint16_t(0x08f6 + s),
+                           static_cast<uint8_t>(o.velocity_y) });
+        writes.push_back({ uint16_t(0x0906 + s),
+                           o.target_and_flags });
+        writes.push_back({ uint16_t(0x0916 + s), o.tx });
+        writes.push_back({ uint16_t(0x0926 + s), o.energy });
+        writes.push_back({ uint16_t(0x0936 + s), o.ty });
+    }
+
+    // Inventory: selected weapon, weapons-collected bitmap, per-weapon
+    // energy split across the &084e (low) / &0854 (high) tables, key flags.
+    writes.push_back({ 0x084d, player_weapon_ });
+    for (int i = 0; i < 6; ++i) {
+        writes.push_back({ uint16_t(0x080e + i),
+                           player_weapons_collected_[i] });
+    }
+    for (int i = 0; i < 6; ++i) {
+        uint16_t e = weapon_energy_[i];
+        writes.push_back({ uint16_t(0x084e + i),
+                           static_cast<uint8_t>(e & 0xff) });
+        writes.push_back({ uint16_t(0x0854 + i),
+                           static_cast<uint8_t>(e >> 8) });
+    }
+    static constexpr uint16_t kKeyAddrs[6] = {
+        0x0806, 0x0807, 0x0808, 0x0809, 0x080b, 0x080c,
+    };
+    for (int i = 0; i < 6; ++i) {
+        writes.push_back({ kKeyAddrs[i],
+                           player_keys_collected_[i] });
+    }
+
+    // Zero-page pose, RNG, frame counter, held-object slot. &dd needs
+    // bit 7 set for the BBC's &2d36 handle_firing to allow firing; if
+    // jsbeeb has a stale positive value left from earlier gameplay,
+    // every fire press is a silent no-op (&2d3b BPL leave).
+    writes.push_back({ 0x00de, player_angle_ });
+    writes.push_back({ 0x00df, player_facing_ });
+    writes.push_back({ 0x00dd, held_object_slot_ });
+    writes.push_back({ 0x00d9, rng_.state(0) });
+    writes.push_back({ 0x00da, rng_.state(1) });
+    writes.push_back({ 0x00db, rng_.state(2) });
+    writes.push_back({ 0x00dc, rng_.state(3) });
+    writes.push_back({ 0x00c0, frame_counter_ });
+
+    // Tertiary linkage: per-slot tertiary_data_offset at &0966, then the
+    // tertiary data bytes themselves at &0986. Skip entry 0x28 — that's
+    // the engine activation flag, not a regular tertiary data byte.
+    for (int i = 0; i < 16; ++i) {
+        const Object& o = object_mgr_.object(i);
+        uint8_t off = (o.tertiary_slot <= 0xff)
+                          ? static_cast<uint8_t>(o.tertiary_slot)
+                          : 0u;
+        writes.push_back({ uint16_t(0x0966 + i), off });
+    }
+    int n_tert = landscape_.tertiary_count();
+    if (n_tert > 256) n_tert = 256;
+    for (int i = 0; i < n_tert; ++i) {
+        if (i == 0x28) continue;  // engine activation flag
+        writes.push_back({ uint16_t(0x0986 + i),
+                           landscape_.tertiary_entry(i).data });
+    }
+
+    // Secondary objects — capped at the BBC's 32 slots.
+    for (int i = 0; i < 32; ++i) {
+        const SecondaryObject& s = object_mgr_.secondary(i);
+        writes.push_back({ uint16_t(0x0af2 + i), s.x });
+        writes.push_back({ uint16_t(0x0b12 + i), s.y });
+        writes.push_back({ uint16_t(0x0b32 + i), s.type });
+        writes.push_back({ uint16_t(0x0b53 + i),
+                           s.energy_and_fractions });
+    }
+
+    JsbeebBridge::poke(writes);
 }

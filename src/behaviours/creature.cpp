@@ -17,6 +17,15 @@ void update_player(Object& obj, UpdateContext& ctx) {
 
 // Common chatter logic shared by active and inactive (port of &48a7-&48c0)
 static void chatter_common(Object& obj, UpdateContext& ctx) {
+    // Diagnostic: log every frame the chatter is updated so we can see
+    // whether ctx.whistle_one_active ever propagates.
+    ctx.mgr.log_diag(
+        "chatter f=%u s%d type=0x%02x e=0x%02x timer=0x%02x state=0x%02x "
+        "w1_active=%d",
+        (unsigned)ctx.frame_counter, (int)ctx.this_slot,
+        (unsigned)static_cast<uint8_t>(obj.type),
+        (unsigned)obj.energy, (unsigned)obj.timer, (unsigned)obj.state,
+        (int)ctx.whistle_one_active);
     // Respond to whistle one: activate chatter
     if (ctx.whistle_one_active) {
         obj.timer |= 0x80;  // Set activation flag
@@ -353,8 +362,13 @@ constexpr uint8_t kNPC_WAS_FED = 0x10;
 // Walking/climbing/jumping physics not yet ported.
 void update_imp(Object& obj, UpdateContext& ctx) {
     // &44ef-&44f7: newly-created imps start in MINUS_TWO (aggressive).
+    // obj.timer is used as a port-only "has-left-home" latch (0 = still
+    // on its spawn pipe, 1 = has stepped off a PIPE tile at least once).
+    // Mirrors the 6502's &18 tile_collision_y_flags semantics for the
+    // at-home despawn gate without needing per-axis collision history.
     if (obj.flags & ObjectFlags::NEWLY_CREATED) {
         obj.state = NPCMood::MINUS_TWO;
+        obj.timer = 0;
     }
 
     // &44f9-&4504: speed from mood (excited 0x28, neutral 0x10).
@@ -398,6 +412,13 @@ void update_imp(Object& obj, UpdateContext& ctx) {
             resolve_tile_with_tertiary(ctx.landscape, obj.x.whole, obj.y.whole);
         uint8_t home_tile = res.tile_and_flip;
         uint8_t home_type = home_tile & TileFlip::TYPE_MASK;
+        // Latch the "has left home" marker the first frame we see a
+        // non-PIPE tile under the imp. Without this, a freshly-spawned
+        // imp whose physics step set SUPPORTED on frame 1 would trip
+        // the at-home despawn before it ever walks out of the pipe.
+        if (home_type != static_cast<uint8_t>(TileType::PIPE)) {
+            obj.timer = 1;
+        }
         // Log every frame an imp with WAS_FED is alive so we can see
         // what tile/state it's actually in. Quiet when not fed, since
         // unfed wandering imps would flood the log.
@@ -445,18 +466,19 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                     ? static_cast<unsigned>(ctx.imp_gifts_remaining[tidx])
                     : 0xffu);
 
-            // Port deviation: 6502 despawns both fed AND unfed imps when
-            // they land on a pipe (the &452b-&4531 unfed path still
-            // falls through to &453f set_object_as_far_away). We require
-            // WAS_FED so a freshly-spawned imp standing on its own pipe
-            // doesn't immediately vanish back to the nest the moment
-            // physics reports SUPPORTED. Unfed imps will keep wandering
-            // until the player feeds them.
-            if (landed && (obj.state & kNPC_WAS_FED)) {
+            // &452b-&453f: home-despawn fires for BOTH fed and unfed imps
+            // in the 6502 (the unfed BEQ at &452c skips the gift spawn but
+            // still falls through to &453f set_object_as_far_away). Gating
+            // on `obj.timer == 1` (has-left-home latch above) prevents the
+            // frame-1 race where a freshly-spawned imp already reports
+            // SUPPORTED on its spawn pipe and would vanish back to the
+            // nest before walking out.
+            if (landed && obj.timer == 1) {
                 // &452b-&4531: gift-spawn is fed-gated and counter-gated.
                 // 6502 DECs first then BMI; we check >0 then DEC, same
                 // arithmetic outcome (initial N -> N drops).
-                if (ctx.imp_gifts_remaining &&
+                if ((obj.state & kNPC_WAS_FED) &&
+                    ctx.imp_gifts_remaining &&
                     ctx.imp_gifts_remaining[tidx] > 0) {
                     ctx.imp_gifts_remaining[tidx]--;
                     int gslot = ctx.mgr.create_object_at(
@@ -599,27 +621,46 @@ void update_imp(Object& obj, UpdateContext& ctx) {
         NPC::damage_player_if_touching(obj, ctx.mgr.player(), 5, ctx.damage_events, &ctx);
     }
 
-    // &45c7-&45d3 find_a_target_and_fire (A=8 -> fires when rng<=4, ~2%/frame).
-    // Range-gated to 16 tiles per axis via &335a CMP #&06; skip when already
-    // touching the player so a hugged imp doesn't shoot itself.
+    // &45c7-&45d3 find_a_target_and_fire_at_it_with_likelihood_A_divided_by_four(A=8).
+    // Threshold = (8>>2)+2 = 4 -> ~5/256 random gate per frame. Then the 6502
+    // pipeline gates on (a) LOS to player via find_object's obstruction check
+    // (&3cb2-&3cbd) and (b) distance < 16 tiles + facing-direction match in
+    // fire_at_target's vector math (&335a / &27a3). Without (a) and (b) blue/cyan
+    // imps in a pipe fired coronium crystals through walls.
     bool not_at_target = (obj.touching != 0);
-    const Object& player_for_range = ctx.mgr.player();
-    int8_t rdx = static_cast<int8_t>(obj.x.whole - player_for_range.x.whole);
-    int8_t rdy = static_cast<int8_t>(obj.y.whole - player_for_range.y.whole);
-    bool in_range = std::abs(static_cast<int>(rdx)) < 16 &&
-                    std::abs(static_cast<int>(rdy)) < 16;
-    if (not_at_target && in_range && ctx.rng.next() < 5) {
+    if (not_at_target && ctx.rng.next() < 5) {
+        const Object& player = ctx.mgr.player();
+        // (a) LOS to player. has_line_of_sight_randomized mirrors find_object's
+        // ((rnd & 0x4f) ^ 0xff) cap when nearest_object_distance is unset, so
+        // the cap lands in 0xb0..0xff — effectively "any tile obstruction
+        // blocks". Same helper update_clawed_robot uses for the player aim.
+        bool los = NPC::has_line_of_sight_randomized(
+            obj, /*target_slot=*/0, ctx);
+
+        // (b1) distance < 16 tiles per axis. Mirrors &335a relative_tiles_log
+        // >= 6 -> leave; calculate_firing_vector_from_distance bails out
+        // before any projectile is spawned when this fails.
+        int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
+        int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);
+        int adx = std::abs(static_cast<int>(dx));
+        int ady = std::abs(static_cast<int>(dy));
+        bool in_range = (adx < 16) && (ady < 16);
+
+        // (b2) facing-direction match. &27a3 EOR x_flip / BPL leave_with_
+        // carry_clear: if the firing vector x sign mismatches the imp's
+        // x_flip, the projectile would fly backwards — skip and let the
+        // walker turn the imp first.
+        bool facing_left = obj.is_flipped_h();
+        bool target_left = (dx < 0);
+        bool forwards = (facing_left == target_left);
+
         uint8_t proj_type = imp_projectile_type[tidx];
-        if (proj_type < static_cast<uint8_t>(ObjectType::COUNT)) {
+        if (los && in_range && forwards &&
+            proj_type < static_cast<uint8_t>(ObjectType::COUNT)) {
             int slot = NPC::fire_projectile(
                 obj, static_cast<ObjectType>(proj_type), ctx);
             if (slot >= 0) {
                 Object& b = ctx.mgr.object(slot);
-                const Object& player = ctx.mgr.player();
-                int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
-                int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);
-                int adx = std::abs(static_cast<int>(dx));
-                int ady = std::abs(static_cast<int>(dy));
                 int total = adx + ady;
                 if (total == 0) total = 1;
                 constexpr int kMag = 0x30;
@@ -627,21 +668,15 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                 int vy = kMag * ady / total;
                 b.velocity_x = static_cast<int8_t>(dx >= 0 ? vx : -vx);
                 b.velocity_y = static_cast<int8_t>(dy >= 0 ? vy : -vy);
-                // Clear collectable undisturbed pin: CORONIUM_CRYSTAL
-                // (type 0x4a..0x64) inherits energy bit 7 from
-                // init_object_from_type; step 15 would zero our velocity.
+                // CORONIUM_CRYSTAL inherits the collectable undisturbed pin
+                // (bit 7 of energy) from init_object_from_type; clear it so
+                // step 15 doesn't zero our launch velocity.
                 b.energy &= 0x7f;
-                // Initialise common_bullet_update's timer-based lifespan
-                // (port-only — 6502 uses energy from the range table).
-                // Only RED_BULLET in this list goes through that path;
-                // CORONIUM_CRYSTAL has its own (timer += 2 to 0x80) and
-                // mushroom balls use energy, so leaving their timer at 0
-                // is correct. Without this the imp's red bullet explodes
-                // on frame 2 (NEWLY_CREATED protects frame 1, then
-                // `timer == 0` immediately fires the explode path).
+                // RED_BULLET uses common_bullet_update's timer countdown
+                // (port-only — 6502 reads energy from the range table).
+                // Other imp projectiles drive their own timers.
                 if (proj_type == static_cast<uint8_t>(ObjectType::RED_BULLET)) {
-                    b.timer = 0x40;   // ~64 frames, matches the 6502
-                                      // RED_BULLET energy floor at &0387
+                    b.timer = 0x40;
                 }
                 NPC::offset_child_from_parent(b, obj);
             }

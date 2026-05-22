@@ -11,6 +11,7 @@
 #include "world/tile_data.h"
 #include "objects/object_data.h"
 #include <cstdio>
+#include <cstring>
 #include <ostream>
 
 // Debug HUD-strip checkboxes — geometry constants shared between
@@ -284,17 +285,19 @@ namespace pr_debug {
 
 static bool try_events_panel_click(PixelRenderer& r);
 static bool try_grid_panel_click  (PixelRenderer& r);
+static bool try_saves_panel_click (PixelRenderer& r);
 
 bool consume_left_click(PixelRenderer& r) {
     // Side panels first — both sit over the world so the buttons
     // must claim the click before tile-select gets a chance.
     if (try_events_panel_click(r)) return true;
     if (try_grid_panel_click(r))   return true;
+    if (try_saves_panel_click(r))  return true;
 
     // Main bottom-strip checkboxes. Map mode, Object lbl, Switches,
     // Transports, Rings, Tertiary and Placed Tiles all live in the
     // Tiles submenu (see render_grid_panel) — keep them out of here.
-    DebugCheckbox boxes[10] = {
+    DebugCheckbox boxes[11] = {
         { "Tiles",      &r.tile_outline_on   },
         { "Debug",      &r.debug_text_on     },
         { "Collision",  &r.collision_on      },
@@ -305,9 +308,10 @@ bool consume_left_click(PixelRenderer& r) {
         { "Damage",     &r.damage_overlay_on },
         { "Mood",       &r.mood_overlay_on   },
         { "Events",     &r.events_panel_on   },
+        { "Saves",      &r.saves_panel_on    },
     };
     int hud_y = r.hud_y_px();
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 11; i++) {
         int cx = checkbox_slot_x(i);
         // Generous hit-area: the whole label's slot width so users
         // can click the text too.
@@ -558,6 +562,152 @@ static bool try_events_panel_click(PixelRenderer& r) {
 }
 
 // ---------------------------------------------------------------------
+// Saves panel — left-side scrollable file browser. Game scans
+// save_disks/ and pushes paths via set_save_files; this panel renders
+// the list, tracks a highlight (mouse hover or keyboard), and posts a
+// pending load on click / Enter.
+// ---------------------------------------------------------------------
+static constexpr int SAVES_PANEL_W       = 360;
+static constexpr int SAVES_PANEL_PAD     = 6;
+static constexpr int SAVES_ROW_H         = 14;
+static constexpr int SAVES_PANEL_TOP     = 60;
+static constexpr int SAVES_PANEL_BOTTOM_MARGIN = 24; // gap above HUD strip
+
+static int saves_panel_left() { return 10; }
+static int saves_panel_top()  { return SAVES_PANEL_TOP; }
+static int saves_panel_height(const PixelRenderer& r) {
+    int max = r.hud_y_px() - SAVES_PANEL_BOTTOM_MARGIN - SAVES_PANEL_TOP;
+    if (max < SAVES_ROW_H * 4) max = SAVES_ROW_H * 4;
+    return max;
+}
+static int saves_visible_rows(const PixelRenderer& r) {
+    int header = SAVES_ROW_H + 4; // title row
+    return (saves_panel_height(r) - SAVES_PANEL_PAD * 2 - header) / SAVES_ROW_H;
+}
+static int saves_first_row_y() {
+    return saves_panel_top() + SAVES_PANEL_PAD + SAVES_ROW_H + 4;
+}
+
+void render_saves_panel(PixelRenderer& r) {
+    if (!r.saves_panel_on) return;
+    int x = saves_panel_left();
+    int y = saves_panel_top();
+    int w = SAVES_PANEL_W;
+    int h = saves_panel_height(r);
+    r.fill_rect  (x, y, w, h, 0x101820);
+    r.stroke_rect(x, y, w, h, 0x66aaff);
+
+    char title[80];
+    int total = static_cast<int>(r.saves_list_.size());
+    if (total == 0) {
+        std::snprintf(title, sizeof(title), "Saves (no files in save_disks/)");
+    } else {
+        std::snprintf(title, sizeof(title),
+                      "Saves  %d/%d   arrows + enter, click to load",
+                      r.saves_highlight_ + 1, total);
+    }
+    r.draw_text(x + SAVES_PANEL_PAD, y + SAVES_PANEL_PAD,
+                title, 0xcceeff, 0x101820);
+
+    int rows = saves_visible_rows(r);
+    if (rows < 1) return;
+    if (r.saves_highlight_ < r.saves_scroll_) r.saves_scroll_ = r.saves_highlight_;
+    if (r.saves_highlight_ >= r.saves_scroll_ + rows) {
+        r.saves_scroll_ = r.saves_highlight_ - rows + 1;
+    }
+    if (r.saves_scroll_ < 0) r.saves_scroll_ = 0;
+
+    int row_y = saves_first_row_y();
+    for (int i = 0; i < rows; i++) {
+        int idx = r.saves_scroll_ + i;
+        if (idx >= total) break;
+        int ry = row_y + i * SAVES_ROW_H;
+        bool selected = (idx == r.saves_highlight_);
+        uint32_t bg = selected ? 0x2a5577 : 0x101820;
+        uint32_t fg = selected ? 0xffffff : 0xbbccdd;
+        r.fill_rect(x + 2, ry, w - 4, SAVES_ROW_H, bg);
+        // Strip the "save_disks/" prefix when present so the path fits;
+        // truncate to the panel's interior width (8px / glyph) with an
+        // ellipsis so long paths don't bleed past the right border.
+        const std::string& full = r.saves_list_[idx];
+        const char* label = full.c_str();
+        if (full.rfind("save_disks/", 0) == 0) label += 11;
+        else if (full.rfind("save_disks\\", 0) == 0) label += 11;
+        constexpr int kMaxChars = (SAVES_PANEL_W - SAVES_PANEL_PAD * 2 - 8) / 8;
+        char buf[96];
+        int n = static_cast<int>(std::strlen(label));
+        if (n <= kMaxChars) {
+            std::snprintf(buf, sizeof(buf), "%s", label);
+        } else {
+            std::snprintf(buf, sizeof(buf), "...%s",
+                          label + (n - (kMaxChars - 3)));
+        }
+        r.draw_text(x + SAVES_PANEL_PAD, ry + 3, buf, fg, bg);
+    }
+
+    // Scrollbar hint when overflow.
+    if (total > rows) {
+        int bar_x = x + w - 6;
+        int bar_h = h - SAVES_PANEL_PAD * 2 - (SAVES_ROW_H + 4);
+        int bar_y = saves_first_row_y();
+        r.fill_rect(bar_x, bar_y, 2, bar_h, 0x223344);
+        int thumb_h = std::max(8, bar_h * rows / total);
+        int thumb_y = bar_y + (bar_h - thumb_h) * r.saves_scroll_ /
+                      std::max(1, total - rows);
+        r.fill_rect(bar_x, thumb_y, 2, thumb_h, 0x66aaff);
+    }
+}
+
+// Hover: while the cursor is over a list row, move the highlight there
+// so keyboard Enter loads the row under the cursor. Idempotent — does
+// nothing when the panel is off or the cursor is outside the panel.
+void saves_panel_hover(PixelRenderer& r) {
+    if (!r.saves_panel_on) return;
+    int x = saves_panel_left();
+    int y = saves_panel_top();
+    int w = SAVES_PANEL_W;
+    int h = saves_panel_height(r);
+    if (r.f.x < x || r.f.x >= x + w) return;
+    if (r.f.y < y || r.f.y >= y + h) return;
+    int row_y = saves_first_row_y();
+    if (r.f.y < row_y) return;
+    int rows  = saves_visible_rows(r);
+    int local = (r.f.y - row_y) / SAVES_ROW_H;
+    if (local < 0 || local >= rows) return;
+    int idx = r.saves_scroll_ + local;
+    if (idx < 0 || idx >= (int)r.saves_list_.size()) return;
+    r.saves_highlight_ = idx;
+}
+
+// Returns true iff the click was inside the saves panel (so the caller
+// doesn't fall through to a world click). Updates highlight on any
+// in-panel click; posts a pending load when the click lands on a row.
+static bool try_saves_panel_click(PixelRenderer& r) {
+    if (!r.saves_panel_on) return false;
+    int x = saves_panel_left();
+    int y = saves_panel_top();
+    int w = SAVES_PANEL_W;
+    int h = saves_panel_height(r);
+    if (r.f.x < x || r.f.x >= x + w) return false;
+    if (r.f.y < y || r.f.y >= y + h) return false;
+
+    int row_y = saves_first_row_y();
+    int rows  = saves_visible_rows(r);
+    if (r.f.y >= row_y && r.saves_highlight_ < (int)r.saves_list_.size()) {
+        int local = (r.f.y - row_y) / SAVES_ROW_H;
+        if (local >= 0 && local < rows) {
+            int idx = r.saves_scroll_ + local;
+            if (idx >= 0 && idx < (int)r.saves_list_.size()) {
+                r.saves_highlight_ = idx;
+                r.has_pending_save_load   = true;
+                r.pending_save_load_path_ = r.saves_list_[idx];
+            }
+        }
+    }
+    return true; // swallow click regardless so it doesn't hit the world
+}
+
+// ---------------------------------------------------------------------
 // Tiles submenu — right-side panel of click-to-toggle checkboxes that
 // were lifted out of the main HUD strip. Visible only while the
 // main-strip Tiles box is on. Mirrors the events-panel layout so users
@@ -740,7 +890,7 @@ bool render_hud_panels(PixelRenderer& r) {
     // Tiles submenu (render_grid_panel) — keep this in sync with the
     // hit-test array in consume_left_click.
     r.fill_rect(0, hud_y, r.f.width, 16, 0x151515);
-    DebugCheckbox boxes[10] = {
+    DebugCheckbox boxes[11] = {
         { "Tiles",      &r.tile_outline_on   },
         { "Debug",      &r.debug_text_on     },
         { "Collision",  &r.collision_on      },
@@ -751,9 +901,10 @@ bool render_hud_panels(PixelRenderer& r) {
         { "Damage",     &r.damage_overlay_on },
         { "Mood",       &r.mood_overlay_on   },
         { "Events",     &r.events_panel_on   },
+        { "Saves",      &r.saves_panel_on    },
     };
     int cy = checkbox_slot_y(hud_y);
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 11; i++) {
         int cx = checkbox_slot_x(i);
         uint32_t border = *boxes[i].state ? 0xffffff : 0x666666;
         r.stroke_rect(cx, cy, CHECKBOX_SIZE, CHECKBOX_SIZE, border);
@@ -1289,6 +1440,22 @@ bool PixelRenderer::consume_event_click(int& event_id) {
     if (!has_pending_event_click) { event_id = 0; return false; }
     event_id = pending_event_id;
     has_pending_event_click = false;
+    return true;
+}
+
+void PixelRenderer::set_save_files(const std::vector<std::string>& paths) {
+    saves_list_ = paths;
+    if (saves_highlight_ >= (int)saves_list_.size()) {
+        saves_highlight_ = static_cast<int>(saves_list_.size()) - 1;
+    }
+    if (saves_highlight_ < 0) saves_highlight_ = 0;
+}
+
+bool PixelRenderer::consume_save_load_request(std::string& path) {
+    if (!has_pending_save_load) { path.clear(); return false; }
+    path = pending_save_load_path_;
+    has_pending_save_load = false;
+    pending_save_load_path_.clear();
     return true;
 }
 

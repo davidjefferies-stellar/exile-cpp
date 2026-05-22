@@ -35,7 +35,12 @@ private:
     // Core systems
     std::unique_ptr<IRenderer> renderer_;
     Landscape landscape_;
+    // rng_ mirrors the 6502 &d9-&dc rnd_state — used by every roll the
+    // ROM also makes (AI, spawn, fire, wind magnitude, damage). cosmetic_rng_
+    // is a port-only second stream for particle internals + emit gates so
+    // larger pools / wider viewports don't perturb game_rng's sequence.
     Random rng_;
+    Random cosmetic_rng_;
     Camera camera_;
     InputHandler input_;
     ObjectManager object_mgr_;
@@ -369,6 +374,17 @@ private:
     // the debug helpers.
     void tick_overlay_visuals();
 
+    // Rewind ring management — debug-only feature. Bodies in game_debug.cpp.
+    // commit_scrub_if_active returns true if it consumed the Esc press
+    // (collapsed the ring to the scrubbed frame); the caller toggles pause
+    // only when it returns false. tick_scrub_keys handles numpad +/-.
+    // capture_rewind_snapshot writes the current state into the ring.
+    // scrubbed_ring_index resolves the current scrub_offset_ to a ring slot.
+    bool   commit_scrub_if_active();
+    void   tick_scrub_keys();
+    void   capture_rewind_snapshot();
+    size_t scrubbed_ring_index() const;
+
     // Tertiary -> primary spawn-gate radius (in tiles). Set from
     // exile.ini [distances] spawn_tertiary during Game::init; default
     // 4 matches the KEEP_AS_PRIMARY_FOR_LONGER slow+supported demote
@@ -494,6 +510,17 @@ private:
     bool save_game(const std::string& path) const;
     bool load_game(const std::string& path);
 
+    // Load a BBC-format Exile save (1024 bytes, XOR-streamed). The file
+    // is the supervisor's raw &0400..&0800 dump — extracted from an .ssd
+    // via tools/extract_ssd_saves.py or written by the original game on
+    // a real BBC. Format documented in docs/save_game_format.md.
+    bool load_bbc_save(const std::string& path);
+
+    // Recursively enumerate save files under `root` (typically
+    // "save_disks"). Returns paths suitable for load_game / load_bbc_save.
+    // Used by the renderer's Saves panel.
+    static std::vector<std::string> scan_save_files(const std::string& root);
+
     // Stream-based variants used by the rewind ring buffer. snapshot()
     // serialises the same payload save_game writes to disk;
     // restore_snapshot() is the inverse. dump_ring_buffer() concatenates
@@ -505,6 +532,11 @@ private:
     bool        restore_snapshot(const std::string& s);
     bool        dump_ring_buffer(const std::string& path) const;
 
+    // One-shot full world-state push to jsbeeb (objects, inventory, RNG,
+    // pose, tertiary linkage, secondaries). Fired from process_input on
+    // the J rising edge; after the snapshot jsbeeb runs free.
+    void        push_jsbeeb_snapshot();
+
     // Rising-edge state for save/load keys. Without these, holding down
     // ';' would overwrite the save every frame. Scrub keys deliberately
     // do NOT use edge detection — holding them auto-repeats one frame
@@ -514,6 +546,8 @@ private:
     bool dump_key_prev_     = false;
     // 'J' is a one-shot — edge-detect only, no mirror-mode flag.
     bool bridge_key_prev_   = false;
+    // Saves-panel toggle edge detection — rescan save_disks/ on rising edge.
+    bool saves_panel_was_on_ = false;
 
     // Rewind ring buffer. capacity == 600 frames (~10 sec at 60fps);
     // head_ is the next write slot, count_ is the number of valid entries

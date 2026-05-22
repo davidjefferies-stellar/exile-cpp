@@ -79,6 +79,21 @@ uint8_t get_waterline_y(uint8_t x) {
     return waterline;
 }
 
+// Sub-tile fraction matching get_waterline_y. Picks the same range and,
+// when the lab ceiling at range 1 wins the min, uses that range's fraction.
+// Without this the renderer snaps the waterline at whole-tile boundaries.
+uint8_t get_waterline_y_fraction(uint8_t x) {
+    int range = 0;
+    for (int i = 3; i >= 0; i--) {
+        if (x >= waterline_x_ranges_x[i]) {
+            range = i;
+            break;
+        }
+    }
+    int chosen = (g_y[range] > g_y[1]) ? 1 : range;
+    return g_y_fraction[chosen];
+}
+
 bool is_underwater(const Landscape& landscape, uint8_t x, uint8_t y) {
     // 6502 at &2f03-&2f39 checks the tile (TileType::WATER) first for
     // upper-world ponds, then falls back to the global waterline.

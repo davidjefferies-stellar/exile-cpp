@@ -204,6 +204,7 @@ void apply_tile_environment(Object& obj,
                             const ObjectManager& mgr,
                             uint8_t frame_counter,
                             Random& rng,
+                            Random& cosmetic_rng,
                             ParticleSystem& particles) {
     // &1f29-&1f33 tile from object centre. 6502 also samples the bottom
     // tile when sprite straddles a boundary; single-tile sampling is
@@ -269,7 +270,7 @@ void apply_tile_environment(Object& obj,
     // with probability ~ magnitude / 0x80, oriented along the wind vector.
     if (mag > 0 && (rng.next() >> 1) < mag) {
         uint8_t angle = NPC::angle_from_deltas(vx, vy);
-        particles.emit_directed(ParticleType::WIND, angle, obj, rng);
+        particles.emit_directed(ParticleType::WIND, angle, obj, cosmetic_rng);
     }
 }
 

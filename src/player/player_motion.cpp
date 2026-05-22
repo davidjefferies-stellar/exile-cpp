@@ -366,6 +366,7 @@ void Game::integrate_player_motion(Object& player,
             int pushee = find_lighter_overlap(player, object_mgr_,
                                                held_object_slot_,
                                                sprite_w_frac, sprite_h_frac);
+            // (verbose plr-push diagnostics removed — flask issue fixed)
             if (pushee >= 0) {
                 Object& other = object_mgr_.object(pushee);
                 {
@@ -547,7 +548,7 @@ void Game::integrate_player_motion(Object& player,
             if (xf < 0) { xf += 256; src.x.whole--; }
             src.x.fraction = static_cast<uint8_t>(xf);
             particles_.emit(ParticleType::STAR_OR_MUSHROOM, 1,
-                            src, rng_);
+                            src, cosmetic_rng_);
             // &3ff9-&3ffc: mushroom contact sound — soft poof on top of
             // the spore puff.
             static constexpr uint8_t kSoundMushroomPoof[4] = { 0x33, 0xf3, 0x1d, 0x03 };
@@ -584,7 +585,7 @@ void Game::integrate_player_motion(Object& player,
         bool was_above = pre_motion_y.whole < wy;
         bool now_at    = player.y.whole >= wy;
         if (was_above && now_at && player.velocity_y > 0) {
-            particles_.emit_directed(ParticleType::WATER, 0xc0, player, rng_);
+            particles_.emit_directed(ParticleType::WATER, 0xc0, player, cosmetic_rng_);
         }
     }
 
@@ -596,7 +597,8 @@ void Game::integrate_player_motion(Object& player,
     // loop. Without this the player feels surface wind but not the local
     // gusts inside windy caverns or the river current in Triax's lab.
     Wind::apply_tile_environment(player, landscape_, object_mgr_,
-                                 frame_counter_, rng_, particles_);
+                                 frame_counter_, rng_, cosmetic_rng_,
+                                 particles_);
 
     // Object-object touching was stamped before tile collision above —
     // matches the 6502's &2a64 → &2ee8 ordering. Don't re-stamp here, or

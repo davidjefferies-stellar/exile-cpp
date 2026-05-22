@@ -2,6 +2,7 @@
 #include "behaviours/projectile.h"   // for explode_object_with_duration
 #include "objects/object_data.h"
 #include "particles/particle_system.h"
+#include "rendering/sprite_atlas.h"
 #include "audio/audio.h"
 #include "core/types.h"
 #include "world/water.h"
@@ -196,7 +197,9 @@ void update_destinator(Object& obj, UpdateContext& ctx) {
     // &4389-&4397: 1-frame-in-32 pulsing chirp. The 6502 gates with
     // (frame_counter & 0x1f) == 0x01; we approximate by reusing
     // every_four_frames AND a 1-in-8 random roll for a similar cadence.
-    if (ctx.every_four_frames && (ctx.rng.next() & 0x07) == 0) {
+    // Port-only roll — routed through cosmetic_rng so the sound cadence
+    // doesn't perturb game_rng's 6502-aligned sequence.
+    if (ctx.every_four_frames && (ctx.cosmetic_rng.next() & 0x07) == 0) {
         static constexpr uint8_t kSoundDestinatorPulse[4] = {
             0x33, 0x03, 0x85, 0x12 };
         Audio::play_at(Audio::CH_ANY, kSoundDestinatorPulse,
@@ -211,7 +214,6 @@ void update_destinator(Object& obj, UpdateContext& ctx) {
 //   &43ad RTS
 // Skip the inert-body call — our main loop handles gravity.
 void update_empty_flask(Object& obj, UpdateContext& ctx) {
-    (void)ctx;
     // Must use per-column waterline (this_object_in_water at &1f), not
     // NPC::is_underwater's SURFACE_Y shortcut — that flags any flask with
     // y > 0x4e as submerged and transmutes them on spawn.
@@ -269,7 +271,7 @@ void update_full_flask(Object& obj, UpdateContext& ctx) {
     // 8->2/frame: our 256-slot pool doesn't evict like the 6502's 32-slot
     // one, so 2×16 matches the 6502's pool-capped peak of ~32 live.
     if (ctx.particles) {
-        ctx.particles->emit(ParticleType::FLASK, 2, obj, ctx.rng,
+        ctx.particles->emit(ParticleType::FLASK, 2, obj, ctx.cosmetic_rng,
                             /*angle=*/0xc0);
     }
 
@@ -314,7 +316,7 @@ void update_control_device(Object& obj, UpdateContext& ctx) {
                          (unsigned)obj.flags, (int)obj.velocity_y,
                          (unsigned)obj.y.whole, (unsigned)obj.y.fraction);
         ctx.particles->emit_directed(
-            ParticleType::AIM, ctx.player_aim_angle, obj, ctx.rng);
+            ParticleType::AIM, ctx.player_aim_angle, obj, ctx.cosmetic_rng);
     }
 }
 
@@ -461,13 +463,37 @@ void update_alien_weapon(Object& obj, UpdateContext& ctx) {
 //   &439c LDA &20 ; this_object_waterline
 //   &439e CMP #&c0                  ; 3/4 submerged?
 //   &43a0 BCC &43a6 ; leave
-//   &43a2 DEC &42 ; acceleration_y  ; float upwards (twice — accel -2)
+//   &43a2 DEC &42 ; acceleration_y  ; float upwards (twice -> accel -2)
 //   &43a4 DEC &42
 //   &43a6 RTS
-// Port relies on main-loop physics for the float; the 6502's per-frame
-// accel-tweak isn't ported yet, hence the empty body.
+// Weight 6 -> apply_water_effects gives zero buoyancy DECs; the giant
+// block relies entirely on this routine for its float. Decrement vy by 2
+// directly: physics adds gravity (+1) after our routine, giving net -1
+// upward (matches `accel_y = -2 + gravity_bit = -1`).
 void update_giant_block(Object& obj, UpdateContext& ctx) {
-    // Giant blocks just follow physics, no active behavior
+    // &20 this_object_waterline: how far the bottom of the AABB sits
+    // below the waterline, in y-fraction units (0 = surface or above,
+    // 0xff = fully submerged). Matches the diff math at apply_water_
+    // effects.
+    int sprite_h_units = (obj.sprite <= 0x80 && sprite_atlas[obj.sprite].h > 0)
+        ? (sprite_atlas[obj.sprite].h - 1) * 8 : 0;
+    int max_y_abs = static_cast<int>(obj.y.whole) * 256 +
+                    static_cast<int>(obj.y.fraction) + sprite_h_units;
+    int waterline_abs =
+        static_cast<int>(Water::get_waterline_y(obj.x.whole)) * 256;
+    int diff = max_y_abs - waterline_abs;
+    uint8_t amount_under = (diff <= 0)        ? 0
+                          : (diff >= 0x100)   ? 0xff
+                                              : static_cast<uint8_t>(diff);
+
+    // &439e CMP #&c0 / BCC leave — at least 3/4 of the block submerged.
+    if (amount_under < 0xc0) return;
+
+    // &43a2-&43a4 DEC accel_y twice. apply_acceleration runs immediately
+    // after with gravity_bit = 1, so the net delta is vy -= 1.
+    int nv = static_cast<int>(obj.velocity_y) - 2;
+    if (nv < -128) nv = -128;
+    obj.velocity_y = static_cast<int8_t>(nv);
 }
 
 // Port of &43ad update_inert:

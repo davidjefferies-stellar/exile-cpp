@@ -248,7 +248,8 @@ void Game::update_objects() {
         // Step 10: Call type-specific update routine
         auto update_fn = AI::get_update_func(obj.type);
         if (update_fn) {
-            UpdateContext uctx{object_mgr_, landscape_, rng_, frame_counter_,
+            UpdateContext uctx{object_mgr_, landscape_, rng_, cosmetic_rng_,
+                              frame_counter_,
                               every_four_frames_, every_eight_frames_,
                               every_sixteen_frames_, every_thirty_two_frames_,
                               every_sixty_four_frames_,
@@ -404,9 +405,11 @@ void Game::update_objects() {
             int8_t wvx = 0, wvy = 0;
             Wind::surface_wind_vector(obj, wvx, wvy);
             uint8_t mag = Wind::surface_wind_magnitude(obj);
+            // Gate roll stays on game_rng — the 6502 makes the same
+            // 1-byte roll at &3f73 so keeping it here preserves alignment.
             if (mag > 0 && (rng_.next() & 0x7f) < mag) {
                 uint8_t angle = NPC::angle_from_deltas(wvx, wvy);
-                particles_.emit_directed(ParticleType::WIND, angle, obj, rng_);
+                particles_.emit_directed(ParticleType::WIND, angle, obj, cosmetic_rng_);
             }
         }
 
@@ -421,11 +424,20 @@ void Game::update_objects() {
                              ? object_types_flags[tidx] : 0;
             bool fully_static = obj.weight() >= 7;
             bool gravity_exempt = (tflags & ObjectTypeFlags::INTANGIBLE) != 0;
-            // Energy-bit-7 pin covers collectables 0x4a..0x64 and the
-            // inactive-grenade chain; cleared on touch in
-            // update_collectable, after which physics resumes.
+            // Energy-bit-7 pin: pure collectables (keys + equipment)
+            // that route through update_collectable, which clears bit 7
+            // on touch. Excludes types in 0x4a..0x63 that use their own
+            // update routines (FLASK, INACTIVE_GRENADE, REMOTE_CONTROL_
+            // DEVICE, POWER_POD, DESTINATOR, CORONIUM_BOULDER, CORONIUM_
+            // CRYSTAL): those need real physics and never get their bit
+            // 7 cleared, so a blanket >=0x4a gate freezes them forever.
+            uint8_t ti = static_cast<uint8_t>(obj.type);
+            bool uses_update_collectable =
+                (ti >= 0x51 && ti <= 0x54) ||
+                (ti >= 0x56 && ti <= 0x57) ||
+                (ti >= 0x59 && ti <= 0x63);
             bool pin_undisturbed = (obj.energy & 0x80) != 0 &&
-                                    static_cast<uint8_t>(obj.type) >= 0x4a;
+                                    uses_update_collectable;
             // &4ba9 update_bush pins unconditionally. Bushes are
             // weight 6 (fall outside fully_static) — explicit pin
             // here, or wasp/projectile residual velocity drifts them.
@@ -527,7 +539,7 @@ void Game::update_objects() {
                     bool now_at    = obj.y.whole >= wy;
                     if (was_above && now_at && obj.velocity_y > 0) {
                         particles_.emit_directed(ParticleType::WATER,
-                                                 0xc0, obj, rng_);
+                                                 0xc0, obj, cosmetic_rng_);
                     }
                 }
 #if 0
@@ -717,7 +729,7 @@ void Game::update_objects() {
                     bool now_at    = obj.y.whole >= wy;
                     if (was_above && now_at && obj.velocity_y > 0) {
                         particles_.emit_directed(ParticleType::WATER,
-                                                 0xc0, obj, rng_);
+                                                 0xc0, obj, cosmetic_rng_);
                     }
                 }
 #endif
@@ -731,7 +743,8 @@ void Game::update_objects() {
                 // vector. Runs after the global surface wind so a windy
                 // cavern's local force can override the surface drift.
                 Wind::apply_tile_environment(obj, landscape_, object_mgr_,
-                                             frame_counter_, rng_, particles_);
+                                             frame_counter_, rng_, cosmetic_rng_,
+                                             particles_);
 
                 // SUPPORTED is driven by TileCollision::resolve's
                 // landed_on_bottom flag (see above).

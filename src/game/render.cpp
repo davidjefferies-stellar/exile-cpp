@@ -397,7 +397,8 @@ void Game::render() {
     for (int dx = 0; dx < vp_w; dx++) {
         uint8_t wx = static_cast<uint8_t>(start_x + dx);
         uint8_t wy = Water::get_waterline_y(wx);
-        renderer_->render_water_column(wx, wy);
+        uint8_t wf = Water::get_waterline_y_fraction(wx);
+        renderer_->render_water_column(wx, wy, wf);
     }
 
     bool algo_only = renderer_->algo_only_enabled();

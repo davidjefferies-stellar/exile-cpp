@@ -328,7 +328,7 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
     // Port of &1f3d add_jetpack_thrust_particles: emit one jetpack
     // particle per frame while the player is accelerating.
     if (accel_x != 0 || accel_y != 0) {
-        particles_.emit(ParticleType::JETPACK, 1, player, rng_);
+        particles_.emit(ParticleType::JETPACK, 1, player, cosmetic_rng_);
     }
 
     // Whistles: &2cac whistle_one (low note only) and &2c99 whistle_two
@@ -340,11 +340,17 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
     if (inp.whistle_one && whistle_one_collected_) {
         whistle_one_active_ = true;
         Audio::play(Audio::CH_ANY, kSoundWhistleLow);
+        object_mgr_.log_diag("whistle1 played f=%u w1_active_=%d",
+                             (unsigned)frame_counter_,
+                             (int)whistle_one_active_);
     }
     if (inp.whistle_two && whistle_two_collected_) {
         whistle_two_activator_ = 0; // Player (slot 0) played whistle two
         Audio::play(Audio::CH_ANY, kSoundWhistleHigh);
         Audio::play(Audio::CH_ANY, kSoundWhistleLow);
+        object_mgr_.log_diag("whistle2 played f=%u w2_activator_=0x%02x",
+                             (unsigned)frame_counter_,
+                             (unsigned)whistle_two_activator_);
     }
 
     // Aim control — port of &30fc update_player_aiming_angle + the
@@ -407,7 +413,7 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
                 ? static_cast<uint8_t>(0x80 - static_cast<int8_t>(player_aim_angle_))
                 : player_aim_angle_;
             particles_.emit_directed(ParticleType::AIM, angle_with_flip,
-                                     aim_src, rng_);
+                                     aim_src, cosmetic_rng_);
         }
     }
 

@@ -31,8 +31,8 @@ struct InputState {
                                         // between player and camera centre
     bool toggle_pause = false;          // Esc key: freeze world updates
                                         // (rendering and input still run)
-    bool whistle_one  = false;   // Y key: play whistle one (activates Chatter)
-    bool whistle_two  = false;   // U key: play whistle two (Chatter produces power pod)
+    bool whistle_one  = false;   // U key: play whistle one (activates Chatter)
+    bool whistle_two  = false;   // Y key: play whistle two (Chatter produces power pod)
     bool quit         = false;   // Set when the window's close button was
                                   // clicked — no key binding. Game::process_input
                                   // sees this and breaks the run loop.
