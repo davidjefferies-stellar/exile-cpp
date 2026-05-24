@@ -337,11 +337,13 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
         inp.jetpack || inp.move_up || inp.move_down ||
         (boost_active && (inp.move_left || inp.move_right));
 
+    // &2c6a-&2c73 input handlers INC/DEC accel by ±1; &3795 doubles
+    // every frame; &2c81 booster fall-through doubles again → ±2 / ±4.
     if (inp.jetpack || inp.move_up) {
-        accel_y = static_cast<int8_t>(-6 * accel_scale); // Thrust upward
+        accel_y = static_cast<int8_t>(-2 * accel_scale);
     }
     if (inp.move_down) {
-        accel_y = static_cast<int8_t>(2 * accel_scale);
+        accel_y = static_cast<int8_t>( 2 * accel_scale);
     }
 
     // Set facing from input BEFORE the walking branch overwrites accel_x.
@@ -473,8 +475,10 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
         accel_x = out_vx;
         accel_y = out_vy;
     } else {
-        if (inp.move_left)  accel_x = static_cast<int8_t>(-4 * accel_scale);
-        if (inp.move_right) accel_x = static_cast<int8_t>( 4 * accel_scale);
+        // Airborne horizontal — same ±2 / ±4 magnitudes as thrust;
+        // walking branch above handles the on-the-ground case.
+        if (inp.move_left)  accel_x = static_cast<int8_t>(-2 * accel_scale);
+        if (inp.move_right) accel_x = static_cast<int8_t>( 2 * accel_scale);
     }
 
     // Lying down doesn't disable horizontal acceleration on the 6502 —
