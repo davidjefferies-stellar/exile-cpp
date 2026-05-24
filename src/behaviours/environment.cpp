@@ -200,9 +200,9 @@ void update_door(Object& obj, UpdateContext& ctx) {
         if (wide_next >  127) wide_next =  127;
         if (wide_next < -128) wide_next = -128;
 
-        // &4cfb BPL stop_door: positive clamp = door reached the closed
-        // end. Negative clamp = open end.
-        bool closed_end = (wide_next > 0);
+        // &4cfb BPL stop_door fires when A bit 7 is clear, i.e. signed
+        // >= 0 — exactly-zero is the closed end too, not open.
+        bool closed_end = (wide_next >= 0);
 
         if (closed_end) {
             // &4d09 stop_door: clear MOVING (the default OR at step 1
