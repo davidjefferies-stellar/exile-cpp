@@ -774,9 +774,11 @@ void update_red_drop(Object& obj, UpdateContext& ctx) {
         ObjectType tt = target.type;
         // &479e-&47a0: drop ignores its parent slime — fall-through.
         if (tt != ObjectType::RED_SLIME) {
-            // &47a2-&47a4: yellow slime -> coronium boulder.
+            // &47a2-&47c8: yellow slime -> coronium boulder, and RTS
+            // (drop survives the conversion, no explosion).
             if (tt == ObjectType::YELLOW_SLIME) {
                 target.type = ObjectType::CORONIUM_BOULDER;
+                return;
             } else if (tt != ObjectType::PIRANHA) {
                 // &47aa-&47ad: damage sound (channel zero, bullet pop).
                 static constexpr uint8_t kSoundBulletPop[4] = {
