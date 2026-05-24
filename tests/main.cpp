@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "audio/audio.h"
 #include <cstdio>
+#include <cstdlib>
 
 int g_test_failures = 0;
 
@@ -44,5 +45,12 @@ int main() {
 
     std::fprintf(stdout, "\n%d passed, %d failed (of %d)\n",
                  passed, failed, total);
-    return failed == 0 ? 0 : 1;
+    // _Exit skips static destructors. Tests share static state via the
+    // audio module and the per-test Game instances leave borrowed
+    // pointers in audio.cpp's g_debug_log; the regular exit path can
+    // fault during teardown (Windows fast-fail 0xC0000409). Verdict is
+    // already printed - skip cleanup entirely so CI sees the exit code.
+    std::fflush(stdout);
+    std::fflush(stderr);
+    std::_Exit(failed == 0 ? 0 : 1);
 }

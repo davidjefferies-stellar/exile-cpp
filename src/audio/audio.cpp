@@ -411,6 +411,9 @@ void close() {
     fenster_audio_close(&g_fa);
 #endif
     g_open = false;
+    // Drop the borrowed debug-log pointer so a Game destructor before
+    // process exit can't leave us with a dangling stream to flush into.
+    g_debug_log = nullptr;
 }
 
 // Static sentinel: set true by play_at() so the inner play() call skips
