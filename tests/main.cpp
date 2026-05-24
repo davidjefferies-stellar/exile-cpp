@@ -5,6 +5,12 @@
 int g_test_failures = 0;
 
 int main() {
+    // GitHub Actions' pwsh invocation eats native exe stdout if it's
+    // block-buffered; force unbuffered so each line lands in the log
+    // as it's written.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+
     const auto& cases = TestRegistry::instance().cases();
     int total = static_cast<int>(cases.size());
     int passed = 0;

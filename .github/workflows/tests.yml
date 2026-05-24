@@ -37,7 +37,10 @@ jobs:
       # Run from the repo root so the exe finds exile.ini, data/, and
       # resources/ via their relative paths. The test binary's main()
       # returns the failure count → non-zero exit fails the job, which
-      # is exactly what GitHub Actions wants.
+      # is exactly what GitHub Actions wants. shell: cmd avoids pwsh's
+      # native-stdout capture quirk that was hiding [ RUN ]/[ FAIL ]
+      # lines from the action log.
       - name: Run tests
+        shell: cmd
         run: ${{ github.workspace }}\build\bin\exile_tests.exe
         working-directory: ${{ github.workspace }}
