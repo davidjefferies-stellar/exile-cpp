@@ -565,7 +565,11 @@ void update_plasma_ball(Object& obj, UpdateContext& ctx) {
     if (Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole)) {
         uint8_t r = ctx.rng.next() | ctx.rng.next();
         if (!(r & 0x80)) {
-            obj.energy = 0;
+            // &4ac8 set_object_for_removal after the 30-particle burst -
+            // setting energy=0 would re-enter step 12 and mutate into an
+            // EXPLOSION instead of quietly fizzling.
+            if (ctx.particles) ctx.particles->emit(ParticleType::PLASMA, 30, obj, ctx.cosmetic_rng);
+            obj.flags |= ObjectFlags::PENDING_REMOVAL;
             return;
         }
     }
