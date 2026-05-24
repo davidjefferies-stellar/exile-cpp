@@ -341,12 +341,13 @@ void update_hovering_robot(Object& obj, UpdateContext& ctx) {
         log_flip_if_changed(obj, ctx, before_flip);
     }
 
-    // &4815-&4819 LDA &d9 / CMP #&40 / BCS move_hovering_npc — 1-in-4
-    // chance per frame to consider firing. &481b LDA #&18 picks
-    // OBJECT_PISTOL_BULLET; &4868 TAY suppresses the range cap so
-    // find_a_target_and_fire_at_it only gates on LOS.
+    // &4815-&4819 LDA &d9 / CMP #&40 / BCS move_hovering_npc — outer
+    // 1-in-4 gate. &276c-&2773 inside find_a_target_and_fire_at_it
+    // applies the inner energy-scaled gate ((energy>>3)+2 >= rnd) so the
+    // robot fires less when wounded.
     if ((ctx.rng.next() & 0xc0) == 0 &&
-        NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
+        NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx) &&
+        ctx.rng.next() <= static_cast<uint8_t>((obj.energy >> 3) + 2)) {
         int8_t dx = static_cast<int8_t>(
             ctx.mgr.player().x.whole - obj.x.whole);
         int slot = NPC::fire_projectile(obj, ObjectType::PISTOL_BULLET, ctx);
