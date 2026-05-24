@@ -115,25 +115,28 @@ void update_inactive_grenade(Object& obj, UpdateContext& ctx) {
     // &4158 consider_disturbing_object: pin-while-undisturbed behaviour.
     update_collectable(obj, ctx);
 
+    // &415b-&415e check_if_object_fired: if the RCD just fired this
+    // grenade, fall straight to the was_fired promotion regardless of
+    // whether the player ever held it.
+    bool rcd_fired =
+        ctx.player_object_fired == static_cast<uint8_t>(ctx.this_slot);
+
     // &4160-&4164: "is the player holding this particular object?".
     // held_object_slot == this_slot means the player's hands are on it.
     // Latch state = 1 so a future drop knows the grenade was handled.
     bool held_by_player =
         ctx.held_object_slot == static_cast<uint8_t>(ctx.this_slot);
-    if (held_by_player) {
+    if (!rcd_fired && held_by_player) {
         obj.state = 1;
         return;
     }
 
-    // &4167-&4169: not currently held. If never held (state still 0),
-    // the grenade is just sitting around — leave it alone so the player
-    // can pick up and pocket it safely.
-    if (obj.state == 0) return;
+    // &4167-&4169: not currently held. If never held (state still 0)
+    // and the RCD didn't just fire it, leave the grenade dormant.
+    if (!rcd_fired && obj.state == 0) return;
 
-    // &416b-&416d: was held before, now dropped -> promote to
-    // ACTIVE_GRENADE. change_object_type refreshes sprite + palette
-    // from the per-type tables. update_active_grenade takes over from
-    // here (countdown + explosion).
+    // &416b-&416d: promote to ACTIVE_GRENADE. change_object_type
+    // refreshes sprite + palette from the per-type tables.
     obj.type    = ObjectType::ACTIVE_GRENADE;
     obj.sprite  = object_types_sprite[
         static_cast<uint8_t>(ObjectType::ACTIVE_GRENADE)];
