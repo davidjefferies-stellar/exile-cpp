@@ -431,8 +431,10 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
     // (accel_x, accel_y). On flat ground (tcA=0) this is "horizontal +
     // 22.5° down" to keep the player into the floor; on slopes the angle
     // rotates with tcA so accel runs along the slope tangent.
+        // &3abd-&3ac4 max_accel for player_weight=3: LDA #&0f; LSR once;
+        // ADC #&01 with C=1 from LSR -> 0x09 every frame.
         constexpr int walking_speed = 0x1f;
-        constexpr int max_accel     = 0x10;
+        constexpr int max_accel     = 0x09;
         constexpr int player_weight = 3;
         int target_vx = 0;
         if (inp.move_left)  target_vx = -walking_speed;
