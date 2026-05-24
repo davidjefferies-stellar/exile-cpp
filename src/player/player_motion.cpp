@@ -15,6 +15,16 @@
 #include "world/water.h"
 #include <array>
 
+// &3bad check_if_slope_is_too_sleep_for_npc with player walking-type
+// index 0 — max angle 0x32 (~70°). Uses 6502 two's complement abs so
+// 0x80 maps to itself (definitely too steep).
+static bool slope_too_steep_for_player(uint8_t tile_angle) {
+    uint8_t abs_a = (tile_angle & 0x80)
+        ? static_cast<uint8_t>(static_cast<uint8_t>(~tile_angle) + 1)
+        : tile_angle;
+    return abs_a >= 0x32;
+}
+
 // Sweep one tile's sections, return most-grounded threshold across the
 // AABB width. Picks LOWEST for ground-like, HIGHEST for ceiling-like —
 // needed for partial-solid tiles (STONE_SLOPE_78) where a single probe
@@ -462,16 +472,15 @@ void Game::integrate_player_motion(Object& player,
         }
     }
 
-    // Frames-since-walkable counter — port of update_walking_state at
-    // &3a4c-&3a8a. Stored in the low nibble of player.state. Reset to 0
-    // while SUPPORTED (so walking remains active across latched frames),
-    // otherwise incremented (cap at 0x0f). The walking branch in
-    // apply_player_input gates strictly on counter == 0 (port of &3b10
-    // BNE leave); check_if_player_or_npc_jumping (&3b8c) considers the
-    // player jumping when counter ≥ 0x0a.
-    bool effectively_supported = (player.flags & ObjectFlags::SUPPORTED) != 0;
+    // &3a6d update_walking_state. Reset counter to 0 only when player
+    // is upright AND any Y-axis collision (tile top/bottom or object
+    // bottom) AND slope walkable; otherwise increment (cap 0x0f).
+    // Looser "SUPPORTED-only" gate leaked walking across airborne frames.
+    bool upright = player_angle_ >= 0xb0 && player_angle_ <= 0xce;
+    bool any_y_collision = tcr.top_or_bottom_collision || object_supported;
+    bool walkable_slope = !slope_too_steep_for_player(player_tile_collision_angle_);
     uint8_t counter = player.state & 0x0f;
-    if (effectively_supported) {
+    if (upright && any_y_collision && walkable_slope) {
         counter = 0;
     } else if (counter < 0x0f) {
         counter++;

@@ -474,6 +474,16 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
         NPC::vector_from_magnitude_and_angle(magnitude, angle, out_vx, out_vy);
         accel_x = out_vx;
         accel_y = out_vy;
+
+        // &3b55/&3b58 dampen_velocity_y twice — vy *= 7/8 squared. Keeps
+        // slope transitions / post-jump walks from carrying stray vy.
+        for (int i = 0; i < 2; i++) {
+            int v = player.velocity_y;
+            int abs_v = v < 0 ? -v : v;
+            int eighth = (abs_v + 7) / 8;
+            player.velocity_y = static_cast<int8_t>(
+                v < 0 ? v + eighth : v - eighth);
+        }
     } else {
         // Airborne horizontal — same ±2 / ±4 magnitudes as thrust;
         // walking branch above handles the on-the-ground case.
