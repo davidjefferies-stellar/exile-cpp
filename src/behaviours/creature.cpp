@@ -1061,12 +1061,12 @@ void update_piranha_or_wasp(Object& obj, UpdateContext& ctx) {
         if (obj.velocity_y < 127 - 4) obj.velocity_y += 4;
     }
 
-    // &4f33-&4f42 1-in-2 retarget. Must update target_and_flags (not
-    // velocity) so the hive's ±0x20 emerge momentum blends gradually
-    // into the seek vector instead of stalling on tick one. Home-hive
-    // fallback: leave target_and_flags as set by update_hive.
-    if (ctx.rng.next() & 0x40) {
-        bool target_player = obj.state >= (ctx.rng.next());
+    // &4f33-&4f3b 1-in-2 retarget. BIT &db / BVS skip means "retarget
+    // when bit 6 of rnd_state+2 is CLEAR"; CPX &da / BCS find_hive means
+    // "target player when state < rnd_state+1". Both are peeks. Home-
+    // hive fallback: leave target_and_flags as set by update_hive.
+    if (!(ctx.rng.peek(2) & 0x40)) {
+        bool target_player = obj.state < ctx.rng.peek(1);
         if (target_player) {
             // Low 5 bits = target slot (0=player); preserve directness/
             // AVOID in top 3 (path-planning state).
