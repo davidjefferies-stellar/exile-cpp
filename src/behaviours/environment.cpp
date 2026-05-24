@@ -1169,11 +1169,14 @@ void update_engine_fire(Object& obj, UpdateContext& ctx) {
     obj.x.fraction = static_cast<uint8_t>(xf + 0x90);
 }
 
-// &4b64 update_placeholder_object. Convert iff:
-//   touched + toucher can trigger switches (heavy enough, not blacklisted)
-//   OR  every-16-frames AND real_type is NOT equipment (range 9) AND
-//       LOS to the player (slot 0) is clear.
-// Equipment placeholders only convert on direct touch.
+// &4b64 update_placeholder_object. Convert when:
+//   touched + toucher can trigger switches (&4b66), OR
+//   in range of the activation anchor (port-only proxy for the 6502's
+//   `every-16 + non-equipment + player-LOS` check at &4b6b-&4b7d). We
+//   skip the strict 6502 path because the original also restores the
+//   placeholder's position from `prev_x/y` each "stay" frame and our
+//   port lacks that field, so placeholders pinned via the LOS gate
+//   would slowly drift downward as gravity accumulates between checks.
 void update_placeholder(Object& obj, UpdateContext& ctx) {
     obj.velocity_x = 0;
     obj.velocity_y = 0;
@@ -1186,18 +1189,16 @@ void update_placeholder(Object& obj, UpdateContext& ctx) {
 
     bool should_convert = false;
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
-        // &4b66 check_if_object_can_trigger_switches.
         should_convert =
             object_can_trigger_switches(ctx.mgr.object(obj.touching));
-    } else if ((ctx.frame_counter & 0x0f) == 0) {
-        // &4b6b every-16-frames gate. &4b71-&4b74: equipment (range 9)
-        // never converts via LOS.
-        constexpr int kEquipmentRange = 9;
-        if (get_range_for_object_type(real_type) != kEquipmentRange) {
-            // &4b7a check_for_obstruction_between_objects_80 to slot 0.
-            should_convert =
-                NPC::has_line_of_sight(obj, 0, /*max_tiles=*/16, ctx);
-        }
+    } else {
+        uint8_t anchor_x = ctx.mgr.activation_anchor_x();
+        uint8_t anchor_y = ctx.mgr.activation_anchor_y();
+        int8_t  dx = static_cast<int8_t>(anchor_x - obj.x.whole);
+        int8_t  dy = static_cast<int8_t>(anchor_y - obj.y.whole);
+        uint8_t adx = static_cast<uint8_t>(dx < 0 ? -dx : dx);
+        uint8_t ady = static_cast<uint8_t>(dy < 0 ? -dy : dy);
+        should_convert = (adx <= 16 && ady <= 16);
     }
     if (!should_convert) return;
 
