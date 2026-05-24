@@ -681,9 +681,12 @@ void update_transporter_beam(Object& obj, UpdateContext& ctx) {
         }
     }
 
-    // &4dd2-&4ddc: palette cycles via rotate_colour_from_A using the
-    // *global* frame_counter (not obj's local counter).
-    uint8_t idx = (ctx.frame_counter >> 2) & 0x03;
+    // &4dd2-&4ddc: palette cycles via rotate_colour_from_A using &06
+    // this_object_frame_counter, which is seeded at &1a91-&1a97 as
+    // slot*0x11 + frame_counter. Each beam slot has its own phase.
+    uint8_t per_obj_counter = static_cast<uint8_t>(
+        ctx.this_slot * 0x11 + ctx.frame_counter);
+    uint8_t idx = (per_obj_counter >> 2) & 0x03;
     obj.palette = transporter_palette_table[idx];
 }
 
