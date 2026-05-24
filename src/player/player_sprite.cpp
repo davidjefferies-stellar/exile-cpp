@@ -81,13 +81,12 @@ void set_spacesuit_sprite_from_angle(Object& player,
         // standing).
         int abs_vx = player.velocity_x >= 0 ? int(player.velocity_x)
                                             : -int(player.velocity_x);
-        bool supported = (player.flags & ObjectFlags::SUPPORTED) != 0;
+        // &3930 check_if_player_or_npc_jumping_or_flying: low nibble of
+        // state >= 0x0a means airborne. Tracked in integrate_player_motion.
+        bool jumping_or_flying = (player.state & 0x0f) >= 0x0a;
         if ((abs_vx >> 1) == 0) {
             sprite = 0x04; // SPRITE_SPACESUIT_VERTICAL (standing)
-        } else if (!supported) {
-            // &3930 check_if_player_or_npc_jumping_or_flying proxy: we
-            // treat !supported as "jumping/flying" since this port lacks
-            // the &11 walking-state frame counter.
+        } else if (jumping_or_flying) {
             sprite = 0x02; // SPRITE_SPACESUIT_JUMPING
         } else {
             // &3937-&3946 walking. &2555 update_sprite_offset_using_
@@ -125,7 +124,6 @@ void set_spacesuit_sprite_from_angle(Object& player,
 // pick (&3906), and the palette / damage flash (&38d9-&3903).
 void Game::update_player_sprite(int8_t accel_x, int8_t accel_y) {
     Object& player = object_mgr_.player();
-    bool supported = (player.flags & ObjectFlags::SUPPORTED) != 0;
 
     // &37a4-&37c3 jetpack_functional. The 6502 ANDs in a reliability
     // roll against &da rnd_state+1; skipped here to keep the rng stream
@@ -172,12 +170,12 @@ void Game::update_player_sprite(int8_t accel_x, int8_t accel_y) {
         if (shifted < 0x18) deviation = 0;
     }
 
-    // &389d-&38ae slew. 6502 runs the slew when jumping_or_flying OR
-    // lying_down, freezing when standing-and-not-lying-down. !supported
-    // proxies "jumping/flying" since we don't track &11. &3278
-    // divide_by_four is arithmetic shift right by 2.
+    // &389d-&38ae slew. Runs only when jumping_or_flying (&3b8c: low
+    // nibble of state >= 0x0a) OR lying_down; standing-and-not-lying
+    // freezes the angle. &3278 divide_by_four = arithmetic shift right 2.
+    bool jumping_or_flying = (player.state & 0x0f) >= 0x0a;
     int8_t delta = 0;
-    if (!supported || player_lying_down_) {
+    if (jumping_or_flying || player_lying_down_) {
         delta = static_cast<int8_t>(deviation >> 2);
     }
     player_angle_ = static_cast<uint8_t>(player_angle_ + delta);
