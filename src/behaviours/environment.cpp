@@ -830,8 +830,9 @@ void update_hive(Object& obj, UpdateContext& ctx) {
 // itself but matches its long-term steady state).
 void update_dense_nest(Object& obj, UpdateContext& ctx) {
     NPC::enforce_minimum_energy(obj, 0x7f);
+    // 6502 reads &dc rnd_state+3 (peek, no advance) for the 50% roll.
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS &&
-        (ctx.rng.next() & 0x80) == 0) {
+        (ctx.rng.peek(3) & 0x80) == 0) {
         Object& other = ctx.mgr.object(obj.touching);
         other.velocity_x = obj.velocity_x;
         other.velocity_y = obj.velocity_y;
@@ -980,8 +981,9 @@ void update_sucking_nest(Object& obj, UpdateContext& ctx) {
         }
 
         // &4e1f-&4e25: random h-flip per frame + 1-in-256 chance of
-        // dealing 80 damage instead of 2.
-        uint8_t r = ctx.rng.next();
+        // dealing 80 damage instead of 2. 6502 peeks &db rnd_state+2;
+        // burning a fresh byte here would drift the rng vs the original.
+        uint8_t r = ctx.rng.peek(2);
         if (r & 0x80) obj.flags |=  ObjectFlags::FLIP_HORIZONTAL;
         else           obj.flags &= ~ObjectFlags::FLIP_HORIZONTAL;
         if (r == 0x50) damage_amount = 80;
@@ -1081,8 +1083,10 @@ void update_engine_fire(Object& obj, UpdateContext& ctx) {
         return;
     }
 
-    // &4c21-&4c25: fire more likely to hide later in its burn.
-    uint8_t r = ctx.rng.next();
+    // &4c21-&4c25: fire more likely to hide later in its burn. 6502 reads
+    // &dc rnd_state+3 (peek, no advance) so subsequent rng consumers don't
+    // drift relative to the original.
+    uint8_t r = ctx.rng.peek(3);
     if (r < obj.state) {
         // hide_fire path — palette=0, x_fraction=0x40.
         obj.palette = 0x00;

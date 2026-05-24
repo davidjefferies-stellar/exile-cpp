@@ -327,8 +327,10 @@ void update_fluffy(Object& obj, UpdateContext& ctx) {
                 int8_t dy = static_cast<int8_t>(other.y.whole - obj.y.whole);
                 uint8_t dist = static_cast<uint8_t>(
                     std::max(std::abs(dx), std::abs(dy)));
-                // Squeal more likely when enemy is closer
-                if (dist < ctx.rng.next()) {
+                // &42ba CMP &da rnd_state+1 (peek). Squeal probability
+                // rises as the enemy gets closer; using rng.next here
+                // would burn a fresh byte and drift the rng stream.
+                if (dist < ctx.rng.peek(1)) {
                     is_squealing = true;
                 }
                 break;
@@ -907,10 +909,9 @@ void update_red_slime(Object& obj, UpdateContext& ctx) {
     uint8_t frame16 = ctx.frame_counter & 0x0f;
     int sprite_offset;
     if (frame16 == 0) {
-        // 1-in-2 chance per 16 frames of dripping a RED_DROP. The
-        // 6502 reads bit 7 of rng_state+1 directly via BIT &da; we
-        // advance the rng to get a similar coin-flip.
-        if (ctx.rng.next() & 0x80) {
+        // 1-in-2 chance per 16 frames of dripping a RED_DROP. 6502 reads
+        // bit 7 of rnd_state+1 directly via BIT &da (peek, no advance).
+        if (ctx.rng.peek(1) & 0x80) {
             int slot = ctx.mgr.create_object_at(
                 ObjectType::RED_DROP, /*min_free_slots=*/4, obj);
             if (slot > 0) {
@@ -1231,8 +1232,8 @@ void update_bird(Object& obj, UpdateContext& ctx) {
 // &29d8 with this_object, then falls through to &2cb4 for the shared
 // low-note block — the Chatter LOS check at &4933 reads &29d8.
 void update_red_magenta_bird(Object& obj, UpdateContext& ctx) {
-    uint8_t r = ctx.rng.next();
-    if (r == 0) {
+    // &4621 LDA &da rnd_state+1 (peek, no advance).
+    if (ctx.rng.peek(1) == 0) {
         static constexpr uint8_t kSoundWhistleHigh[4] = { 0xb0, 0x24, 0xb6, 0xe2 };
         static constexpr uint8_t kSoundWhistleLow[4]  = { 0xb0, 0x24, 0xb6, 0xb3 };
         Audio::play_at(Audio::CH_ANY, kSoundWhistleHigh, obj.x.whole, obj.y.whole);

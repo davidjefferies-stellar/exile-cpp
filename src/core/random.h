@@ -25,6 +25,11 @@ public:
     // Get current state for save/load
     uint8_t state(int i) const { return state_[i]; }
 
+    // Peek a rnd_state byte without advancing the LFSR. Mirrors the 6502's
+    // bare LDA/BIT &d9/&da/&db/&dc reads which thread random bits into a
+    // computation without burning a fresh rng byte. idx 0..3 = &d9..&dc.
+    uint8_t peek(int idx) const { return state_[idx]; }
+
 private:
     uint8_t state_[4]; // &d9, &da, &db, &dc
     uint8_t carry_ = 0;
