@@ -378,10 +378,13 @@ static int find_shared_entries_for_data_offset(const Landscape& landscape,
 // data_offset (Option B vs 6502 shared bytes). Reads through to the
 // primary's live data byte when one owns the slot; tertiary entry is
 // stale until demote.
-static void process_switch_effects(ObjectManager& mgr,
+// Returns true if any toggled byte actually changed; the 6502 caller
+// uses this to gate the "switch had an effect" sound at &4a05-&4a09.
+static bool process_switch_effects(ObjectManager& mgr,
                                     const Landscape& landscape,
                                     uint8_t effect_id,
                                     uint8_t mask, uint8_t toggle) {
+    bool any_changed = false;
     const int N = static_cast<int>(sizeof(switch_effects_table));
     int zeros_seen = 0;
     const int required = static_cast<int>(effect_id) + 1;
@@ -389,7 +392,7 @@ static void process_switch_effects(ObjectManager& mgr,
         uint8_t b = switch_effects_table[idx];
         if (b == 0) {
             ++zeros_seen;
-            if (zeros_seen > required) return; // end of our group
+            if (zeros_seen > required) return any_changed; // end of our group
             continue;
         }
         if (zeros_seen != required) continue;  // in an earlier group
@@ -425,6 +428,7 @@ static void process_switch_effects(ObjectManager& mgr,
             : static_cast<uint8_t>(
                 mgr.tertiary_data_byte(entries[0]) & 0x7f);
         uint8_t newv = static_cast<uint8_t>((prev & mask) ^ toggle);
+        if (newv != prev) any_changed = true;
         mgr.log_diag(
             "diag   prev=0x%02x newv=0x%02x sample_owner=%d",
             prev, newv, sample_owner);
@@ -456,6 +460,7 @@ static void process_switch_effects(ObjectManager& mgr,
             }
         }
     }
+    return any_changed;
 }
 
 // &49C5 check_if_object_can_trigger_switches: heavy enough (weight >= 2)
@@ -549,11 +554,19 @@ void update_switch(Object& obj, UpdateContext& ctx) {
         if (obj.tertiary_slot > 0) {
             ctx.mgr.set_tertiary_data_byte(obj.tertiary_slot, data);
         }
-        process_switch_effects(ctx.mgr, ctx.landscape,
-                                effect, /*mask=*/0xff, toggle);
+        bool any_changed =
+            process_switch_effects(ctx.mgr, ctx.landscape,
+                                    effect, /*mask=*/0xff, toggle);
         // &49b6-&49b9: switch click.
         static constexpr uint8_t kSoundSwitch[4] = { 0x3d, 0x04, 0x11, 0xd4 };
         Audio::play_at(Audio::CH_ANY, kSoundSwitch, obj.x.whole, obj.y.whole);
+        // &4a05-&4a09: "switch had an effect" sound, only if a toggled
+        // byte actually changed.
+        if (any_changed) {
+            static constexpr uint8_t kSoundSwitchEffect[4] = { 0xc7, 0xc3, 0xc1, 0x03 };
+            Audio::play_at(Audio::CH_ANY, kSoundSwitchEffect,
+                           obj.x.whole, obj.y.whole);
+        }
 
         ctx.mgr.debug_switch_presses_++;
     }
