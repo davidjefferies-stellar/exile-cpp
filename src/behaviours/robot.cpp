@@ -264,8 +264,6 @@ void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
     // &4f10-&4f15 JMP gain_energy_Y_and_flash_if_damaged with Y indexed
     // by type from &4efc (magenta 0x14, red 0x46, blue 0x46). Re-applied
     // last so the firing gate above sees the un-floored value.
-    uint8_t min_energy = 0x46;
-    if (obj.type == ObjectType::MAGENTA_ROLLING_ROBOT) min_energy = 0x14;
     NPC::enforce_minimum_energy(obj, min_energy);
 }
 
