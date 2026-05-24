@@ -985,16 +985,13 @@ void update_big_fish(Object& obj, UpdateContext& ctx) {
     NPC::consider_face_movement_direction(obj, ctx.rng);
 }
 
-// Port of &420a update_worm (thin shim into &4e5e update_worm_or_maggot):
-//   &420a LDA #&86                    ; OBJECT_RED_FROGMAN | &80 = "also target player"
-//   &420c LDY #&07 ; OBJECT_GREEN_FROGMAN   ; avoid type
-//   &420e LDX #&00                    ; 0 damage
-//   &4210 JSR &4e5e update_worm_or_maggot
-//   &4213 JMP &3c11 avoid_target      ; worms avoid green frogmen + player
-// Port currently uses a simplified "move toward player" instead of the
-// 6502 burrow path; the type/avoid/damage signature is preserved.
-void update_worm(Object& obj, UpdateContext& ctx) {
-    // Worms move toward player underground
+// &4e5e update_worm_or_maggot common body. Damage is loaded by the caller
+// (X=&00 for worm at &420e, X=&14 for maggot at &4e5c) so the shared
+// routine doesn't hardcode it. Port currently uses a simplified "move
+// toward player" instead of the 6502 burrow path; the type/avoid/damage
+// signature is preserved.
+static void update_worm_or_maggot(Object& obj, UpdateContext& ctx,
+                                  uint8_t damage) {
     if (ctx.every_eight_frames) {
         const Object& player = ctx.mgr.player();
         int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
@@ -1003,7 +1000,10 @@ void update_worm(Object& obj, UpdateContext& ctx) {
         else if (dx < 0) obj.velocity_x = -2;
         obj.velocity_y = (dy > 0) ? 2 : -2;
     }
-    NPC::damage_player_if_touching(obj, ctx.mgr.player(), 3, ctx.damage_events, &ctx);
+    if (damage > 0) {
+        NPC::damage_player_if_touching(obj, ctx.mgr.player(), damage,
+                                       ctx.damage_events, &ctx);
+    }
     NPC::face_movement_direction(obj);
 
     // &4e96-&4eb3 squeal pair: skip unless target has been seen, and
@@ -1034,17 +1034,14 @@ void update_worm(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// Port of &4e52 update_maggot (thin shim into &4e5e update_worm_or_maggot):
-//   &4e52 LDA &15 ; this_object_energy
-//   &4e54 AND #&7f                    ; clear MSB
-//   &4e56 STA &15
-//   &4e58 LDA #&82 ; OBJECT_CREW_MEMBER | &80   ; target+avoid pair
-//   &4e5a LDY #&2f ; OBJECT_WHITE_YELLOW_BIRD
-//   &4e5c LDX #&14                    ; 20 damage
-//         (falls through to &4e5e update_worm_or_maggot)
-// Same worm/maggot common body, different damage + target/avoid types.
+// &420a update_worm: damage=0 (worms don't hurt on touch, they burrow).
+void update_worm(Object& obj, UpdateContext& ctx) {
+    update_worm_or_maggot(obj, ctx, 0);
+}
+
+// &4e52 update_maggot: damage=20 (X=&14 at &4e5c).
 void update_maggot(Object& obj, UpdateContext& ctx) {
-    update_worm(obj, ctx);
+    update_worm_or_maggot(obj, ctx, 0x14);
 }
 
 // &4F21 update_piranha_or_wasp. Single routine; is_wasp branch flips
