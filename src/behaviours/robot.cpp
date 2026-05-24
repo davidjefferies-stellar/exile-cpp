@@ -160,66 +160,32 @@ void update_turret(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4EDE: Rolling robot (magenta and red variants)
+// &4ede update_rolling_robot (magenta/red). The 6502 path is &4ede BIT &15
+// / BPL set_turret_or_robot_energy: if energy < &80 short-circuit straight
+// to the helper (no movement, no firing). Otherwise FALL THROUGH into
+// &4ee2 update_blue_rolling_robot which does the full mood + NPC path +
+// walking-type-4 movement + (energy>>3)+2 fire gate with the per-type
+// bullet from &4f1e (magenta PISTOL, red ICER, blue TRACER).
 void update_rolling_robot(Object& obj, UpdateContext& ctx) {
-    // Per-type minimum from &4f18 (magenta 0x14) / &4f19 (red 0x46).
-    // Magenta and red short-circuit the whole update when energy < &80
-    // (&4ee0 BPL leave) so the helper runs *before* the gate and the
-    // sprite still flashes while the robot is stunned and stationary.
-    uint8_t min_energy = (obj.type == ObjectType::RED_ROLLING_ROBOT)
-                             ? 0x46 : 0x14;
-    regen_and_flash_if_damaged(obj, ctx, min_energy);
-
-    // Stunned: skip movement + firing while recharging.
-    if (obj.energy < 0x80) return;
-
-    // On vx==0, resume in facing direction so a post-bounce robot rolls
-    // AWAY from what it hit (facing tracks last-moving direction).
-
-    if (obj.is_supported() && obj.velocity_x == 0) {
-        obj.velocity_x = obj.is_flipped_h() ? -4 : 4;
+    if (obj.energy < 0x80) {
+        uint8_t min_energy = (obj.type == ObjectType::RED_ROLLING_ROBOT)
+                                 ? 0x46 : 0x14;
+        regen_and_flash_if_damaged(obj, ctx, min_energy);
+        return;
     }
-
-    // &4ef1: 1-in-4 gated flip. Unconditional would flicker every frame
-    // when velocity_x zero-crosses on wall bumps or seek overshoot.
-    {
-        uint8_t before_flip = obj.flags & ObjectFlags::FLIP_HORIZONTAL;
-        NPC::consider_face_movement_direction(obj, ctx.rng);
-        log_flip_if_changed(obj, ctx, before_flip);
-    }
-
-    // LOS-gated fire via &3c2a randomised cap (&3cb5). NOD=0xff matches
-    // find_object's initial state for the player-only target pool.
-    if (ctx.every_sixteen_frames && obj.energy >= 0x80 &&
-        NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx)) {
-        const Object& player = ctx.mgr.player();
-        int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
-        if (std::abs(dx) < 12) {
-            ObjectType bullet = ObjectType::PISTOL_BULLET;
-            if (obj.type == ObjectType::RED_ROLLING_ROBOT) bullet = ObjectType::ICER_BULLET;
-            int slot = NPC::fire_projectile(obj, bullet, ctx);
-            if (slot >= 0) {
-                Object& b = ctx.mgr.object(slot);
-                b.velocity_x = (dx > 0) ? 0x18 : -0x18;
-                b.velocity_y = -4;
-                NPC::offset_child_from_parent(b, obj);
-                b.timer = 48;
-            }
-        }
-    }
+    update_blue_rolling_robot(obj, ctx);
 }
 
 // &4EE2 update_blue_rolling_robot. Walking type 4 (max_angle=0x20,
 // max_accel=4, weight=1, turn_prob/jump_prob=0) -> ground-walking only;
 // gravity owns velocity_y. Only set velocity_x.
 void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
-    // Blue rolling robot min energy &4f1a = 0x46. Unlike magenta/red,
-    // the blue variant doesn't short-circuit on low energy — it keeps
-    // walking, only the consider_firing branch (&4ef9 BIT &15 / BPL)
-    // gates on energy >= &80. So the helper drives the flash + regen
-    // while the existing per-frame firing check inside the body handles
-    // the "stunned" state.
-    regen_and_flash_if_damaged(obj, ctx, 0x46);
+    // &4f12 ldy &4efc,X: per-type min energy. Magenta 0x14, red 0x46,
+    // blue 0x46. The flash + regen helper runs even when magenta/red
+    // short-circuited above (they routed to set_turret_or_robot_energy).
+    uint8_t min_energy = 0x46;
+    if (obj.type == ObjectType::MAGENTA_ROLLING_ROBOT) min_energy = 0x14;
+    regen_and_flash_if_damaged(obj, ctx, min_energy);
 
     // &4ee4: check_for_npc_stimuli (mood / phobia / interest reactions).
     Mood::update_mood(obj, ctx);
@@ -267,9 +233,9 @@ void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
     }
 
     // &4ef9-&4f0d consider_firing. Energy>=0x80 gate, then per-frame
-    // probability ((energy>>3)+2)>=rnd via &276a-&2773. Targets
-    // ACTIVE_CHATTER + player (A=&81 to find_a_target). Range-4
-    // secondary targets (projectiles, hovering balls) not ported.
+    // probability ((energy>>3)+2)>=rnd via &276a-&2773. Per-type bullet
+    // from &4f1e rolling_robots_bullet_table: magenta=PISTOL, red=ICER,
+    // blue=TRACER. Targets ACTIVE_CHATTER + player (A=&81).
     if (obj.energy >= 0x80) {
         uint8_t prob = static_cast<uint8_t>((obj.energy >> 3) + 2);
         if (prob >= ctx.rng.next()) {
@@ -277,7 +243,13 @@ void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
             if (target_slot >= 0) {
                 const Object& tgt = ctx.mgr.object(target_slot);
                 int8_t tdx = static_cast<int8_t>(tgt.x.whole - obj.x.whole);
-                int slot = NPC::fire_projectile(obj, ObjectType::TRACER_BULLET, ctx);
+                ObjectType bullet = ObjectType::TRACER_BULLET;
+                if (obj.type == ObjectType::MAGENTA_ROLLING_ROBOT) {
+                    bullet = ObjectType::PISTOL_BULLET;
+                } else if (obj.type == ObjectType::RED_ROLLING_ROBOT) {
+                    bullet = ObjectType::ICER_BULLET;
+                }
+                int slot = NPC::fire_projectile(obj, bullet, ctx);
                 if (slot >= 0) {
                     Object& b = ctx.mgr.object(slot);
                     b.velocity_x = (tdx > 0) ? 0x18 : -0x18;
@@ -289,9 +261,12 @@ void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
         }
     }
 
-    // &4f10-&4f15: minimum energy = 0x46. Re-applied last so the firing
-    // gate above sees the live (un-floored) value before this clamp.
-    NPC::enforce_minimum_energy(obj, 0x46);
+    // &4f10-&4f15 JMP gain_energy_Y_and_flash_if_damaged with Y indexed
+    // by type from &4efc (magenta 0x14, red 0x46, blue 0x46). Re-applied
+    // last so the firing gate above sees the un-floored value.
+    uint8_t min_energy = 0x46;
+    if (obj.type == ObjectType::MAGENTA_ROLLING_ROBOT) min_energy = 0x14;
+    NPC::enforce_minimum_energy(obj, min_energy);
 }
 
 // Port of &4804 update_hovering_robot. The entire body is gated on
