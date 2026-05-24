@@ -452,16 +452,29 @@ void update_alien_weapon(Object& obj, UpdateContext& ctx) {
         return;
     }
 
-    // &421e-&4225 spawn PLASMA_BALL with vx=0x40 (negated via FLIP_HORIZONTAL
-    // inherited from holding player), vy=0. Bullet's own update tracks the
-    // player via lock-on.
+    // &421e-&4225 spawn PLASMA_BALL. The 6502 path threads through
+    // &33b4 JSR &331d calculate_firing_vector_from_this_object_velocity
+    // which sums the parent's velocity_x with the base vector_x (&40):
+    //   if |vx + 0x40| >= 0x50: |result| = max(|vx| + 0x20, 0x50)
+    //   re-apply sign of (vx + 0x40)
     int gslot = ctx.mgr.create_object_at(
         ObjectType::PLASMA_BALL, /*min_free_slots=*/1, obj);
     if (gslot < 0) return;
     Object& ball = ctx.mgr.object(gslot);
-    int8_t vx = 0x40;
-    if (obj.is_flipped_h()) vx = static_cast<int8_t>(-vx);
-    ball.velocity_x = vx;
+    int facing_sign = obj.is_flipped_h() ? -1 : 1;
+    int combined = facing_sign * (int(obj.velocity_x) * facing_sign + 0x40);
+    if (combined >  127) combined =  127;
+    if (combined < -128) combined = -128;
+    int abs_combined = combined < 0 ? -combined : combined;
+    if (abs_combined >= 0x50) {
+        int abs_vx = obj.velocity_x < 0 ? -int(obj.velocity_x)
+                                        :  int(obj.velocity_x);
+        int boosted = abs_vx + 0x20;
+        if (boosted >  127) boosted = 127;
+        if (boosted <  0x50) boosted = 0x50;
+        combined = (combined < 0) ? -boosted : boosted;
+    }
+    ball.velocity_x = static_cast<int8_t>(combined);
     ball.velocity_y = 0;
     NPC::offset_child_from_parent(ball, obj);
 
