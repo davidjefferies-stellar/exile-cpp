@@ -335,30 +335,42 @@ static constexpr uint8_t switch_effects_table[] = {
 // one byte per (tile_type, X). Writes up to max_out indices.
 static int find_shared_entries_for_data_offset(const Landscape& landscape,
                                                 uint8_t data_offset,
-                                                uint16_t* out, int max_out) {
+                                                uint16_t* out, int max_out,
+                                                ObjectManager* diag_mgr) {
     if (data_offset == 0 || max_out <= 0) return 0;
     int written = 0;
-    for (int type = 0; type <= static_cast<int>(TileType::SWITCH); ++type) {
+    // `range_idx` selects the per-range data-offset adjustment, not
+    // the world tile type. We then match cells by their per-cell
+    // tertiary_source_idx (set by bake) rather than raw tile type —
+    // door / switch overlays often sit over INVISIBLE_SWITCH base tiles.
+    for (int range_idx = 0; range_idx <= 8; ++range_idx) {
         uint8_t source_idx = static_cast<uint8_t>(
-            data_offset - tertiary_data_offset[type]);
-        if (source_idx <  tertiary_ranges[type]) continue;
-        if (source_idx >= tertiary_ranges[type + 1]) continue;
+            data_offset - tertiary_data_offset[range_idx]);
+        if (source_idx <  tertiary_ranges[range_idx]) continue;
+        if (source_idx >= tertiary_ranges[range_idx + 1]) continue;
         uint8_t target_x = tertiary_objects_x_data[source_idx];
+        if (diag_mgr) diag_mgr->log_diag(
+            "diag find_shared data_off=0x%02x range=%d src_idx=0x%02x "
+            "tgt_x=0x%02x",
+            data_offset, range_idx, source_idx, target_x);
         for (int y = 0; y < 256; ++y) {
-            uint8_t raw = landscape.get_tile(target_x,
-                                              static_cast<uint8_t>(y));
-            if ((raw & TileFlip::TYPE_MASK) !=
-                static_cast<uint8_t>(type)) continue;
+            if (landscape.tertiary_source_idx_at(
+                    target_x, static_cast<uint8_t>(y)) != source_idx)
+                continue;
             uint16_t cell_idx = landscape.tertiary_index_at(
                 target_x, static_cast<uint8_t>(y));
             if (cell_idx == Landscape::NO_TERTIARY) continue;
+            if (diag_mgr) diag_mgr->log_diag(
+                "diag   cell (%d,%d) entry=%u", target_x, y, cell_idx);
             if (written >= max_out) return written;
             out[written++] = cell_idx;
         }
-        // Each data_offset maps to exactly one (type, source_idx) tuple;
-        // no need to keep checking other types.
+        // Each data_offset maps to exactly one (range, source_idx) tuple;
+        // no need to keep checking other ranges.
         return written;
     }
+    if (diag_mgr) diag_mgr->log_diag(
+        "diag find_shared data_off=0x%02x NO MATCHING RANGE", data_offset);
     return written;
 }
 
@@ -388,7 +400,11 @@ static void process_switch_effects(ObjectManager& mgr,
         // worlds.
         uint16_t entries[16];
         int n_entries = find_shared_entries_for_data_offset(
-            landscape, b, entries, 16);
+            landscape, b, entries, 16, &mgr);
+        mgr.log_diag(
+            "diag process_switch eff=%u byte=0x%02x mask=0x%02x "
+            "toggle=0x%02x n_entries=%d",
+            effect_id, b, mask, toggle, n_entries);
         if (n_entries == 0) continue;
 
         // Prefer a primary's live byte from any sibling entry (siblings
@@ -409,18 +425,26 @@ static void process_switch_effects(ObjectManager& mgr,
             : static_cast<uint8_t>(
                 mgr.tertiary_data_byte(entries[0]) & 0x7f);
         uint8_t newv = static_cast<uint8_t>((prev & mask) ^ toggle);
+        mgr.log_diag(
+            "diag   prev=0x%02x newv=0x%02x sample_owner=%d",
+            prev, newv, sample_owner);
 
         // Apply newv to every sibling entry.
         for (int e = 0; e < n_entries; ++e) {
             uint16_t slot = entries[e];
             bool live = false;
+            int live_obj = -1;
             for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
                 Object& p = mgr.object(i);
                 if (p.is_active() && p.tertiary_slot == slot) {
                     p.tertiary_data_offset = newv;
                     live = true;
+                    live_obj = i;
                 }
             }
+            mgr.log_diag(
+                "diag   apply entry=%u live=%d obj=%d",
+                slot, (int)live, live_obj);
             if (live) {
                 mgr.set_tertiary_data_byte(slot, newv);
             } else {
@@ -516,6 +540,11 @@ void update_switch(Object& obj, UpdateContext& ctx) {
         uint8_t data   = obj.tertiary_data_offset;
         uint8_t toggle = static_cast<uint8_t>((data >> 1) & 0x03);
         uint8_t effect = static_cast<uint8_t>(data >> 3);
+        ctx.mgr.log_diag(
+            "diag update_switch press at (%d,%d) slot=%u data=0x%02x "
+            "effect=%u toggle=%u",
+            obj.x.whole, obj.y.whole, obj.tertiary_slot, data,
+            effect, toggle);
         // Mirror the change into the tertiary slot too.
         if (obj.tertiary_slot > 0) {
             ctx.mgr.set_tertiary_data_byte(obj.tertiary_slot, data);

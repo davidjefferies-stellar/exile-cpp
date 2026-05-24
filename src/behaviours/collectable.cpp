@@ -231,6 +231,24 @@ void update_empty_flask(Object& obj, UpdateContext& ctx) {
 // max|v|>=0x0a, or pre-collision magnitude>=0x14 against a tile), running
 // a 16-frame splash that emits upward particles and douses fireballs.
 void update_full_flask(Object& obj, UpdateContext& ctx) {
+    // Port-only float assist. apply_water_effects gives weight-4 objects
+    // only -2 buoyancy and only when amount_under >= 4*(h/4). As the
+    // flask drifts up to the surface that threshold isn't met, gravity
+    // wins, and the every-four-frames seven_eighths damping kills the
+    // upward gain — net slow sink. The 6502's SBC-carry quirk catches
+    // a frame here and there; we don't model that. Mirror update_giant_
+    // block's manual nudge: vy -= 1 whenever any of the AABB is below
+    // the waterline (matches BIT &1f / BPL "positive if submerged").
+    {
+        int sprite_h = (obj.sprite <= 0x80 && sprite_atlas[obj.sprite].h > 0)
+            ? (sprite_atlas[obj.sprite].h - 1) * 8 : 0;
+        int bot_abs = int(obj.y.whole) * 256 + int(obj.y.fraction) + sprite_h;
+        int waterline_abs = int(Water::get_waterline_y(obj.x.whole)) * 256;
+        bool any_submerged = bot_abs > waterline_abs ||
+            Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole);
+        if (any_submerged && obj.velocity_y > -0x40) obj.velocity_y--;
+    }
+
     bool start_emptying = false;
 
     // &43b0-&43b5: touching something, and still moving fast enough

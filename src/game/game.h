@@ -67,11 +67,6 @@ private:
     int8_t  player_aim_velocity_    = 0;
     uint8_t player_angle_  = 0xc0;  // &de: current body angle (0xc0 = upright head-up)
     uint8_t player_facing_ = 0x00;  // &df: facing as an x_flip byte (0x00 right, 0x80 left)
-    // Damage-flash bookkeeping (port-only). 6502's continuous low-energy
-    // flash at &38d9 was too slow / too constant to read as a "hit"
-    // event; track previous energy and trigger a short strobe instead.
-    uint8_t player_prev_energy_     = 0xff;
-    uint8_t player_damage_flash_    = 0;
     // &ba / &bb player_immobility_timers. Set by damage_object at &24b7
     // (movement timer = raw damage, 1-in-2 chance) and consumed in
     // update_player_angle_facing_and_sprite at &3810: while non-zero,
@@ -445,6 +440,13 @@ private:
     // Port of &32c8 handle_dropping_object: release the currently-held
     // primary (if any) back into the world.
     void drop_held_object(Object& player);
+
+    // Three input-edge actions called from apply_player_input. They share
+    // member state (held_object_slot_, object_mgr_, rng_, aim) so they live
+    // as methods rather than free functions.
+    void pickup_touching(Object& player);
+    void drop_in_place(Object& player);
+    void throw_held(Object& player);
 
     // Port of &4096 consider_teleporting_damaged_player. Called when the
     // player's energy would hit zero; short-circuits the explosion path

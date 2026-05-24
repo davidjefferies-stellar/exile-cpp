@@ -34,6 +34,10 @@ struct UpdateContext {
     // &4b90 DEC player_collected; apply_player_input gates Y/U playback.
     bool* whistle_one_collected;
     bool* whistle_two_collected;
+    // &081c chatter_energy_reserve. Incremented when Chatter touches a
+    // CORONIUM_CRYSTAL (&48bd); update_inactive_chatter decrements one
+    // per whistle-one activation, refusing activation on underflow.
+    uint8_t* chatter_energy_reserve;
     // &080e..&0813 player_weapons_collected. Index 0 = jetpack booster,
     // 1..4 = pistol/icer/blaster/plasma_gun, 5 = protection suit. Stamped
     // by update_collectable's auto-collect &4b8e-&4b91 path; read by the

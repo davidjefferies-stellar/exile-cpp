@@ -337,12 +337,18 @@ void Game::integrate_player_motion(Object& player,
                 break;
             }
             if (blocker >= 0) {
-                // Revert position back to old; transfer velocity via
-                // mass ratio. Both axes revert because the 6502's
-                // mass-transfer is unified, not per-axis.
-                player.x = old_x;
-                player.y = old_y;
+                // &2b80-&2b91: push player position out of overlap along
+                // the smallest-overlap axis and kick velocity by ±2 in
+                // that direction. Replaces the old "revert to old_x/old_y"
+                // approach — that was a no-op when the blocker moved into
+                // the player (closing door) since old_x already overlapped.
                 Object& other = object_mgr_.object(blocker);
+                Collision::push_out_of_overlap(player, other);
+
+                // &2b9e mass-ratio velocity transfer afterwards. Door is
+                // weight 7 with velocity 0 (step 15 zeroes statics), so this
+                // primarily damps the player's velocity rather than driving
+                // the door — exactly the 6502 behaviour against a static.
                 {
                     auto t = Collision::apply_mass_ratio_velocity(
                         player.velocity_x, other.velocity_x,

@@ -150,15 +150,14 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
         if (!(tile_flip & TileFlip::VERTICAL)) {
             y_frac = static_cast<uint8_t>(yhi << 4);
         }
-        // Sub-pixel nudge to align the button on the left-facing tile
-        // baseline. Right-facing (bit 0 of the data byte set, sprite
-        // h-flipped by update_switch) needs no offset — the 6502
-        // doesn't apply one and our previous -16-for-both was leaving
-        // the button slightly offset from where it should sit.
+        // Port-only: nudge right-anchored left-facing switches 1 pixel
+        // left so the sprite's right edge meets the tile boundary
+        // instead of overflowing. Without the tile_flip gate, subtracting
+        // 16 wraps x_frac=0 into the next tile.
         bool facing_right = data_offset > 0 &&
             (object_mgr_.tertiary_data_byte(data_offset) & 0x01);
-        if (!facing_right) {
-            x_frac = static_cast<uint8_t>(x_frac);
+        if (!facing_right && (tile_flip & TileFlip::HORIZONTAL)) {
+            x_frac = static_cast<uint8_t>(x_frac - 16);
         }
     }
 

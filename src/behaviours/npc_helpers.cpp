@@ -7,6 +7,32 @@
 
 namespace NPC {
 
+// 6502 CMP #&7f / EOR-ADC pair that treats 0x00..0x7f as non-negative.
+// Duplicated from projectile.cpp to avoid cross-TU dep.
+static bool is_positive_6502(int8_t v) {
+    return static_cast<uint8_t>(v) <= 0x7f;
+}
+static uint8_t abs_6502(int8_t v) {
+    uint8_t u = static_cast<uint8_t>(v);
+    return (u <= 0x7f) ? u : static_cast<uint8_t>((~u) + 1);
+}
+
+// 6502 vector-between-centres helper (&22a0): 16-bit centre of an
+// object on one axis. Uses real sprite size when available, else a
+// rough fallback so the firing-vector div has something to chew on.
+static int firing_centre(const Object& o, bool is_x) {
+    int pixels = 0;
+    if (o.sprite <= 0x80) {
+        const SpriteAtlasEntry& e = sprite_atlas[o.sprite];
+        pixels = is_x ? (e.w * 16) : (e.h * 8);  // 6502 byte units
+    } else {
+        pixels = 64;                             // rough fallback
+    }
+    int whole = is_x ? o.x.whole    : o.y.whole;
+    int frac  = is_x ? o.x.fraction : o.y.fraction;
+    return whole * 256 + frac + (pixels / 2);
+}
+
 // Port-only helper. 6502 inlines `DEC this_object_acceleration_y` per
 // flier (birds &4686, wasps &4f31) to cancel &1f01's +1 gravity.
 void cancel_gravity(Object& obj) {
@@ -245,19 +271,13 @@ void offset_child_from_parent(Object& child, const Object& parent) {
 
 uint8_t angle_from_deltas(int8_t dx, int8_t dy) {
     // &22d4 calculate_angle_from_vector (also reached from &22cc for
-    // velocities). Duplicated from projectile.cpp to avoid cross-TU dep.
-    auto is_positive = [](int8_t v) { return static_cast<uint8_t>(v) <= 0x7f; };
-    auto abs_u8      = [](int8_t v) {
-        uint8_t u = static_cast<uint8_t>(v);
-        return (u <= 0x7f) ? u : static_cast<uint8_t>((~u) + 1);
-    };
-
-    uint8_t abs_x = abs_u8(dx);
-    uint8_t abs_y = abs_u8(dy);
+    // velocities). is_positive_6502 / abs_6502 are TU-scope helpers.
+    uint8_t abs_x = abs_6502(dx);
+    uint8_t abs_y = abs_6502(dy);
 
     uint8_t vector_signs = 0;
-    vector_signs = static_cast<uint8_t>((vector_signs << 1) | (is_positive(dy) ? 1 : 0));
-    vector_signs = static_cast<uint8_t>((vector_signs << 1) | (is_positive(dx) ? 1 : 0));
+    vector_signs = static_cast<uint8_t>((vector_signs << 1) | (is_positive_6502(dy) ? 1 : 0));
+    vector_signs = static_cast<uint8_t>((vector_signs << 1) | (is_positive_6502(dx) ? 1 : 0));
 
     uint8_t A = abs_x, B = abs_y;
     bool x_ge_y = (abs_x >= abs_y);
@@ -304,20 +324,8 @@ bool compute_firing_vector(const Object& from, const Object& target,
                            uint8_t firing_velocity_times_four,
                            int8_t& vx, int8_t& vy) {
     // --- &22a0 centre-to-centre 16-bit delta -----------------------------
-    auto centre = [](const Object& o, bool is_x) -> int {
-        int pixels = 0;
-        if (o.sprite <= 0x80) {
-            const SpriteAtlasEntry& e = sprite_atlas[o.sprite];
-            pixels = is_x ? (e.w * 16) : (e.h * 8);  // match 6502 byte units
-        } else {
-            pixels = 64;                             // rough fallback
-        }
-        int whole = is_x ? o.x.whole    : o.y.whole;
-        int frac  = is_x ? o.x.fraction : o.y.fraction;
-        return whole * 256 + frac + (pixels / 2);
-    };
-    int sx = centre(from, true),   sy = centre(from, false);
-    int tx = centre(target, true), ty = centre(target, false);
+    int sx = firing_centre(from, true),   sy = firing_centre(from, false);
+    int tx = firing_centre(target, true), ty = firing_centre(target, false);
     int dx = tx - sx, dy = ty - sy;
 
     int adx = std::abs(dx), ady = std::abs(dy);

@@ -1626,10 +1626,11 @@ void PixelRenderer::render_aabb(Fixed8_8 world_x, Fixed8_8 world_y,
 }
 
 void PixelRenderer::render_debug_marker(uint8_t world_x, uint8_t world_y,
+                                        uint8_t x_frac, uint8_t y_frac,
                                         uint32_t rgb, const char* label) {
     if (!object_tiers_on) return;
     int sx, sy;
-    if (!world_to_screen(world_x, world_y, sx, sy)) return;
+    if (!world_to_screen(world_x, world_y, sx, sy, x_frac, y_frac)) return;
     int sz = 6 + scale;
     fill_rect(sx + 2, sy + 2, sz, sz, rgb);
     stroke_rect(sx + 2, sy + 2, sz, sz, 0x000000);

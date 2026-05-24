@@ -72,34 +72,27 @@ bool find_tertiary_tile(const Landscape& landscape,
     return find_cell_for_entry(landscape, tertiary_index, out_x, out_y);
 }
 
-// Reverse-map a 6502-style data_offset (index into the static
-// tertiary_objects_data_bytes, partitioned by tile_type) back to a
-// world cell. Decode: subtract tertiary_data_offset[T] until the
-// remainder lands in tertiary_ranges[T]..[T+1), then x_data[idx] gives
-// the column and a Y scan finds the matching cell.
+// Reverse-map a 6502 data_offset to a world cell. Match the column by
+// per-cell tertiary_source_idx (set by bake) rather than raw tile type
+// — door / switch overlays often sit over INVISIBLE_SWITCH base tiles.
 bool resolve_data_offset_to_tile(const Landscape& landscape,
                                  uint8_t data_offset,
                                  uint8_t& out_x, uint8_t& out_y) {
     if (data_offset == 0) return false;
-    for (int type = 0; type <= static_cast<int>(TileType::SWITCH); ++type) {
+    for (int range_idx = 0; range_idx <= 8; ++range_idx) {
         uint8_t source_idx = static_cast<uint8_t>(
-            data_offset - tertiary_data_offset[type]);
-        if (source_idx <  tertiary_ranges[type]) continue;
-        if (source_idx >= tertiary_ranges[type + 1]) continue;
+            data_offset - tertiary_data_offset[range_idx]);
+        if (source_idx <  tertiary_ranges[range_idx]) continue;
+        if (source_idx >= tertiary_ranges[range_idx + 1]) continue;
         uint8_t target_x = tertiary_objects_x_data[source_idx];
         for (int y = 0; y < 256; ++y) {
-            uint8_t raw = landscape.get_tile(target_x,
-                                              static_cast<uint8_t>(y));
-            if ((raw & TileFlip::TYPE_MASK) ==
-                static_cast<uint8_t>(type)) {
+            if (landscape.tertiary_source_idx_at(
+                    target_x, static_cast<uint8_t>(y)) == source_idx) {
                 out_x = target_x;
                 out_y = static_cast<uint8_t>(y);
                 return true;
             }
         }
-        // Type matched but no cell of that raw type at X — fall through
-        // and report the column anyway so the wire still terminates at
-        // the right place.
         out_x = target_x;
         out_y = 0;
         return true;

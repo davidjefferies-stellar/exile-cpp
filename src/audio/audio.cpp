@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <ostream>
 
 namespace {
 
@@ -98,6 +99,10 @@ uint8_t g_listener_y = 0;
 std::ofstream g_log;
 bool g_log_tried   = false;
 bool g_log_enabled = false;
+
+// Game's exile-debug.log stream, plumbed via Audio::set_debug_log so
+// every play() / play_at() emits a sfx trace line. Null = no debug log.
+std::ostream* g_debug_log = nullptr;
 
 void audio_log(const char* fmt, ...) {
     if (!g_log_enabled) return;
@@ -246,7 +251,9 @@ int pick_channel(int hint) {
 
 // &2db9-&2e88 envelopes table. params[0]/[2] index into here; engine
 // walks (duration, delta) pairs. Bit 7 of duration = loop marker.
-constexpr uint8_t kEnvelopesTable[208] = {
+// Non-const: update_active_chatter (&4925) writes a per-call pitch delta
+// into the last byte (offset &cf) before play_sound — see set_envelope_byte.
+static uint8_t kEnvelopesTable[208] = {
     0x88, 0x03, 0x10, 0x03, 0xf0, 0x80, 0x03, 0xc0,  // &2db9
     0x01, 0x04, 0x05, 0x06, 0x82, 0x0c, 0xfe, 0x03,
     0x03, 0x80, 0x01, 0xf9, 0x02, 0x01, 0x02, 0xff,  // &2dc9
@@ -406,6 +413,12 @@ void close() {
     g_open = false;
 }
 
+// Static sentinel: set true by play_at() so the inner play() call skips
+// its own debug-log line. play_at() emits its own positioned line before
+// dropping through to play(). Single-threaded — Audio is called from
+// the game thread only.
+static bool g_suppress_play_debug_log = false;
+
 void play(int channel_hint, const uint8_t params[4]) {
     if (!g_open || !g_enabled) return;
     const int ch_idx = pick_channel(channel_hint);
@@ -418,6 +431,15 @@ void play(int channel_hint, const uint8_t params[4]) {
     const uint8_t vol_init = params[1] & 0xf0;     // 0x00..0xf0 in 0x10 steps
     if (channel_busy(ch) && vol_init < ch.vol.value) {
         return;
+    }
+
+    if (g_debug_log && !g_suppress_play_debug_log) {
+        char line[128];
+        std::snprintf(line, sizeof(line),
+            "sfx ch=%d params=[%02x %02x %02x %02x]\n",
+            ch_idx, params[0], params[1], params[2], params[3]);
+        *g_debug_log << line;
+        g_debug_log->flush();
     }
 
     // &1471-&1492: load both envelope param pairs into channel state.
@@ -468,7 +490,20 @@ void play_at(int channel_hint, const uint8_t params[4],
     const int distance = adx > ady ? adx : ady;
     if (distance >= 0x10) return;
 
+    if (g_debug_log) {
+        const int ch_idx_dbg = pick_channel(channel_hint);
+        char line[160];
+        std::snprintf(line, sizeof(line),
+            "sfx ch=%d params=[%02x %02x %02x %02x] @(%u,%u) dist=%d\n",
+            ch_idx_dbg, params[0], params[1], params[2], params[3],
+            src_x, src_y, distance);
+        *g_debug_log << line;
+        g_debug_log->flush();
+    }
+
+    g_suppress_play_debug_log = true;
     play(channel_hint, params);
+    g_suppress_play_debug_log = false;
 
     // 6502 &141c-&1465: distance × 16 stored as a per-channel volume
     // reduction. play() above already picked the channel and zeroed
@@ -481,6 +516,10 @@ void play_at(int channel_hint, const uint8_t params[4],
 void set_listener(uint8_t x, uint8_t y) {
     g_listener_x = x;
     g_listener_y = y;
+}
+
+void set_envelope_byte(uint8_t offset, uint8_t value) {
+    kEnvelopesTable[offset] = value;
 }
 
 void set_logic_rate(int hz) {
@@ -637,5 +676,7 @@ void set_enabled(bool on) {
 bool is_enabled() { return g_enabled; }
 
 void set_log_enabled(bool on) { g_log_enabled = on; }
+
+void set_debug_log(std::ostream* log) { g_debug_log = log; }
 
 }  // namespace Audio

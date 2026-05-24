@@ -96,6 +96,7 @@ public:
     void set_fps_text(const char* text) override;
     void set_highlighted_tile(uint8_t world_x, uint8_t world_y) override;
     void render_debug_marker(uint8_t world_x, uint8_t world_y,
+                             uint8_t x_frac, uint8_t y_frac,
                              uint32_t rgb, const char* label) override;
     void render_activation_overlay(uint8_t anchor_x, uint8_t anchor_y) override;
     void render_aabb(Fixed8_8 world_x, Fixed8_8 world_y,

@@ -842,10 +842,13 @@ void Game::render() {
                 label = prim_buf;
             }
             renderer_->render_debug_marker(obj.x.whole, obj.y.whole,
+                                           obj.x.fraction, obj.y.fraction,
                                            0x22DD22, label);
         }
         // Secondary — yellow. y == 0 means "empty slot". sec.type is a
         // raw uint8_t so we cast into ObjectType for the name lookup.
+        // Fractions live in the packed energy_and_fractions byte; unpack
+        // so the swatch sits at the actual sub-tile position.
         for (int i = 0; i < GameConstants::SECONDARY_OBJECT_SLOTS; i++) {
             const SecondaryObject& sec = object_mgr_.secondary(i);
             if (sec.y == 0) continue;
@@ -853,7 +856,11 @@ void Game::render() {
                 (sec.type < static_cast<uint8_t>(ObjectType::COUNT))
                     ? object_type_name(static_cast<ObjectType>(sec.type))
                     : "UNKNOWN";
-            renderer_->render_debug_marker(sec.x, sec.y, 0xEECC22, label);
+            // &0c38 unpack: bits 3-2 = x_frac >> 6, bits 1-0 = y_frac >> 6.
+            uint8_t xf = ((sec.energy_and_fractions >> 2) & 0x03) << 6;
+            uint8_t yf = (sec.energy_and_fractions & 0x03) << 6;
+            renderer_->render_debug_marker(sec.x, sec.y, xf, yf,
+                                           0xEECC22, label);
         }
         // Tertiary — red. Only draw for tiles currently in the viewport.
         // Label shows the spawned OBJECT's name for tile types that spawn
@@ -924,7 +931,7 @@ void Game::render() {
                                   "%s x%d", label, remaining);
                     label = label_buf;
                 }
-                renderer_->render_debug_marker(wx, wy, 0xDD3333, label);
+                renderer_->render_debug_marker(wx, wy, 0, 0, 0xDD3333, label);
             }
         }
     }

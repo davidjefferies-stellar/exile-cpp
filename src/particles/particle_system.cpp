@@ -38,6 +38,50 @@ static int8_t clamp_signed(int v) {
     return static_cast<int8_t>(v);
 }
 
+// &20e6-&2100: integrate position by velocity (signed add with fraction
+// carry / underflow into whole byte).
+static void step_axis(uint8_t& whole, uint8_t& frac, int8_t vel) {
+    uint8_t uv = static_cast<uint8_t>(vel);
+    int sum = int(frac) + int(uv);
+    frac = static_cast<uint8_t>(sum);
+    if (sum > 0xff) whole++;
+    if (vel < 0)    whole--;   // pre-decrement for negative velocity
+}
+
+// 6502's per-axis "flip-aware edge + optional centre" offset (&21a8-
+// &21d3). Applied at spawn so flipped sprites emit from their visible
+// edge and centred types (engines, aim) start mid-body.
+static void apply_base_offset(uint8_t& whole, uint8_t& frac,
+                              int size, bool flipped,
+                              bool consider_flip, bool use_centre) {
+    int offset = 0;
+    if (consider_flip && flipped) offset = size;
+    if (use_centre) offset += size / 2;
+    int sum = int(frac) + offset;
+    frac = static_cast<uint8_t>(sum);
+    whole = static_cast<uint8_t>(whole + (sum >> 8));
+}
+
+// Per-axis particle position+velocity randomisation. Mirrors the inner
+// add_particles_loop body at &2230-&2263: velocity is base ± (rnd >> 1)
+// & v_rand, position is src + (rnd & pos_rand).
+static void emit_axis(Random& rng,
+                      int8_t base_v, uint8_t v_rand,
+                      uint8_t base_pos, uint8_t base_frac, uint8_t pos_rand,
+                      int8_t& out_v,
+                      uint8_t& out_whole, uint8_t& out_frac) {
+    uint8_t r = rng.next();
+    bool negate = (r & 0x80) != 0;
+    int8_t mag = static_cast<int8_t>((r >> 1) & v_rand);
+    int v = int(base_v) + (negate ? -int(mag) : int(mag));
+    out_v = static_cast<int8_t>(clamp_signed(v));
+
+    uint8_t jitter = rng.next() & pos_rand;
+    int sum = int(base_frac) + int(jitter);
+    out_frac  = static_cast<uint8_t>(sum);
+    out_whole = base_pos + (sum > 0xff ? 1 : 0);
+}
+
 int ParticleSystem::allocate_slot(Random& rng) {
     if (n_ < MAX_PARTICLES) return n_++;
     // Pool full — replace a random existing particle.
@@ -86,15 +130,6 @@ void ParticleSystem::update(uint8_t waterline_y, uint8_t waterline_y_frac, Rando
             continue;
         }
 
-        // &20e6-&2100: integrate position by velocity (signed add with
-        // fraction carry / underflow into whole byte).
-        auto step_axis = [](uint8_t& whole, uint8_t& frac, int8_t vel) {
-            uint8_t uv = static_cast<uint8_t>(vel);
-            int sum = int(frac) + int(uv);
-            frac = static_cast<uint8_t>(sum);
-            if (sum > 0xff) whole++;
-            if (vel < 0)    whole--;   // pre-decrement for negative velocity
-        };
         step_axis(p.x, p.x_fraction, p.velocity_x);
         step_axis(p.y, p.y_fraction, p.velocity_y);
 
@@ -140,21 +175,6 @@ void ParticleSystem::emit(ParticleType type, int count, const Object& src,
         sw_units = (e.w > 0 ? (e.w - 1) : 0) * 16;   // 1 sprite-px = 16 frac
         sh_units = (e.h > 0 ? (e.h - 1) : 0) * 8;    // 1 sprite-row = 8 frac
     }
-
-    // Helper applies the 6502's per-axis "flip-aware edge + optional centre"
-    // offset. `size` is the sub-tile extent on this axis, `flipped` is whether
-    // the object's flip bit is set for this axis, `consider_flip` and
-    // `use_centre` come out of the flags byte.
-    auto apply_base_offset = [&](uint8_t& whole, uint8_t& frac,
-                                 int size, bool flipped,
-                                 bool consider_flip, bool use_centre) {
-        int offset = 0;
-        if (consider_flip && flipped) offset = size;    // start at far edge
-        if (use_centre) offset += size / 2;              // plus half-extent
-        int sum = int(frac) + offset;
-        frac = static_cast<uint8_t>(sum);
-        whole = static_cast<uint8_t>(whole + (sum >> 8));
-    };
 
     // After 3 ASLs the flags byte has been consumed down to bits 4..0; the
     // per-axis pair order the 6502 uses is (y first — X=2 in its loop, then
@@ -207,29 +227,10 @@ void ParticleSystem::emit(ParticleType type, int count, const Object& src,
 
         // &222e-&2263: velocity (signed random + base) and position (fraction
         // jittered by *_rand). Done per-axis.
-        auto axis = [&](uint8_t v_rand, int8_t base_v,
-                        uint8_t pos_rand, uint8_t base_pos, uint8_t base_frac,
-                        uint8_t& out_v_unsigned,
-                        uint8_t& out_whole, uint8_t& out_frac) {
-            uint8_t r = rng.next();
-            bool negate = (r & 0x80) != 0;
-            int8_t mag = static_cast<int8_t>((r >> 1) & v_rand);
-            int v = int(base_v) + (negate ? -int(mag) : int(mag));
-            out_v_unsigned = static_cast<uint8_t>(clamp_signed(v));
-
-            uint8_t jitter = rng.next() & pos_rand;
-            int sum = int(base_frac) + int(jitter);
-            out_frac  = static_cast<uint8_t>(sum);
-            out_whole = base_pos + (sum > 0xff ? 1 : 0);
-        };
-
-        uint8_t vxu = 0, vyu = 0;
-        axis(t.vx_rand, base_vx, t.x_rand, base_x, base_x_frac,
-             vxu, p.x, p.x_fraction);
-        axis(t.vy_rand, base_vy, t.y_rand, base_y, base_y_frac,
-             vyu, p.y, p.y_fraction);
-        p.velocity_x = static_cast<int8_t>(vxu);
-        p.velocity_y = static_cast<int8_t>(vyu);
+        emit_axis(rng, base_vx, t.vx_rand, base_x, base_x_frac, t.x_rand,
+                  p.velocity_x, p.x, p.x_fraction);
+        emit_axis(rng, base_vy, t.vy_rand, base_y, base_y_frac, t.y_rand,
+                  p.velocity_y, p.y, p.y_fraction);
 
         // &226a-&2281: optionally add the object's velocity on top.
         if (add_obj_vel) {
@@ -253,46 +254,12 @@ void ParticleSystem::emit_at(ParticleType type, uint8_t wx, uint8_t wy,
     // For star placement the 6502 pre-zeroes both fractions and both
     // velocity randomness fields are 0x00 (see STAR_OR_MUSHROOM row), so
     // the per-axis random loop collapses to "keep the base whole cell".
-    auto axis = [&](uint8_t v_rand, uint8_t pos_rand, uint8_t base_pos,
-                    uint8_t& out_v_unsigned, uint8_t& out_whole,
-                    uint8_t& out_frac) {
-        uint8_t r = rng.next();
-        bool negate = (r & 0x80) != 0;
-        int8_t mag = static_cast<int8_t>((r >> 1) & v_rand);
-        int v = negate ? -int(mag) : int(mag);
-        out_v_unsigned = static_cast<uint8_t>(clamp_signed(v));
-
-        uint8_t jitter = rng.next() & pos_rand;
-        out_frac  = jitter;
-        out_whole = base_pos + (jitter > 0 ? 0 : 0); // no carry from 0
-    };
-
-    uint8_t vxu = 0, vyu = 0;
-    axis(t.vx_rand, t.x_rand, wx, vxu, p.x, p.x_fraction);
-    axis(t.vy_rand, t.y_rand, wy, vyu, p.y, p.y_fraction);
-    p.velocity_x = static_cast<int8_t>(vxu);
-    p.velocity_y = static_cast<int8_t>(vyu);
-}
-
-// Per-axis particle position+velocity randomisation used by emit_directed.
-// Mirrors the inner add_particles_loop body at &2230-&2263: the velocity is
-// the caller's base ± (rnd >> 1) & v_rand, the position is src + (rnd &
-// pos_rand). 
-static void emit_directed_axis(Random& rng,
-                               int8_t base_v, uint8_t v_rand,
-                               uint8_t base_pos, uint8_t base_frac, uint8_t pos_rand,
-                               int8_t& out_v,
-                               uint8_t& out_whole, uint8_t& out_frac) {
-    uint8_t r = rng.next();
-    bool negate = (r & 0x80) != 0;
-    int8_t mag = static_cast<int8_t>((r >> 1) & v_rand);
-    int v = int(base_v) + (negate ? -int(mag) : int(mag));
-    out_v = static_cast<int8_t>(clamp_signed(v));
-
-    uint8_t jitter = rng.next() & pos_rand;
-    int sum = int(base_frac) + int(jitter);
-    out_frac  = static_cast<uint8_t>(sum);
-    out_whole = base_pos + (sum > 0xff ? 1 : 0);
+    // emit_axis with base_v=0, base_frac=0 collapses to the same result
+    // (jitter stays inside out_frac, out_whole keeps base_pos).
+    emit_axis(rng, 0, t.vx_rand, wx, 0, t.x_rand,
+              p.velocity_x, p.x, p.x_fraction);
+    emit_axis(rng, 0, t.vy_rand, wy, 0, t.y_rand,
+              p.velocity_y, p.y, p.y_fraction);
 }
 
 void ParticleSystem::emit_directed(ParticleType type, uint8_t angle,
@@ -334,19 +301,10 @@ void ParticleSystem::emit_directed(ParticleType type, uint8_t angle,
         bool use_hcentre    = (t.flags & 0x02) != 0;
         bool y_flipped = (src.flags & ObjectFlags::FLIP_VERTICAL)   != 0;
         bool x_flipped = (src.flags & ObjectFlags::FLIP_HORIZONTAL) != 0;
-        auto apply = [](uint8_t& whole, uint8_t& frac, int size,
-                        bool flipped, bool consider_flip, bool use_centre) {
-            int offset = 0;
-            if (consider_flip && flipped) offset = size;
-            if (use_centre) offset += size / 2;
-            int sum = int(frac) + offset;
-            frac = static_cast<uint8_t>(sum);
-            whole = static_cast<uint8_t>(whole + (sum >> 8));
-        };
-        apply(base_y, base_y_frac, sh_units, y_flipped,
-              consider_vflip, use_vcentre);
-        apply(base_x, base_x_frac, sw_units, x_flipped,
-              consider_hflip, use_hcentre);
+        apply_base_offset(base_y, base_y_frac, sh_units, y_flipped,
+                          consider_vflip, use_vcentre);
+        apply_base_offset(base_x, base_x_frac, sw_units, x_flipped,
+                          consider_hflip, use_hcentre);
     }
 
     int slot = allocate_slot(rng);
@@ -355,10 +313,10 @@ void ParticleSystem::emit_directed(ParticleType type, uint8_t angle,
     p.ttl = static_cast<uint8_t>((rng.next() & t.ttl_rand) + t.ttl_base);
     p.colour_and_flags = (rng.next() & t.cf_rand) ^ t.cf_base;
 
-    emit_directed_axis(rng, base_vx, t.vx_rand,
-                       base_x, base_x_frac, t.x_rand,
-                       p.velocity_x, p.x, p.x_fraction);
-    emit_directed_axis(rng, base_vy, t.vy_rand,
-                       base_y, base_y_frac, t.y_rand,
-                       p.velocity_y, p.y, p.y_fraction);
+    emit_axis(rng, base_vx, t.vx_rand,
+              base_x, base_x_frac, t.x_rand,
+              p.velocity_x, p.x, p.x_fraction);
+    emit_axis(rng, base_vy, t.vy_rand,
+              base_y, base_y_frac, t.y_rand,
+              p.velocity_y, p.y, p.y_fraction);
 }

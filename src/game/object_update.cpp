@@ -44,6 +44,16 @@ static int8_t damp_seven_eighths(int8_t v_in) {
     return static_cast<int8_t>(v_in > 0 ? mag : -mag);
 }
 
+// Re-centre a 16-bit Fixed8_8 axis by `delta` fraction-units, wrapping
+// at 0xffff like the 6502's 8-bit ADC chain. Used by step 12 to keep
+// the explosion sprite centred on the projectile it replaces.
+static void shift_axis(uint8_t& whole, uint8_t& frac, int delta) {
+    int sum = int(whole) * 0x100 + int(frac) + delta;
+    sum &= 0xffff;
+    whole = static_cast<uint8_t>((sum >> 8) & 0xff);
+    frac  = static_cast<uint8_t>(sum & 0xff);
+}
+
 // AABB-corner solid probe for the held primary's penetration check
 // at step 3 — axis-separated revert tests post-move flush vs. old
 // held position to detect a wall slap.
@@ -255,6 +265,7 @@ void Game::update_objects() {
                               every_sixty_four_frames_,
                               whistle_one_active_, &whistle_two_activator_,
                               &whistle_one_collected_, &whistle_two_collected_,
+                              &chatter_energy_reserve_,
                               player_weapons_collected_,
                               weapon_energy_,
                               &player_immobility_movement_,
@@ -342,12 +353,6 @@ void Game::update_objects() {
                     new_w_frac = (e.w > 0 ? (e.w - 1) : 0) * 16;
                     new_h_frac = (e.h > 0 ? (e.h - 1) : 0) * 8;
                 }
-                auto shift_axis = [](uint8_t& whole, uint8_t& frac, int delta) {
-                    int sum = int(whole) * 0x100 + int(frac) + delta;
-                    sum &= 0xffff;
-                    whole = static_cast<uint8_t>((sum >> 8) & 0xff);
-                    frac  = static_cast<uint8_t>(sum & 0xff);
-                };
                 shift_axis(obj.x.whole, obj.x.fraction, (old_w_frac - new_w_frac) / 2);
                 shift_axis(obj.y.whole, obj.y.fraction, (old_h_frac - new_h_frac) / 2);
             }
@@ -542,198 +547,6 @@ void Game::update_objects() {
                                                  0xc0, obj, cosmetic_rng_);
                     }
                 }
-#if 0
-                // Sprite AABB in 16-bit fraction units — 6502 stores
-                // (pixels-1)*16 / (rows-1)*8 in its size tables (&5e89).
-                int obj_h_units = (obj.sprite <= 0x80)
-                    ? (sprite_atlas[obj.sprite].h > 0
-                        ? (sprite_atlas[obj.sprite].h - 1) * 8 : 0)
-                    : 0;
-                int obj_w_units = (obj.sprite <= 0x80)
-                    ? (sprite_atlas[obj.sprite].w > 0
-                        ? (sprite_atlas[obj.sprite].w - 1) * 16 : 0)
-                    : 0;
-
-                // Single-cell probe at explicit (x_frac, y_frac).
-                // Door substitution + tile_and_flip_obstructs_point
-                // give the same per-section resolution as 6502 &2fce.
-                auto probe_tile = [&](uint8_t ttx, uint8_t tty,
-                                      uint8_t ttx_frac,
-                                      uint8_t tty_frac)->bool {
-                    ResolvedTile res =
-                        resolve_tile_with_tertiary(landscape_, ttx, tty);
-                    uint8_t subst = Collision::substitute_door_for_obstruction(
-                        res.tile_and_flip, res.data_offset,
-                        reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
-                            object_mgr_.object(0)),
-                        object_mgr_.tertiary_data_byte(res.data_offset));
-                    return Collision::tile_and_flip_obstructs_point(
-                        subst, ttx_frac, tty_frac);
-                };
-
-                // All four corners unconditionally — even shared-tile
-                // corners have different x_frac/y_frac, and partial-
-                // tile patterns (slopes) need the per-corner answer.
-                auto any_tile_solid = [&](uint8_t tx, uint8_t tx_frac,
-                                          uint8_t ty, uint8_t ty_frac)->bool {
-                    int right_abs  = static_cast<int>(tx) * 256 +
-                                     static_cast<int>(tx_frac) + obj_w_units;
-                    uint8_t r_tx   = static_cast<uint8_t>((right_abs >> 8) & 0xff);
-                    uint8_t r_frac = static_cast<uint8_t>(right_abs & 0xff);
-                    int bot_abs    = static_cast<int>(ty) * 256 +
-                                     static_cast<int>(ty_frac) + obj_h_units;
-                    uint8_t b_ty   = static_cast<uint8_t>((bot_abs >> 8) & 0xff);
-                    uint8_t b_frac = static_cast<uint8_t>(bot_abs & 0xff);
-
-                    if (probe_tile(tx,   ty,   tx_frac, ty_frac)) return true;
-                    if (probe_tile(r_tx, ty,   r_frac,  ty_frac)) return true;
-                    if (probe_tile(tx,   b_ty, tx_frac, b_frac))  return true;
-                    if (probe_tile(r_tx, b_ty, r_frac,  b_frac))  return true;
-                    return false;
-                };
-
-                // &1b tile_top_or_bottom_collision flags Y-axis only;
-                // X-hits go into left/right_obstruction (piranha/wasp
-                // don't read). overlaps_solid_object fallback covers
-                // closed-door bands STONE_SLOPE_78 misses.
-                auto& all_primaries =
-                    reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
-                        object_mgr_.object(0));
-                obj.tile_collision = false;
-                obj.pre_collision_magnitude = 0;
-
-                // Per-axis escape — partial port of &306c. Allow move
-                // only if the OPPOSITE start side is blocked.
-                auto side_corners = [&](uint8_t tx, uint8_t tx_frac,
-                                        uint8_t ty, uint8_t ty_frac,
-                                        bool& top, bool& bot,
-                                        bool& left, bool& right) {
-                    int right_abs = static_cast<int>(tx) * 256 +
-                                    static_cast<int>(tx_frac) + obj_w_units;
-                    uint8_t r_tx   = static_cast<uint8_t>((right_abs >> 8) & 0xff);
-                    uint8_t r_frac = static_cast<uint8_t>(right_abs & 0xff);
-                    int bot_abs   = static_cast<int>(ty) * 256 +
-                                    static_cast<int>(ty_frac) + obj_h_units;
-                    uint8_t b_ty   = static_cast<uint8_t>((bot_abs >> 8) & 0xff);
-                    uint8_t b_frac = static_cast<uint8_t>(bot_abs & 0xff);
-                    bool tl = probe_tile(tx,   ty,   tx_frac, ty_frac);
-                    bool tr = probe_tile(r_tx, ty,   r_frac,  ty_frac);
-                    bool bl = probe_tile(tx,   b_ty, tx_frac, b_frac);
-                    bool br = probe_tile(r_tx, b_ty, r_frac,  b_frac);
-                    top   = tl || tr;
-                    bot   = bl || br;
-                    left  = tl || bl;
-                    right = tr || br;
-                };
-                bool start_top = false, start_bot = false;
-                bool start_left = false, start_right = false;
-                side_corners(obj.x.whole, obj.x.fraction,
-                             obj.y.whole, obj.y.fraction,
-                             start_top, start_bot, start_left, start_right);
-
-                // Start-overlap relax for NEWLY_CREATED bullets (spawn
-                // inside firer's AABB) and INTANGIBLE only — otherwise
-                // an established primary stuck in a door phases out.
-                bool start_obj_overlap = false;
-                if ((obj.flags & ObjectFlags::NEWLY_CREATED) ||
-                    (tflags & ObjectTypeFlags::INTANGIBLE)) {
-                    start_obj_overlap =
-                        Collision::overlaps_solid_object(obj, slot, all_primaries);
-                }
-                {
-                    Fixed8_8 old_x = obj.x;
-                    obj.x.add_velocity(obj.velocity_x);
-                    bool tile_blocked =
-                        any_tile_solid(obj.x.whole, obj.x.fraction,
-                                       obj.y.whole, obj.y.fraction);
-                    int  obj_blocker = Collision::overlapping_solid_slot(
-                        obj, slot, all_primaries);
-                    bool obj_blocked = (obj_blocker >= 0);
-                    // Object-overlap relax escapes object AABBs only,
-                    // never tiles. Side-relax gated on !obj_blocked so
-                    // heavier primaries outrank tile-pattern escape;
-                    // clause 1 stays unconditional for frame-1 bullets.
-                    bool relax_x = (start_obj_overlap && !tile_blocked) ||
-                        (obj.velocity_x > 0 && start_left  && !start_right && !obj_blocked) ||
-                        (obj.velocity_x < 0 && start_right && !start_left  && !obj_blocked);
-                    if ((tile_blocked || obj_blocked) && !relax_x) {
-                        // Port of &30b7 (one instruction):
-                        //   &30b7 STY &1d ; pre_collision_velocity_magnitude
-                        // Capture the max-axis velocity BEFORE the
-                        // reflect/damp so update_full_flask and friends
-                        // can tell a hard collision from a scrape.
-                        uint8_t pre = static_cast<uint8_t>(std::max(
-                            std::abs(static_cast<int>(obj.velocity_x)),
-                            std::abs(static_cast<int>(obj.velocity_y))));
-                        obj.pre_collision_magnitude = pre;
-                        obj.x = old_x;
-                        obj.velocity_x = bounce_reflect(obj.velocity_x);
-                        obj.velocity_y = damp_seven_eighths(obj.velocity_y);
-                        // Port of &2b1d-&2b27:
-                        //   &2b1d ORA &0856,Y ; objects_touching
-                        //   &2b20 BPL &2b27 ; skip
-                        //   &2b22 LDA &aa ; this_object
-                        //   &2b24 STA &0856,Y ; objects_touching
-                        // Symmetric stamp so the heavier side (door,
-                        // hive) sees the toucher before its own post-
-                        // revert step 9b runs.
-                        if (obj_blocked) {
-                            obj.touching = static_cast<uint8_t>(obj_blocker);
-                            object_mgr_.object(obj_blocker).touching =
-                                static_cast<uint8_t>(slot);
-                        }
-                    }
-                }
-                {
-                    Fixed8_8 old_y = obj.y;
-                    obj.y.add_velocity(obj.velocity_y);
-                    bool tile_blocked =
-                        any_tile_solid(obj.x.whole, obj.x.fraction,
-                                       obj.y.whole, obj.y.fraction);
-                    int  obj_blocker = Collision::overlapping_solid_slot(
-                        obj, slot, all_primaries);
-                    bool obj_blocked = (obj_blocker >= 0);
-                    // Same gating as X-axis: heavier primary must
-                    // outrank tile-pattern escape, or a jumping imp
-                    // escapes upward through a horizontal door's AABB.
-                    bool relax_y = (start_obj_overlap && !tile_blocked) ||
-                        (obj.velocity_y > 0 && start_top && !start_bot && !obj_blocked) ||
-                        (obj.velocity_y < 0 && start_bot && !start_top && !obj_blocked);
-                    if ((tile_blocked || obj_blocked) && !relax_y) {
-                        uint8_t pre = static_cast<uint8_t>(std::max(
-                            std::abs(static_cast<int>(obj.velocity_x)),
-                            std::abs(static_cast<int>(obj.velocity_y))));
-                        if (pre > obj.pre_collision_magnitude) {
-                            obj.pre_collision_magnitude = pre;
-                        }
-                        obj.y = old_y;
-                        if (obj.velocity_y > 0) obj.flags |= ObjectFlags::SUPPORTED;
-                        obj.velocity_y = bounce_reflect(obj.velocity_y);
-                        obj.velocity_x = damp_seven_eighths(obj.velocity_x);
-                        obj.tile_collision = true;
-                        // Symmetric stamp — gravity pulls a flask onto
-                        // the door's AABB, so the Y-axis branch is
-                        // where the door learns about the flask.
-                        if (obj_blocked) {
-                            obj.touching = static_cast<uint8_t>(obj_blocker);
-                            object_mgr_.object(obj_blocker).touching =
-                                static_cast<uint8_t>(slot);
-                        }
-                    }
-
-                    // Water splash — port of &2f69-&2f82. Downward
-                    // waterline crossing emits one PARTICLE_WATER at
-                    // angle &c0 (straight up).
-                    uint8_t wy = Water::get_waterline_y(obj.x.whole);
-                    bool was_above = old_y.whole < wy;
-                    bool now_at    = obj.y.whole >= wy;
-                    if (was_above && now_at && obj.velocity_y > 0) {
-                        particles_.emit_directed(ParticleType::WATER,
-                                                 0xc0, obj, cosmetic_rng_);
-                    }
-                }
-#endif
-
                 // Apply water effects (buoyancy + damping)
                 Water::apply_water_effects(landscape_, obj, obj.weight(),
                                             every_four_frames_);

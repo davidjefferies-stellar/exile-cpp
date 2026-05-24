@@ -134,53 +134,47 @@ void Game::dump_init_diagnostics() {
         uint8_t targets[8];
         int n = Behaviors::switch_effect_targets(effect_id, targets, 8);
         for (int t = 0; t < n; t++) {
-            // Decode the 6502 data_offset back to (tile_type, X) and
-            // list every cell on that column that matches the raw
-            // type — i.e. every door / target the press toggles in
-            // lockstep under the new fan-out semantics.
+            // Decode data_offset back to (source_idx, X) and list
+            // every column cell whose tile type matches the source
+            // entry's own tile_and_flip. `range_idx` is just the
+            // offset-table partition, not the world tile type.
             uint8_t b = targets[t];
             debug_log_ << "#   target[" << t
                        << "] data_offset=0x"
                        << std::hex << (int)b << std::dec;
-            int matched_type = -1;
+            int matched_range = -1;
             int source_idx_match = -1;
-            for (int tt = 0;
-                 tt <= static_cast<int>(TileType::SWITCH); ++tt) {
+            for (int range_idx = 0; range_idx <= 8; ++range_idx) {
                 uint8_t s = static_cast<uint8_t>(
-                    b - tertiary_data_offset[tt]);
-                if (s <  tertiary_ranges[tt]) continue;
-                if (s >= tertiary_ranges[tt + 1]) continue;
-                matched_type = tt;
+                    b - tertiary_data_offset[range_idx]);
+                if (s <  tertiary_ranges[range_idx]) continue;
+                if (s >= tertiary_ranges[range_idx + 1]) continue;
+                matched_range = range_idx;
                 source_idx_match = s;
                 break;
             }
-            if (matched_type < 0) {
+            if (matched_range < 0) {
                 debug_log_ << " (no source row matches)\n";
                 continue;
             }
             uint8_t target_x =
                 tertiary_objects_x_data[source_idx_match];
-            debug_log_ << " -> tile_type=0x"
-                       << std::hex << matched_type
-                       << " source_idx=" << std::dec << source_idx_match
+            debug_log_ << " -> source_idx=" << std::dec << source_idx_match
                        << " X=" << (int)target_x << "\n";
             int hits = 0;
             for (int yy = 0; yy < 256; ++yy) {
-                uint8_t raw = landscape_.get_tile(
-                    target_x, static_cast<uint8_t>(yy));
-                if ((raw & TileFlip::TYPE_MASK) !=
-                    static_cast<uint8_t>(matched_type)) continue;
+                if (landscape_.tertiary_source_idx_at(
+                        target_x, static_cast<uint8_t>(yy)) !=
+                    source_idx_match) continue;
                 uint16_t cell_idx = landscape_.tertiary_index_at(
                     target_x, static_cast<uint8_t>(yy));
                 debug_log_ << "#       cell @" << (int)target_x
                            << "," << yy
-                           << " raw=0x" << std::hex << (int)raw
-                           << std::dec
                            << " entry_idx=" << cell_idx << "\n";
                 hits++;
             }
             if (hits == 0) {
-                debug_log_ << "#       (no cells of that type at X)\n";
+                debug_log_ << "#       (no cells share that source)\n";
             }
         }
     }
@@ -443,13 +437,16 @@ void Game::tick_test_grenades() {
 // on rare events). Their TTLs decay every frame and expired entries get
 // erased; the renderer reads the live vectors. No gameplay effect, so
 // the maintenance pass lives here instead of crowding tick().
+static bool damage_visual_expired(const DamageVisual& e) { return e.ttl == 0; }
+static bool floating_label_expired(const FloatingLabel& f) { return f.ttl == 0; }
+
 void Game::tick_overlay_visuals() {
     for (auto& ev : damage_events_) {
         if (ev.ttl > 0) ev.ttl--;
     }
     damage_events_.erase(
         std::remove_if(damage_events_.begin(), damage_events_.end(),
-                       [](const DamageVisual& e){ return e.ttl == 0; }),
+                       damage_visual_expired),
         damage_events_.end());
 
     for (auto& f : floating_labels_) {
@@ -457,7 +454,7 @@ void Game::tick_overlay_visuals() {
     }
     floating_labels_.erase(
         std::remove_if(floating_labels_.begin(), floating_labels_.end(),
-                       [](const FloatingLabel& f){ return f.ttl == 0; }),
+                       floating_label_expired),
         floating_labels_.end());
 }
 

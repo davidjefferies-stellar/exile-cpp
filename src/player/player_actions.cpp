@@ -33,6 +33,153 @@ bool Game::try_store_held(Object& player, bool drain_power_pod) {
     return true;
 }
 
+// Port of the "," pickup branch. Fresh AABB scan inflated by ±0x40
+// frac-units; falls back to player.touching. The 6502 reads &3b set
+// earlier this frame; our port's player.touching is set at end-of-
+// motion last frame — can be stale if the player passes a narrow AABB
+// fast.
+void Game::pickup_touching(Object& player) {
+    if (held_object_slot_ < 0x80) return;                  // already holding
+
+    int p_x = static_cast<int>(player.x.whole) * 256 +
+              static_cast<int>(player.x.fraction);
+    int p_y = static_cast<int>(player.y.whole) * 256 +
+              static_cast<int>(player.y.fraction);
+    int p_w = (player.sprite <= 0x80 && sprite_atlas[player.sprite].w > 0)
+        ? (sprite_atlas[player.sprite].w - 1) * 16 : 0;
+    int p_h = (player.sprite <= 0x80 && sprite_atlas[player.sprite].h > 0)
+        ? (sprite_atlas[player.sprite].h - 1) * 8 : 0;
+    // Inflate ~half a tile so the user can pick up an item they're
+    // standing right next to without pixel-hunting.
+    constexpr int kInflate = 0x40;
+    int p_x_lo = p_x - kInflate;
+    int p_x_hi = p_x + p_w + kInflate;
+    int p_y_lo = p_y - kInflate;
+    int p_y_hi = p_y + p_h + kInflate;
+
+    int best_slot = -1;
+    int best_dist = 0x7fffffff;
+    for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+        const Object& cand = object_mgr_.object(i);
+        if (!cand.is_active()) continue;
+        if (!HeldObject::is_pickupable(cand.type)) continue;
+        int o_x = static_cast<int>(cand.x.whole) * 256 +
+                  static_cast<int>(cand.x.fraction);
+        int o_y = static_cast<int>(cand.y.whole) * 256 +
+                  static_cast<int>(cand.y.fraction);
+        int o_w = (cand.sprite <= 0x80 && sprite_atlas[cand.sprite].w > 0)
+            ? (sprite_atlas[cand.sprite].w - 1) * 16 : 0;
+        int o_h = (cand.sprite <= 0x80 && sprite_atlas[cand.sprite].h > 0)
+            ? (sprite_atlas[cand.sprite].h - 1) * 8 : 0;
+        if (o_x + o_w <= p_x_lo) continue;
+        if (p_x_hi   <= o_x)     continue;
+        if (o_y + o_h <= p_y_lo) continue;
+        if (p_y_hi   <= o_y)     continue;
+        // Pick the closest by centre-to-centre distance so a crowded
+        // floor doesn't grab a far item over a near one.
+        int o_cx = o_x + o_w / 2;
+        int o_cy = o_y + o_h / 2;
+        int p_cx = p_x + p_w / 2;
+        int p_cy = p_y + p_h / 2;
+        int dx = o_cx - p_cx;
+        int dy = o_cy - p_cy;
+        int d  = dx * dx + dy * dy;
+        if (d < best_dist) { best_dist = d; best_slot = i; }
+    }
+    int target_slot = best_slot;
+    if (target_slot < 0 &&
+        player.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
+        Object& cand = object_mgr_.object(player.touching);
+        if (cand.is_active() && HeldObject::is_pickupable(cand.type)) {
+            target_slot = player.touching;
+        }
+    }
+    if (target_slot < 0) return;
+
+    Object& touched = object_mgr_.object(target_slot);
+    HeldObject::pickup(touched, player, held_object_slot_,
+                       static_cast<uint8_t>(target_slot));
+    // First touch clears the collectable's undisturbed pin (port of
+    // the ASL/LSR at &4ba1).
+    touched.energy &= 0x7f;
+}
+
+// Port of the "m" branch (and the ENTER-while-holding path). Release
+// the currently-held primary straight down — no horizontal kick.
+void Game::drop_in_place(Object& player) {
+    if (held_object_slot_ >= 0x80) return;
+    Object& held = object_mgr_.object(held_object_slot_);
+    HeldObject::drop(held, player, held_object_slot_);
+}
+
+// Port of &32d9 handle_throwing_object. The throw goes in the player's
+// current aim direction (with facing flip applied) at a magnitude that
+// depends on the object's weight — lighter things fly further, heavy
+// things barely clear the player. Plus a random 0-7 jitter on the
+// magnitude. If the player is airborne, the player's own velocity is
+// folded into the throw vector (both axes for vx, only when airborne
+// for vy) so you can "throw while jumping" and the object inherits
+// momentum.
+void Game::throw_held(Object& player) {
+    if (held_object_slot_ >= 0x80) return;
+    Object& held = object_mgr_.object(held_object_slot_);
+
+    // &32d9 — calculate_firing_vector is called first for side-effects
+    // (setting &b5 = angle), then immediately overridden below with a
+    // weight-based magnitude. We skip the side-effect call because our
+    // vector_from_magnitude_and_angle is pure.
+
+    // &311d player_aiming_angle_with_flip: mirror the aim angle across
+    // the vertical axis when facing left. Bit 7 is preserved by the
+    // EOR #&7f (only bits 0-6 flip), then +1 so 0x00 -> 0x80 exactly
+    // (right -> left).
+    uint8_t angle = player_aim_angle_;
+    if (player.is_flipped_h()) {
+        angle = static_cast<uint8_t>((angle ^ 0x7f) + 1);
+    }
+
+    // &32d2 throwing_velocities_by_weight_table: magnitude falls off
+    // for heavier objects. Indexed by the held item's weight.
+    static constexpr uint8_t THROW_MAG_BY_WEIGHT[7] = {
+        0x20, 0x20, 0x20, 0x20, 0x20, 0x10, 0x08,
+    };
+    uint8_t w = held.weight();
+    if (w > 6) w = 6;
+
+    // &32e9-&32ee: random 0..7 added to base magnitude.
+    uint8_t base = THROW_MAG_BY_WEIGHT[w];
+    uint8_t mag  = static_cast<uint8_t>(base + (rng_.next() & 0x07));
+
+    // &32f1 calculate_vector_from_magnitude_and_angle.
+    int8_t throw_vx = 0, throw_vy = 0;
+    NPC::vector_from_magnitude_and_angle(mag, angle, throw_vx, throw_vy);
+
+    HeldObject::drop(held, player, held_object_slot_);
+
+    // &32f4 BIT this_object_any_bottom_collision — if the player is
+    // airborne, add the player's velocity_y to the throw's y so the
+    // object carries the player's vertical momentum. If supported, use
+    // the throw's y alone.
+    int new_vy = int(throw_vy);
+    if (!(player.flags & ObjectFlags::SUPPORTED)) {
+        new_vy += int(player.velocity_y);
+    }
+    if (new_vy >  127) new_vy =  127;
+    if (new_vy < -128) new_vy = -128;
+    held.velocity_y = static_cast<int8_t>(new_vy);
+
+    // &3303 — always add the player's velocity_x to the throw's vx.
+    int new_vx = int(throw_vx) + int(player.velocity_x);
+    if (new_vx >  127) new_vx =  127;
+    if (new_vx < -128) new_vx = -128;
+    held.velocity_x = static_cast<int8_t>(new_vx);
+
+    // Throwing disturbs collectables so they don't snap back to spawn
+    // mid-flight (port of the &4ba1 ASL/LSR on energy's high bit,
+    // reused here for the thrown-object case).
+    held.energy &= 0x7f;
+}
+
 // Input-driven half of the original's update_player (&37xx…). Emits the
 // frame's acceleration vector (which integrate_player_motion will feed
 // into the physics chain) and handles all discrete actions: weapon fire,
@@ -442,176 +589,30 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
     // &126b):
     //   ,  pickup touching   m  drop straight down   .  throw forward
 
-    auto pickup_now = [&](void) {
-        if (held_object_slot_ < 0x80) return;                  // already holding
-
-        // Fresh AABB scan inflated by ±2 frac-units; falls back to
-        // player.touching. The 6502 reads &3b set earlier this frame;
-        // our port's player.touching is set at end-of-motion last
-        // frame — can be stale if the player passes a narrow AABB fast.
-        int target_slot = -1;
-        {
-            int p_x = static_cast<int>(player.x.whole) * 256 +
-                      static_cast<int>(player.x.fraction);
-            int p_y = static_cast<int>(player.y.whole) * 256 +
-                      static_cast<int>(player.y.fraction);
-            int p_w = (player.sprite <= 0x80 && sprite_atlas[player.sprite].w > 0)
-                ? (sprite_atlas[player.sprite].w - 1) * 16 : 0;
-            int p_h = (player.sprite <= 0x80 && sprite_atlas[player.sprite].h > 0)
-                ? (sprite_atlas[player.sprite].h - 1) * 8 : 0;
-            // Inflate ~half a tile so the user can pick up an item
-            // they're standing right next to without pixel-hunting.
-            constexpr int kInflate = 0x40;
-            int p_x_lo = p_x - kInflate;
-            int p_x_hi = p_x + p_w + kInflate;
-            int p_y_lo = p_y - kInflate;
-            int p_y_hi = p_y + p_h + kInflate;
-
-            int best_slot = -1;
-            int best_dist = 0x7fffffff;
-            for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
-                const Object& cand = object_mgr_.object(i);
-                if (!cand.is_active()) continue;
-                if (!HeldObject::is_pickupable(cand.type)) continue;
-                int o_x = static_cast<int>(cand.x.whole) * 256 +
-                          static_cast<int>(cand.x.fraction);
-                int o_y = static_cast<int>(cand.y.whole) * 256 +
-                          static_cast<int>(cand.y.fraction);
-                int o_w = (cand.sprite <= 0x80 && sprite_atlas[cand.sprite].w > 0)
-                    ? (sprite_atlas[cand.sprite].w - 1) * 16 : 0;
-                int o_h = (cand.sprite <= 0x80 && sprite_atlas[cand.sprite].h > 0)
-                    ? (sprite_atlas[cand.sprite].h - 1) * 8 : 0;
-                if (o_x + o_w <= p_x_lo) continue;
-                if (p_x_hi   <= o_x)     continue;
-                if (o_y + o_h <= p_y_lo) continue;
-                if (p_y_hi   <= o_y)     continue;
-                // Pick the closest by centre-to-centre distance so a
-                // crowded floor doesn't grab a far item over a near one.
-                int o_cx = o_x + o_w / 2;
-                int o_cy = o_y + o_h / 2;
-                int p_cx = p_x + p_w / 2;
-                int p_cy = p_y + p_h / 2;
-                int dx = o_cx - p_cx;
-                int dy = o_cy - p_cy;
-                int d  = dx * dx + dy * dy;
-                if (d < best_dist) { best_dist = d; best_slot = i; }
-            }
-            target_slot = best_slot;
-        }
-        if (target_slot < 0 &&
-            player.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
-            Object& cand = object_mgr_.object(player.touching);
-            if (cand.is_active() && HeldObject::is_pickupable(cand.type)) {
-                target_slot = player.touching;
-            }
-        }
-        if (target_slot < 0) return;
-
-        Object& touched = object_mgr_.object(target_slot);
-        HeldObject::pickup(touched, player, held_object_slot_,
-                           static_cast<uint8_t>(target_slot));
-        // First touch clears the collectable's undisturbed pin (port
-        // of the ASL/LSR at &4ba1).
-        touched.energy &= 0x7f;
-    };
-    auto drop_now = [&]() {
-        if (held_object_slot_ >= 0x80) return;
-        Object& held = object_mgr_.object(held_object_slot_);
-        HeldObject::drop(held, player, held_object_slot_);
-    };
-
-    // Port of &32d9 handle_throwing_object. The throw goes in the
-    // player's current aim direction (with facing flip applied) at a
-    // magnitude that depends on the object's weight — lighter things
-    // fly further, heavy things barely clear the player. Plus a random
-    // 0-7 jitter on the magnitude. If the player is airborne, the
-    // player's own velocity is folded into the throw vector (both axes
-    // for vx, only when airborne for vy) so you can "throw while
-    // jumping" and the object inherits momentum.
-    auto throw_now = [&]() {
-        if (held_object_slot_ >= 0x80) return;
-        Object& held = object_mgr_.object(held_object_slot_);
-
-        // &32d9 — calculate_firing_vector is called first for side-
-        // effects (setting &b5 = angle), then immediately overridden
-        // below with a weight-based magnitude. We skip the side-effect
-        // call because our vector_from_magnitude_and_angle is pure.
-
-        // &311d player_aiming_angle_with_flip: mirror the aim angle
-        // across the vertical axis when facing left. Bit 7 is preserved
-        // by the EOR #&7f (only bits 0-6 flip), then +1 so 0x00 -> 0x80
-        // exactly (right -> left).
-        uint8_t angle = player_aim_angle_;
-        if (player.is_flipped_h()) {
-            angle = static_cast<uint8_t>((angle ^ 0x7f) + 1);
-        }
-
-        // &32d2 throwing_velocities_by_weight_table: magnitude falls
-        // off for heavier objects. Indexed by the held item's weight.
-        static constexpr uint8_t THROW_MAG_BY_WEIGHT[7] = {
-            0x20, 0x20, 0x20, 0x20, 0x20, 0x10, 0x08,
-        };
-        uint8_t w = held.weight();
-        if (w > 6) w = 6;
-
-        // &32e9-&32ee: random 0..7 added to base magnitude.
-        uint8_t base = THROW_MAG_BY_WEIGHT[w];
-        uint8_t mag  = static_cast<uint8_t>(base + (rng_.next() & 0x07));
-
-        // &32f1 calculate_vector_from_magnitude_and_angle.
-        int8_t throw_vx = 0, throw_vy = 0;
-        NPC::vector_from_magnitude_and_angle(mag, angle, throw_vx, throw_vy);
-
-        HeldObject::drop(held, player, held_object_slot_);
-
-        // &32f4 BIT this_object_any_bottom_collision — if the player is
-        // airborne, add the player's velocity_y to the throw's y so the
-        // object carries the player's vertical momentum. If supported,
-        // use the throw's y alone.
-        int new_vy = int(throw_vy);
-        if (!(player.flags & ObjectFlags::SUPPORTED)) {
-            new_vy += int(player.velocity_y);
-        }
-        if (new_vy >  127) new_vy =  127;
-        if (new_vy < -128) new_vy = -128;
-        held.velocity_y = static_cast<int8_t>(new_vy);
-
-        // &3303 — always add the player's velocity_x to the throw's vx.
-        int new_vx = int(throw_vx) + int(player.velocity_x);
-        if (new_vx >  127) new_vx =  127;
-        if (new_vx < -128) new_vx = -128;
-        held.velocity_x = static_cast<int8_t>(new_vx);
-
-        // Throwing disturbs collectables so they don't snap back to
-        // spawn mid-flight (port of the &4ba1 ASL/LSR on energy's high
-        // bit, reused here for the thrown-object case).
-        held.energy &= 0x7f;
-    };
-
     // ENTER kept as a backwards-compat toggle — pickup if not holding,
     // drop (no throw) if holding. Same edge handling.
     bool pd_down = inp.pickup_drop;
     bool pd_edge = pd_down && !pickup_drop_key_prev_;
     pickup_drop_key_prev_ = pd_down;
     if (pd_edge) {
-        if (held_object_slot_ < 0x80) drop_now();
-        else                          pickup_now();
+        if (held_object_slot_ < 0x80) drop_in_place(player);
+        else                          pickup_touching(player);
     }
 
     bool pickup_down = inp.pickup;
     bool pickup_edge = pickup_down && !pickup_key_prev_;
     pickup_key_prev_ = pickup_down;
-    if (pickup_edge) pickup_now();
+    if (pickup_edge) pickup_touching(player);
 
     bool drop_down = inp.drop;
     bool drop_edge = drop_down && !drop_key_prev_;
     drop_key_prev_ = drop_down;
-    if (drop_edge) drop_now();
+    if (drop_edge) drop_in_place(player);
 
     bool throw_down = inp.throw_obj;
     bool throw_edge = throw_down && !throw_key_prev_;
     throw_key_prev_ = throw_down;
-    if (throw_edge) throw_now();
+    if (throw_edge) throw_held(player);
 
     // Pocket store/retrieve — port of &34b4 store_object and &34f8
     // handle_retrieving_object. Store: push held object type onto pockets[0],

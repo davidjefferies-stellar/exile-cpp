@@ -156,15 +156,24 @@ bool Game::init() {
     cosmetic_rng_.seed(0x43, 0x4f, 0x53, 0x4d);
 
     // &0860-&08b4 initial object table: Triax pre-placed at (&99, &3b)
-    // adjacent to the destinator tertiary, so frame-1 update_triax fires
-    // the absorb + teleport beat without any scripted cutscene. Skipped
-    // when [creatures] spawn_initial_triax = false so the upper world
-    // can be explored without the frame-1 grab.
+    // with initial downward velocity. He fades in, falls onto the
+    // destinator at secondary &10 (&99, &3c), absorbs it and teleports
+    // away. Skipped when [creatures] spawn_initial_triax = false so the
+    // upper world can be explored without the intro grab.
     if (cfg.spawn_initial_triax) {
         Object& triax = object_mgr_.object(1);
         object_mgr_.init_object_from_type(triax, ObjectType::TRIAX);
         triax.x = {0x99, 0x64};
         triax.y = {0x3b, 0x20};
+        // &08f7 velocity_y[1]=&10 ships Triax falling so he lands on
+        // the destinator at secondary &10 (&99, &3c). &08c7 flags[1]
+        // also ships with TELEPORTING set and &0957 timer[1]=&0e — a
+        // 14-frame materialise-in delays the firing/absorb beat.
+        triax.velocity_y = 0x10;
+        triax.flags |= ObjectFlags::TELEPORTING;
+        triax.timer = 0x0e;
+        triax.tx = 0x99;
+        triax.ty = 0x3b;
     }
 
     // PIPE at (198, 190) re-typed BLUE_CYAN_IMP -> CRAB when
@@ -199,11 +208,16 @@ bool Game::init() {
     // game_debug.cpp alongside the other debug helpers.
     spawn_test_rigs(cfg.stress_test, cfg.grenade_chain, cfg.icer_drop);
 
-    // Truncate + open the lifecycle log. 
+    // Truncate + open the lifecycle log.
     if (cfg.logs_enabled) {
         debug_log_.open("exile-debug.log",
                         std::ios::out | std::ios::trunc);
     }
+    // Audio plays go through Audio::play / play_at — feed them the same
+    // stream so each sfx emits a one-line trace alongside the lifecycle
+    // events. Safe when debug_log_ failed to open (set_debug_log treats
+    // a null stream as "off").
+    Audio::set_debug_log(debug_log_.is_open() ? &debug_log_ : nullptr);
     dump_init_diagnostics();
 
     // Seed the activation anchor to the player's spawn tile before flushing
@@ -698,6 +712,25 @@ void Game::update_events() {
                 uint8_t x_frac = rng_.next();                  // &403c
                 uint8_t y_frac = is_blue ? 0x00 : 0xff;        // &3fe4 / &3fe6
                 object_mgr_.create_object(ball_type, /*min_free_slots=*/0,
+                                          tx, x_frac, ty, y_frac);
+            }
+        } else if (type == static_cast<uint8_t>(TileType::CONSTANT_WIND) ||
+                   type == static_cast<uint8_t>(TileType::VARIABLE_WIND) ||
+                   type == static_cast<uint8_t>(TileType::WATER)) {
+            // &401b create_invisible_debris_if_event, called from &3f4f
+            // (wind) and &3fa3 (water). Spawned debris are tracer primaries:
+            // apply_tile_environment pushes them, which drives the &3f73
+            // PARTICLE_WIND emit, and rolling robots (&3184) feed on them.
+            int count = 0;
+            for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+                const Object& o = object_mgr_.object(i);
+                if (o.is_active() && o.type == ObjectType::INVISIBLE_DEBRIS) count++;
+            }
+            if (count < 4) {                                    // &4028 CPY #&04
+                uint8_t y_frac = rng_.next();                   // &4035 STA y_frac
+                uint8_t x_frac = rng_.next();                   // &403c STA x_frac
+                object_mgr_.create_object(ObjectType::INVISIBLE_DEBRIS,
+                                          /*min_free_slots=*/0, // &402d &1e5a
                                           tx, x_frac, ty, y_frac);
             }
         }

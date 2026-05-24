@@ -2,6 +2,8 @@
 #include "behaviours/mood.h"
 #include "behaviours/path.h"
 #include "audio/audio.h"
+#include "objects/object_data.h"
+#include "particles/particle_system.h"
 #include "world/water.h"
 #include "world/tertiary.h"
 #include "core/types.h"
@@ -17,140 +19,242 @@ void update_player(Object& obj, UpdateContext& ctx) {
 
 // Common chatter logic shared by active and inactive (port of &48a7-&48c0)
 static void chatter_common(Object& obj, UpdateContext& ctx) {
-    // Diagnostic: log every frame the chatter is updated so we can see
-    // whether ctx.whistle_one_active ever propagates.
-    ctx.mgr.log_diag(
-        "chatter f=%u s%d type=0x%02x e=0x%02x timer=0x%02x state=0x%02x "
-        "w1_active=%d",
-        (unsigned)ctx.frame_counter, (int)ctx.this_slot,
-        (unsigned)static_cast<uint8_t>(obj.type),
-        (unsigned)obj.energy, (unsigned)obj.timer, (unsigned)obj.state,
-        (int)ctx.whistle_one_active);
-    // Respond to whistle one: activate chatter
+    // &48a7-&48af: whistle one sets timer bit 7 (the inactive-chatter
+    // activation gate) and forces mood to MINUS_TWO.
     if (ctx.whistle_one_active) {
-        obj.timer |= 0x80;  // Set activation flag
+        obj.timer |= 0x80;
         Mood::set_mood(obj, NPCMood::MINUS_TWO);
     }
 
-    // NPC stimuli (type 7)
+    // &48b1-&48b6: NPC stimuli (type 7) + path update.
     Mood::update_mood(obj, ctx);
 
-    // If fed coronium crystal (stimulus flag), increase energy reserve
-    // (Simplified: feeding happens through the touching/collision system)
+    // &48b9-&48bd: feeding. 6502 reads bit 0 of the stimuli byte (food
+    // absorbed) and INCs chatter_energy_reserve. Mood::update_mood owns
+    // the stimuli byte and doesn't surface it, so re-do the touch test
+    // here — the PENDING_REMOVAL stamp is idempotent.
+    if (ctx.chatter_energy_reserve &&
+        obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
+        Object& touched = ctx.mgr.object(obj.touching);
+        if (touched.is_active() &&
+            touched.type == ObjectType::CORONIUM_CRYSTAL) {
+            touched.flags |= ObjectFlags::PENDING_REMOVAL;
+            (*ctx.chatter_energy_reserve)++;
+        }
+    }
 }
 
-// &48D7: Active chatter - follows player, fires lightning, responds to whistles
+// Port of &3286 change_object_type: rewrites type, palette, sprite from
+// the type tables in one shot. Position recentre at &329e-&32b3 is
+// skipped — both Chatter variants share sprite 0x14 so the centre is
+// already correct.
+static void change_object_type(Object& obj, ObjectType new_type) {
+    uint8_t idx = static_cast<uint8_t>(new_type);
+    obj.type    = new_type;
+    obj.palette = object_types_palette_and_pickup[idx] & 0x7f;
+    obj.sprite  = object_types_sprite[idx];
+}
+
+// Port of &3547 flash_if_damaged with min_energy=0 (the LDY #&00 path
+// used by Chatter at &48da). No regen — strobes base_palette ^ &30 for
+// 2-in-8 frames when energy < &80, otherwise stamps base palette.
+static void flash_if_damaged(Object& obj, UpdateContext& ctx) {
+    uint8_t base = object_types_palette_and_pickup[
+        static_cast<uint8_t>(obj.type)] & 0x7f;
+    bool low_energy = obj.energy < 0x80;
+    bool damaged_phase = (ctx.frame_counter & 0x07) < 0x02;
+    obj.palette = (low_energy && damaged_phase)
+                      ? static_cast<uint8_t>(base ^ 0x30)
+                      : base;
+}
+
+// &48D7 update_active_chatter. Faithful port of the 6502:
+//   chatter_common -> flash_if_damaged -> energy=0 deactivate -> 1-in-32
+//   flip -> every 8 frames fire lightning at a CYAN_RED_TURRET within
+//   ~14 deg of horizontal -> chattering timer / sound -> whistle-two
+//   power pod -> set target=player (if untargeted) -> thrust_towards_target.
 void update_active_chatter(Object& obj, UpdateContext& ctx) {
     chatter_common(obj, ctx);
-    NPC::cancel_gravity(obj);
 
-    // Chatter can't be destroyed but deactivates at zero energy
+    // &48da-&48dc flash_if_damaged (min energy 0, Chatter is indestructible
+    // so the floor never matters — only the 2-in-8 strobe does).
+    flash_if_damaged(obj, ctx);
+
+    // &48df-&48e2: damage zeroed energy -> change_object_type back to
+    // INACTIVE_CHATTER (refreshes palette/sprite to the dormant tables).
     if (obj.energy == 0) {
-        obj.type = ObjectType::INACTIVE_CHATTER;
+        change_object_type(obj, ObjectType::INACTIVE_CHATTER);
         return;
     }
 
-    const Object& player = ctx.mgr.player();
-    int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
-    int8_t dy = static_cast<int8_t>(player.y.whole - obj.y.whole);
-
-    // Follow player at a distance (~2-3 tiles)
-    if (std::abs(dx) > 3) {
-        obj.velocity_x = (dx > 0) ? 4 : -4;
-    } else if (std::abs(dx) < 2) {
-        obj.velocity_x = (dx > 0) ? -2 : 2;
-    }
-    if (std::abs(dy) > 3) {
-        obj.velocity_y = (dy > 0) ? 4 : -4;
-    }
-
-    // 1 in 8 chance of flipping to match velocity
+    // &48e3-&48e5 consider_flipping_object_to_match_velocity_x_A with
+    // A=&1f -> 1-in-32 chance of flipping. AND mask matches any bit set
+    // in rnd; only zero (1/32) triggers the flip.
     if ((ctx.rng.next() & 0x1f) == 0) {
         NPC::face_movement_direction(obj);
     }
 
-    // Every 8 frames: consider firing lightning at enemies (&48ea)
+    // &48e8-&490d every_eight_frames: find_object A=&20 / Y=&86 — match
+    // CYAN_RED_TURRET as primary OR any FLYING_ENEMIES type (range index 6
+    // at &29ee + 6, covering &22..&31: clawed robots, Triax, maggot,
+    // gargoyle, imps, birds). The randomised pick / probability gate from
+    // &3c2a is collapsed to "first matching primary" here.
     if (ctx.every_eight_frames) {
-        // Search for flying enemies / turrets to target
+        int best = -1;
         for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
-            const Object& target = ctx.mgr.object(i);
-            if (!target.is_active()) continue;
-            uint8_t t = static_cast<uint8_t>(target.type);
-            // Target turrets and flying enemies
-            bool is_target = (t >= 0x1f && t <= 0x20) || // Turrets
-                             (t >= 0x1c && t <= 0x1e) || // Rolling robots
-                             t == 0x21;                   // Hovering robot
-            if (!is_target) continue;
+            const Object& cand = ctx.mgr.object(i);
+            if (!cand.is_active()) continue;
+            uint8_t t = static_cast<uint8_t>(cand.type);
+            bool is_turret = (t == 0x20);
+            bool is_flying = (t >= 0x22 && t <= 0x31);
+            if (!is_turret && !is_flying) continue;
+            best = i;
+            break;
+        }
+        if (best >= 0) {
+            const Object& tgt = ctx.mgr.object(best);
+            int8_t tdx = static_cast<int8_t>(tgt.x.whole - obj.x.whole);
+            int8_t tdy = static_cast<int8_t>(tgt.y.whole - obj.y.whole);
+            uint8_t angle = NPC::angle_from_deltas(tdx, tdy);
 
-            int8_t tdx = static_cast<int8_t>(target.x.whole - obj.x.whole);
-            int8_t tdy = static_cast<int8_t>(target.y.whole - obj.y.whole);
-            if (std::abs(tdx) < 8 && std::abs(tdy) < 4) {
-                // Fire lightning toward target
+            // &48f7-&48fd: ADC #&40 / EOR flags / BMI skip — fire only when
+            // the rotated angle's high bit matches the chatter's flip flag.
+            // ADC also sets carry when angle >= &c0, which the SBC below
+            // inherits (the difference between subtracting &0a vs &0b).
+            uint8_t rotated = static_cast<uint8_t>(angle + 0x40);
+            bool backward =
+                ((rotated ^ obj.flags) & 0x80) != 0;
+            bool carry_in = (angle >= 0xc0);
+
+            // &48ff-&4907: AND &7f / SBC &0a / CMP &6c / BCC skip. The SBC
+            // uses the carry from the ADC above, so we subtract &0a with
+            // carry set, &0b with carry clear. Underflow to a high A makes
+            // the CMP carry set too -> fire. Net: fires when masked is in
+            // [0x00..0x0a] (near "right") OR [0x77..0x7f] (near "left").
+            uint8_t masked   = static_cast<uint8_t>(angle & 0x7f);
+            uint8_t sub_val  = carry_in ? 0x0a : 0x0b;
+            uint8_t after_sb = static_cast<uint8_t>(masked - sub_val);
+            bool horizontal  = (after_sb >= 0x6c);
+
+            if (!backward && horizontal) {
+                // &4909 STA &12: chattering timer carries the SBC result so
+                // the pitch envelope downstream uses the firing angle.
+                obj.timer = after_sb;
                 int slot = NPC::fire_projectile(obj, ObjectType::LIGHTNING, ctx);
                 if (slot >= 0) {
                     Object& bolt = ctx.mgr.object(slot);
-                    bolt.velocity_x = (tdx > 0) ? 0x20 : -0x20;
-                    bolt.velocity_y = tdy;
+                    // &33a5-&33a9 create_lightning: x velocity = 0x28
+                    // signed by x_flip, y velocity = 0.
+                    bool facing_left = (obj.flags & ObjectFlags::FLIP_HORIZONTAL) != 0;
+                    bolt.velocity_x = facing_left ? -0x28 : 0x28;
+                    bolt.velocity_y = 0;
                     NPC::offset_child_from_parent(bolt, obj);
-                    obj.timer = 8; // Chattering animation timer
                 }
-                break;
             }
         }
     }
 
-    // Chattering animation (timer counts down when active)
-    if (obj.timer > 0 && !(obj.timer & 0x80)) {
+    // &490e-&4932 chattering: BEQ skip on timer == 0, else DEC timer; 1-in-4
+    // (rnd >= &c0) plays the chatter sound and stamps palette = cyB. The
+    // 6502 doesn't mask off bit 7 here — when the lightning-fire SBC
+    // underflows for "near right" angles, timer holds 0xf5+ and ticks down
+    // through 0x80 the same as any other start value.
+    if (obj.timer != 0) {
         obj.timer--;
-        // &4925-&492b: produce the chatter call. 6502 stores the
-        // computed pitch into envelopes_table + &cf via self-modifying
-        // code; we use the default block. Only fires periodically when
-        // chatter is animating (~1/4 of those frames).
-        if ((ctx.rng.next() & 0x03) == 0) {
-            obj.palette = 0x4b; // cyB when chattering
+        if (ctx.rng.next() >= 0xc0) {
+            // &491a-&4925 pitch computation: ((rnd>>2) ^ mood) + 0x40 ^ 0xc0
+            // >> 1, stored into envelopes_table + &cf so the chatter sound's
+            // second-stage freq delta varies per call. Without this every
+            // chatter plays at the identical pitch and sounds wrong.
+            uint8_t r     = ctx.rng.next();
+            uint8_t mood  = obj.state;
+            uint8_t pitch = static_cast<uint8_t>(
+                ((((r >> 2) ^ mood) + 0x40) ^ 0xc0) >> 1);
+            Audio::set_envelope_byte(0xcf, pitch);
+
             static constexpr uint8_t kSoundChatter[4] = { 0x33, 0xf3, 0xcd, 0x82 };
             Audio::play_at(Audio::CH_ANY, kSoundChatter,
                            obj.x.whole, obj.y.whole);
+            obj.palette = 0x4b;
         }
     }
 
-    // &4933-&494a produce power pod toward whistle-two source if 16-tile
-    // LOS clear (check_for_obstruction_between_objects_80). LOS is door-
-    // aware; without it Chatter fires through walls.
+    // &4933-&494b whistle-two power pod. fire toward the activator if LOS
+    // clear; carry-clear (the 6502's pod-created path) zeroes energy and
+    // deactivates Chatter on the next frame.
     uint8_t w2 = ctx.whistle_two_activator ? *ctx.whistle_two_activator : 0xff;
     if (w2 < GameConstants::PRIMARY_OBJECT_SLOTS &&
         NPC::has_line_of_sight(obj, w2, /*max_tiles=*/16, ctx)) {
         const Object& source = ctx.mgr.object(w2);
         int8_t sdx = static_cast<int8_t>(source.x.whole - obj.x.whole);
         int8_t sdy = static_cast<int8_t>(source.y.whole - obj.y.whole);
-        // Fire a power pod toward the whistle source.
         int slot = NPC::fire_projectile(obj, ObjectType::POWER_POD, ctx);
         if (slot >= 0) {
             Object& pod = ctx.mgr.object(slot);
-            pod.velocity_x = (sdx > 0) ? 0x10 : -0x10;
-            pod.velocity_y = (sdy > 0) ? 0x10 : -0x10;
+            // &493d-&4941 fire_at_target_with_velocity A=&40 (firing
+            // velocity * 4 = &10). 16-bit math for trajectory skipped.
+            pod.velocity_x = (sdx > 0) ?  0x10 : -0x10;
+            pod.velocity_y = (sdy > 0) ?  0x10 : -0x10;
             NPC::offset_child_from_parent(pod, obj);
-            obj.energy = 0; // Deactivate chatter after producing power pod
+            obj.energy = 0;
         }
+    }
+
+    // &494c-&4953: ORA touching, target_object; BNE skip; STA target_and_
+    // flags. Fires only when both already point at slot 0 (player). Net
+    // effect is clearing any flags Mood::update_mood may have stamped
+    // (AVOID etc.) when Chatter is already on the player.
+    uint8_t target_slot = obj.target_and_flags & TargetFlags::OBJECT_MASK;
+    if (obj.touching == 0 && target_slot == 0) {
+        obj.target_and_flags = 0;
+    }
+
+    // &4954 JMP thrust_towards_target (&487a):
+    //   LDA #&1c magnitude / LDY #&04 max_accel / LDX #&80 prob (1-in-2)
+    //   JSR move_towards_target_with_probability
+    //   DEC accel_y (cancel gravity)
+    //   JSR consider_hovering_over_ground   ; nudges accel_y up near ground
+    //   JMP add_jetpack_thrust_particles    ; emits when accel != 0
+    NPC::move_towards_target_with_probability(obj, ctx,
+                                              /*magnitude=*/0x1c,
+                                              /*max_accel=*/0x04,
+                                              /*prob_threshold=*/0x80);
+    NPC::cancel_gravity(obj);
+
+    // &1f3d add_jetpack_thrust_particles: the 6502 reads accel_x|accel_y
+    // which is non-zero whenever cancel_gravity or hover ran. Our port
+    // doesn't keep a persistent accel field, so use "any active thrust
+    // this frame" — Chatter is always thrusting while active.
+    if (ctx.particles) {
+        ctx.particles->emit(ParticleType::JETPACK, 1, obj, ctx.cosmetic_rng);
     }
 }
 
-// &48C1: Inactive chatter - activates when whistle one is played
+// &48C1 update_inactive_chatter. Activates only when whistle-one set the
+// timer bit 7 AND chatter_energy_reserve has been built up by feeding
+// coronium crystals (each whistle activation drains one reserve unit).
 void update_inactive_chatter(Object& obj, UpdateContext& ctx) {
     chatter_common(obj, ctx);
 
-    // Activate only when whistle one sets the activation flag
+    // &48c4-&48c6: timer bit 7 is the whistle-one latch; ignore otherwise.
     if (!(obj.timer & 0x80)) return;
 
-    // Check energy reserve
-    if (obj.energy == 0) {
-        // No energy: can't activate. Reset flag.
-        obj.timer &= 0x7f;
+    // &48c8 STA &15: refill energy on each activation attempt.
+    obj.energy = 0x80;
+
+    // &48ca-&48cd: DEC reserve; BMI -> &48bd INC reserve and leave (no
+    // activation). Without a reserve, no amount of whistling activates
+    // Chatter — the player must feed a CORONIUM_CRYSTAL first.
+    uint8_t* reserve = ctx.chatter_energy_reserve;
+    if (!reserve || *reserve == 0) {
         return;
     }
+    (*reserve)--;
 
-    // Activate: change to ACTIVE_CHATTER
-    obj.type = ObjectType::ACTIVE_CHATTER;
+    // &48cf JMP change_object_type — type, palette, and sprite together,
+    // otherwise the active Chatter inherits the inactive cyan-blue palette
+    // and looks identical to the dormant state.
+    change_object_type(obj, ObjectType::ACTIVE_CHATTER);
 }
 
 // Port of &46f0 update_crew_member:
@@ -901,13 +1005,26 @@ void update_worm(Object& obj, UpdateContext& ctx) {
     NPC::damage_player_if_touching(obj, ctx.mgr.player(), 3, ctx.damage_events, &ctx);
     NPC::face_movement_direction(obj);
 
-    // &4ea1-&4eb3 squeal pair: two pitches layered into one warble.
-    // play_at's 16-tile cutoff matches the 6502's distance gate.
-    if ((ctx.rng.next() & 0x0f) == 0) {
-        static constexpr uint8_t kSoundWormA[4] = { 0x33, 0xf3, 0x09, 0xb4 };
-        static constexpr uint8_t kSoundWormB[4] = { 0x33, 0xf3, 0x07, 0xb5 };
-        Audio::play_at(Audio::CH_ANY, kSoundWormA, obj.x.whole, obj.y.whole);
-        Audio::play_at(Audio::CH_ANY, kSoundWormB, obj.x.whole, obj.y.whole);
+    // &4e96-&4eb3 squeal pair: skip unless target has been seen, and
+    // scale frequency by distance — threshold = (0x0f ^ dist), play when
+    // threshold >= rnd. Effectively silent past ~10 tiles even though
+    // play_at allows 16; matches the 6502 fall-off.
+    if (obj.target_and_flags & TargetFlags::DIRECTNESS_TWO) {
+        const Object& player = ctx.mgr.player();
+        int8_t ddx = static_cast<int8_t>(obj.x.whole - player.x.whole);
+        int8_t ddy = static_cast<int8_t>(obj.y.whole - player.y.whole);
+        uint8_t adx = ddx < 0 ? -ddx : ddx;
+        uint8_t ady = ddy < 0 ? -ddy : ddy;
+        uint8_t dist = adx > ady ? adx : ady;
+        if (dist < 0x0f) {
+            uint8_t threshold = static_cast<uint8_t>(dist ^ 0x0f);
+            if (threshold >= ctx.rng.next()) {
+                static constexpr uint8_t kSoundWormA[4] = { 0x33, 0xf3, 0x09, 0xb4 };
+                static constexpr uint8_t kSoundWormB[4] = { 0x33, 0xf3, 0x07, 0xb5 };
+                Audio::play_at(Audio::CH_ANY, kSoundWormA, obj.x.whole, obj.y.whole);
+                Audio::play_at(Audio::CH_ANY, kSoundWormB, obj.x.whole, obj.y.whole);
+            }
+        }
     }
 
     // Random chance to despawn
@@ -1221,14 +1338,56 @@ static void triax_teleport_away(Object& obj) {
 }
 
 void update_triax(Object& obj, UpdateContext& ctx) {
+    // Triax intro diagnostics: position, velocity, destinator pos + AABB
+    // overlap, to see whether Triax can ever physically reach the
+    // destinator or is blocked by a solid tile above it.
+    int triax_x_abs = (int)obj.x.whole * 256 + (int)obj.x.fraction;
+    int triax_y_abs = (int)obj.y.whole * 256 + (int)obj.y.fraction;
+    int triax_right = triax_x_abs + 64;   // SPACESUIT_VERTICAL (w-1)*16
+    int triax_bot   = triax_y_abs + 168;  // SPACESUIT_VERTICAL (h-1)*8
+    int dest_slot = -1, dest_x_abs = 0, dest_y_abs = 0;
+    int dest_right = 0, dest_bot = 0;
+    for (int s = 1; s < GameConstants::PRIMARY_OBJECT_SLOTS; ++s) {
+        Object& o = ctx.mgr.object(s);
+        if (o.type == ObjectType::DESTINATOR && o.is_active()) {
+            dest_slot = s;
+            dest_x_abs = (int)o.x.whole * 256 + (int)o.x.fraction;
+            dest_y_abs = (int)o.y.whole * 256 + (int)o.y.fraction;
+            dest_right = dest_x_abs + 112; // CONSOLE (w-1)*16
+            dest_bot   = dest_y_abs + 88;  // CONSOLE (h-1)*8
+            break;
+        }
+    }
+    ctx.mgr.log_diag(
+        "TRIAX f=%u pos=(%02x.%02x,%02x.%02x) v=(%d,%d) touch=%02x "
+        "e=%02x fl=%02x tm=%02x bot=0x%04x right=0x%04x",
+        ctx.frame_counter,
+        obj.x.whole, obj.x.fraction, obj.y.whole, obj.y.fraction,
+        (int)obj.velocity_x, (int)obj.velocity_y, obj.touching,
+        obj.energy, obj.flags, obj.timer, triax_bot, triax_right);
+    if (dest_slot >= 0) {
+        bool xov = (triax_right > dest_x_abs) && (triax_x_abs < dest_right);
+        bool yov = (triax_bot   > dest_y_abs) && (triax_y_abs < dest_bot);
+        ctx.mgr.log_diag(
+            "  DEST p%d at=0x%04x,0x%04x bot=0x%04x right=0x%04x "
+            "y_gap=%d xov=%d yov=%d",
+            dest_slot, dest_x_abs, dest_y_abs, dest_bot, dest_right,
+            dest_y_abs - triax_bot, (int)xov, (int)yov);
+    } else {
+        ctx.mgr.log_diag("  DEST not in primary table");
+    }
+
     // &4704-&4710 absorb destinator -> re-arm tertiary &9d so it
     // respawns at (0x64, 0xd6) in the lab, then teleport away.
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
         Object& target = ctx.mgr.object(obj.touching);
+        ctx.mgr.log_diag("TRIAX touching slot=%02x type=%02x",
+                         obj.touching, (uint8_t)target.type);
         if (target.type == ObjectType::DESTINATOR) {
             target.flags |= ObjectFlags::PENDING_REMOVAL;
             ctx.mgr.set_tertiary_data_byte(0x9d, 0x80);
             triax_teleport_away(obj);
+            ctx.mgr.log_diag("TRIAX absorbed destinator -> teleport away");
             return;
         }
     }
@@ -1264,7 +1423,12 @@ void update_triax(Object& obj, UpdateContext& ctx) {
             bool grenade = (ctx.rng.next() & 0xf8) == 0;  // 1/32
             ObjectType proj = grenade ? ObjectType::ACTIVE_GRENADE
                                       : ObjectType::ICER_BULLET;
+            ctx.mgr.log_diag("TRIAX pre-seek v=(%d,%d)",
+                             (int)obj.velocity_x, (int)obj.velocity_y);
             NPC::seek_player(obj, player, 8);
+            ctx.mgr.log_diag("TRIAX post-seek v=(%d,%d) (seek_player "
+                             "OVERWRITES velocity — vs 6502 accel-based)",
+                             (int)obj.velocity_x, (int)obj.velocity_y);
             int8_t vx, vy;
             if (NPC::fire_at_target(obj, player, ctx.rng, vx, vy)) {
                 int slot = NPC::fire_projectile(obj, proj, ctx);

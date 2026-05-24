@@ -16,6 +16,17 @@
 
 namespace Behaviors {
 
+// get_absolute_vector_component (&2346): CMP #&7f sets carry iff value
+// is 0x00..0x7f (i.e. non-negative as the 6502 treats it); for &80..&ff
+// it negates via EOR #&ff / ADC #&01.
+static bool is_positive_6502(int8_t v) {
+    return static_cast<uint8_t>(v) <= 0x7f;
+}
+static uint8_t abs_6502(int8_t v) {
+    uint8_t u = static_cast<uint8_t>(v);
+    return (u <= 0x7f) ? u : static_cast<uint8_t>((~u) + 1);
+}
+
 // Port of &4dd4 rotate_colour_from_A:
 //   &4dd4 LSR A / LSR A           ; A >>= 2
 //   &4dd6 AND #&03                ; A &= 3
@@ -93,18 +104,8 @@ static int bullet_touching_damageable(const Object& obj, ObjectManager& mgr) {
 // recipe: 0x00 = +x (right), 0x40 = +y (down), 0x80 = -x (left),
 // 0xc0 = -y (up). The 5-bit quotient + 3-bit octant index gives 32 steps.
 static uint8_t calculate_angle_from_velocities(int8_t vx, int8_t vy) {
-    // get_absolute_vector_component (&2346): CMP #&7f sets carry iff value
-    // is 0x00..0x7f (i.e. non-negative as the 6502 treats it). For &80..&ff
-    // it negates via EOR #&ff / ADC #&01. Carry is rotated into
+    // Carry from get_absolute_vector_component is rotated into
     // vector_signs after each component is processed.
-    auto is_positive_6502 = [](int8_t v) -> bool {
-        return static_cast<uint8_t>(v) <= 0x7f;
-    };
-    auto abs_6502 = [](int8_t v) -> uint8_t {
-        uint8_t u = static_cast<uint8_t>(v);
-        return (u <= 0x7f) ? u : static_cast<uint8_t>((~u) + 1);
-    };
-
     uint8_t abs_x = abs_6502(vx);
     uint8_t abs_y = abs_6502(vy);
 
@@ -592,8 +593,6 @@ void update_plasma_ball(Object& obj, UpdateContext& ctx) {
 // shrink -> remove at 0); timer counts down, at -25 (&412b CMP #&e7)
 // flips growth to shrink.
 void update_lightning(Object& obj, UpdateContext& ctx) {
-    auto s8 = [](uint8_t u) { return static_cast<int8_t>(u); };
-
     // &1a35-&1a41 captures this_object_previous_velocity at frame start
     // (before any acceleration is applied this frame). update_lightning
     // runs before Physics::apply_acceleration in our port, so these are
@@ -625,7 +624,7 @@ void update_lightning(Object& obj, UpdateContext& ctx) {
         }
     }
 
-    int8_t size = s8(obj.state);
+    int8_t size = static_cast<int8_t>(obj.state);
 
     // &4114-&411c: decide whether this counts as "collided with something".
     // Original ORs in the tile-top/bottom collision bit (&1b); we don't track
@@ -643,8 +642,8 @@ void update_lightning(Object& obj, UpdateContext& ctx) {
 
     // &4127-&4130: timer goes from 0 to more-negative each frame. At -25
     // (0xe7) swap to shrinking by setting size negative; otherwise INX.
-    obj.timer = static_cast<uint8_t>(s8(obj.timer) - 1);
-    if (s8(obj.timer) == -25) {
+    obj.timer = static_cast<uint8_t>(static_cast<int8_t>(obj.timer) - 1);
+    if (static_cast<int8_t>(obj.timer) == -25) {
         size = static_cast<int8_t>(-std::abs(static_cast<int>(size)));
         if (size == 0) size = -1;
     } else {

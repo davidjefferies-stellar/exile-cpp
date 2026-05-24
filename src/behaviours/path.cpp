@@ -10,6 +10,15 @@ namespace NPC {
 // we've advanced one tile along the dominant axis.
 static constexpr int STEP_FRACTIONS = 0x20;
 
+// 16-bit centre of an object on one axis ("origin + half-tile" approximation).
+// Matches the 6502's `LDA this_object_width; LSR; ADC x_fraction` at &35e5;
+// we skip the sprite atlas here because LOS error <0.5 tile is below STEP.
+static int centre16_axis(const Object& o, bool is_x) {
+    int whole = is_x ? o.x.whole    : o.y.whole;
+    int frac  = is_x ? o.x.fraction : o.y.fraction;
+    return whole * 256 + frac + 0x80;
+}
+
 // Shared raycast body used by both the fixed-cap and randomised-cap
 // LOS variants. `cap_fracs` is the maximum Chebyshev distance to check,
 // expressed in 16-bit fraction units (whole * 256 + fraction).
@@ -21,23 +30,10 @@ static bool has_line_of_sight_fracs(const Object& obj,
     const Object& target = ctx.mgr.object(target_slot);
     if (!target.is_active()) return false;
 
-    // 16-bit centres so we can step along the ray without worrying about the
-    // 256-fraction / whole-tile boundary on every iteration. The centre is
-    // "object origin + sprite half-width", matching the 6502's vector
-    // between centres (&35e5 LDA this_object_width; LSR; ADC x_fraction).
-    auto centre16 = [](const Object& o, bool is_x) -> int {
-        // Without the sprite atlas here we approximate the centre as a
-        // half-tile offset. The 6502 uses the sprite's actual width/height
-        // but for LOS the error (<0.5 tile) is below the raycast step.
-        int whole = is_x ? o.x.whole    : o.y.whole;
-        int frac  = is_x ? o.x.fraction : o.y.fraction;
-        return whole * 256 + frac + 0x80;
-    };
-
-    int sx = centre16(obj,    true);
-    int sy = centre16(obj,    false);
-    int tx = centre16(target, true);
-    int ty = centre16(target, false);
+    int sx = centre16_axis(obj,    true);
+    int sy = centre16_axis(obj,    false);
+    int tx = centre16_axis(target, true);
+    int ty = centre16_axis(target, false);
 
     int dx = tx - sx;
     int dy = ty - sy;

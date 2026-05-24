@@ -261,22 +261,25 @@ static uint8_t check_top_bot_section(const Ctx& ctx, uint8_t y_section) {
 // On exit, ctx.top_obstr/bottom_obstr hold COUNTS (in sections), to be
 // scaled to depth via ASL ASL ASL at &300f-&301b.
 // =============================================================================
+// &2fb8: A = top_y_rounded; SEC; SBC top.y_offset; BCS skip; LDA #0.
+// Recomputes rounded-Y relative to each tile's obstruction y_offset.
+static void refresh_relative_offsets(const Ctx& ctx,
+                                     uint8_t& top_rel, uint8_t& bot_rel) {
+    if (ctx.top_y_rounded >= ctx.top_data.y_offset) {
+        top_rel = static_cast<uint8_t>(ctx.top_y_rounded - ctx.top_data.y_offset);
+    } else {
+        top_rel = 0;
+    }
+    if (ctx.bot_y_rounded >= ctx.bot_data.y_offset) {
+        bot_rel = static_cast<uint8_t>(ctx.bot_y_rounded - ctx.bot_data.y_offset);
+    } else {
+        bot_rel = 0;
+    }
+}
+
 static void count_top_and_bottom(Ctx& ctx) {
-    auto refresh_relative = [&](uint8_t& top_rel, uint8_t& bot_rel) {
-        // &2fb8: A = top_y_rounded; SEC; SBC top.y_offset; BCS skip; LDA #0.
-        if (ctx.top_y_rounded >= ctx.top_data.y_offset) {
-            top_rel = static_cast<uint8_t>(ctx.top_y_rounded - ctx.top_data.y_offset);
-        } else {
-            top_rel = 0;
-        }
-        if (ctx.bot_y_rounded >= ctx.bot_data.y_offset) {
-            bot_rel = static_cast<uint8_t>(ctx.bot_y_rounded - ctx.bot_data.y_offset);
-        } else {
-            bot_rel = 0;
-        }
-    };
     uint8_t top_rel, bot_rel;
-    refresh_relative(top_rel, bot_rel);
+    refresh_relative_offsets(ctx, top_rel, bot_rel);
 
     // &2fa3 TAY: section = obj.x_frac >> 5.
     int section = static_cast<int>(ctx.obj.x.fraction) >> 5;
@@ -342,7 +345,7 @@ static void count_top_and_bottom(Ctx& ctx) {
 
         // &300b LDY #&00; BEQ loop. Restart with refreshed relative offsets
         // (both tiles changed).
-        refresh_relative(top_rel, bot_rel);
+        refresh_relative_offsets(ctx, top_rel, bot_rel);
     }
 }
 
@@ -372,6 +375,13 @@ static uint8_t left_or_right_edge_depth(Ctx& ctx, uint8_t x_frac_at_edge,
     return check_top_bot_section(ctx, static_cast<uint8_t>(section));
 }
 
+// CMP #&80; ROR A — preserves sign while halving.
+static int8_t signed_half(int8_t v) {
+    return static_cast<int8_t>((static_cast<int>(v) >= 0)
+                                ? (v >> 1)
+                                : ((v >> 1) | 0x80));
+}
+
 // =============================================================================
 // Halve velocities and revert position — port of &3047
 // halve_object_velocities_and_clear_obstructions.
@@ -381,14 +391,8 @@ static void halve_velocities_and_revert(Ctx& ctx) {
     ctx.obj.x.fraction = ctx.prev_x_frac;
     ctx.obj.y.whole    = ctx.prev_y_whole;
     ctx.obj.y.fraction = ctx.prev_y_frac;
-    // CMP #&80; ROR A — preserves sign while halving.
-    auto half = [](int8_t v) {
-        return static_cast<int8_t>((static_cast<int>(v) >= 0)
-                                    ? (v >> 1)
-                                    : ((v >> 1) | 0x80));
-    };
-    ctx.obj.velocity_x = half(ctx.obj.velocity_x);
-    ctx.obj.velocity_y = half(ctx.obj.velocity_y);
+    ctx.obj.velocity_x = signed_half(ctx.obj.velocity_x);
+    ctx.obj.velocity_y = signed_half(ctx.obj.velocity_y);
 }
 
 // =============================================================================

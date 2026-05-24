@@ -236,6 +236,51 @@ ObjectCollisionResult check_object_collision(
     return result;
 }
 
+bool push_out_of_overlap(Object& obj, const Object& blocker) {
+    int p_x = obj.x.whole * 256 + obj.x.fraction;
+    int p_y = obj.y.whole * 256 + obj.y.fraction;
+    int p_w = sprite_width_units(obj.sprite);
+    int p_h = sprite_height_units(obj.sprite);
+    int o_x = blocker.x.whole * 256 + blocker.x.fraction;
+    int o_y = blocker.y.whole * 256 + blocker.y.fraction;
+    int o_w = sprite_width_units(blocker.sprite);
+    int o_h = sprite_height_units(blocker.sprite);
+
+    // Per-axis overlap depths (how far to shift `obj` to clear `blocker`
+    // in each direction). Matches the &2b51 find_smallest_overlap loop
+    // walking collision_plus_x / collision_minus_x / collision_plus_y /
+    // collision_minus_y. <= 0 on any axis means no overlap.
+    int shift_right = (o_x + o_w) - p_x;     // obj's left edge inside blocker -> shift right
+    int shift_left  = (p_x + p_w) - o_x;     // obj's right edge inside blocker -> shift left
+    int shift_down  = (o_y + o_h) - p_y;
+    int shift_up    = (p_y + p_h) - o_y;
+    if (shift_right <= 0 || shift_left <= 0 ||
+        shift_down  <= 0 || shift_up   <= 0) {
+        return false;
+    }
+
+    // Pick the axis with the smallest overlap — the path of least
+    // resistance out of the blocker.
+    int min_shift = shift_right;
+    int axis = 0;  // 0=right, 1=left, 2=down, 3=up
+    if (shift_left < min_shift) { min_shift = shift_left;  axis = 1; }
+    if (shift_down < min_shift) { min_shift = shift_down;  axis = 2; }
+    if (shift_up   < min_shift) { min_shift = shift_up;    axis = 3; }
+
+    switch (axis) {
+        case 0: p_x += min_shift; obj.velocity_x = static_cast<int8_t>(obj.velocity_x + 2); break;
+        case 1: p_x -= min_shift; obj.velocity_x = static_cast<int8_t>(obj.velocity_x - 2); break;
+        case 2: p_y += min_shift; obj.velocity_y = static_cast<int8_t>(obj.velocity_y + 2); break;
+        case 3: p_y -= min_shift; obj.velocity_y = static_cast<int8_t>(obj.velocity_y - 2); break;
+    }
+
+    obj.x.whole    = static_cast<uint8_t>((p_x >> 8) & 0xff);
+    obj.x.fraction = static_cast<uint8_t>(p_x & 0xff);
+    obj.y.whole    = static_cast<uint8_t>((p_y >> 8) & 0xff);
+    obj.y.fraction = static_cast<uint8_t>(p_y & 0xff);
+    return true;
+}
+
 int overlapping_solid_slot(const Object& obj, int self_slot,
                             const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects,
                             int skip_slot) {

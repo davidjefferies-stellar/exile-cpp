@@ -186,10 +186,12 @@ public:
     // grid should highlight this cell while the grid is on; others can ignore.
     virtual void set_highlighted_tile(uint8_t /*world_x*/, uint8_t /*world_y*/) {}
 
-    // Debug overlay: draw a small coloured swatch + label at a world tile.
-    // Each renderer can gate it on its own toggle; implementations that don't
-    // support overlays should leave the default no-op.
+    // Debug overlay: draw a small coloured swatch + label at a world
+    // position. Sub-tile fractions (1/256 unit, same as Object::x.fraction)
+    // place the marker at the object's actual location rather than its
+    // nearest tile. Tertiary callers pass 0/0 since they're tile-aligned.
     virtual void render_debug_marker(uint8_t /*world_x*/, uint8_t /*world_y*/,
+                                     uint8_t /*x_frac*/, uint8_t /*y_frac*/,
                                      uint32_t /*rgb*/,
                                      const char* /*label*/) {}
 

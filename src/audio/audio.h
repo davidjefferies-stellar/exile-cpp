@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <iosfwd>
 
 // BBC Micro-style 4-channel synthesis. Mirrors play_sound at &13fa so
 // each call site in the disassembly maps to one Audio::play here.
@@ -37,6 +38,11 @@ void play_at(int channel_hint, const uint8_t params[4],
 // player's tile position.
 void set_listener(uint8_t x, uint8_t y);
 
+// Patch one byte of the envelopes table. 6502 self-modifying-style
+// pitch tweak — Chatter does this at &4925 before play_sound for the
+// chattering sound effect. Offset is into the &2db9 table base (0..207).
+void set_envelope_byte(uint8_t offset, uint8_t value);
+
 // Per-frame tick: advance envelopes, render one frame's worth of
 // samples (882 at 44100 Hz / 50 fps), push to the device. Call once
 // per game tick. Safe before open() (silently does nothing).
@@ -54,5 +60,11 @@ bool is_enabled();
 // Enable the exile-audio.log file. Must be called before open() — gated
 // via [logs] enabled. Default off: the log file is never created.
 void set_log_enabled(bool on);
+
+// Plumb Game's exile-debug.log stream so every play() / play_at() emits
+// a one-line trace ("sfx ch=N params=[a b c d] @(x,y) dist=D"). Null
+// clears it. Independent of set_log_enabled (which controls the
+// separate exile-audio.log envelope/sample trace).
+void set_debug_log(std::ostream* log);
 
 }  // namespace Audio

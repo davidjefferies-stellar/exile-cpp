@@ -91,6 +91,14 @@ int overlapping_solid_slot(const Object& obj, int self_slot,
                            const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>& all_objects,
                            int skip_slot = -1);
 
+// Port of &2b80-&2b91 (the position-disengage limb of check_for_collisions):
+// picks the smallest-overlap axis of `obj` vs `blocker`'s AABB, shoves
+// `obj`'s position out along it, and adds ±2 to the matching velocity
+// component. Used so a door closing onto a stationary player pushes the
+// player aside instead of leaving them embedded in the door.
+// Returns true iff there was overlap to resolve.
+bool push_out_of_overlap(Object& obj, const Object& blocker);
+
 // Port of &2bee calculate_transfer_velocities + &2bc6 apply_collision_
 // to_object_velocity. Mass-ratio elastic-ish transfer:
 //   transfer = ((this_v - other_v)/2) / 2^|weight_diff|

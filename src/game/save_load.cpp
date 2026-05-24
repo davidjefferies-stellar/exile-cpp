@@ -197,6 +197,8 @@ void Game::write_state(std::ostream& f) const {
     for (int i = 0; i < 6; i++) f << " " << hex_word(weapon_energy_[i]);
     f << "\n";
     f << "jetpack_active "      << (jetpack_active_ ? 1 : 0) << "\n";
+    f << "lying_down "          << (player_lying_down_ ? 1 : 0) << "\n";
+    f << "lie_down_prev "       << (lie_down_prev_ ? 1 : 0) << "\n";
     f << "whistle_one_active "  << (whistle_one_active_ ? 1 : 0) << "\n";
     f << "whistle_two_activator " << hex_byte(whistle_two_activator_) << "\n";
     f << "whistle_one_collected " << (whistle_one_collected_ ? 1 : 0) << "\n";
@@ -439,6 +441,8 @@ bool Game::read_state(std::istream& f) {
                     weapon_energy_[i] = parse_u16(t[i + 1]);
             }
             else if (k == "jetpack_active")      jetpack_active_ = parse_num(t[1]) != 0;
+            else if (k == "lying_down")          player_lying_down_ = parse_num(t[1]) != 0;
+            else if (k == "lie_down_prev")       lie_down_prev_ = parse_num(t[1]) != 0;
             else if (k == "whistle_one_active")  whistle_one_active_ = parse_num(t[1]) != 0;
             else if (k == "whistle_two_activator") whistle_two_activator_ = parse_u8(t[1]);
             else if (k == "whistle_one_collected") whistle_one_collected_ = parse_num(t[1]) != 0;

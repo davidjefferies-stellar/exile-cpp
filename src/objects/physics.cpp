@@ -47,29 +47,12 @@ void apply_acceleration(Object& obj, int8_t accel_x, int8_t accel_y,
         int8_t old_vel     = velocity;
         int    gravity_bit = (axis == 0) ? 1 : 0;
 
-        // Port deviation (not in 6502): skip gravity when SUPPORTED and no
-        // y-axis input. The 6502 always adds gravity, which produces a
-        // gravity-vs-floor cycle that oscillates position by 1 push width
-        // each cycle. On the BBC's 8-px-tall tile that's invisible; at our
-        // 32-px tile resolution it crosses a pixel boundary. Cleared bit
-        // re-enables gravity the moment SUPPORTED clears (walked off a
-        // ledge, etc.) so the deviation is local to the resting case.
-        bool supported = (obj.flags & ObjectFlags::SUPPORTED) != 0;
-        if (axis == 0 && supported && accel == 0) {
-            gravity_bit = 0;
-        }
-
-        // &1f05-&1f0a: ADC acceleration + velocity (+ gravity carry for Y)
+        // &1f05-&1f0a: ADC acceleration + velocity (+ gravity carry for Y).
+        // Gravity always applies — even SUPPORTED. The resulting per-frame
+        // floor penetration is what makes walking onto an unlocked door
+        // generate AABB overlap with the door's primary.
         int sum = static_cast<int>(accel) + static_cast<int>(old_vel) + gravity_bit;
         int8_t new_vel = prevent_overflow(sum);
-
-        // Port deviation: clamp downward vy to 0 while SUPPORTED. Our
-        // 8-frac/pixel resolution magnifies the &3b3a-&3b44 floor-bias
-        // into a per-frame bounce; clamp pins vy=0 on flat ground without
-        // affecting jumps (vy<0) or slope descents (via vx).
-        if (axis == 0 && supported && new_vel > 0) {
-            new_vel = 0;
-        }
 
         // &1f0f-&1f16: skip-limit test. The original computes
         //   A = invert_if_negative(new_vel, sign_of_accel)
