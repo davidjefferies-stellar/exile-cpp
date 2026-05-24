@@ -393,19 +393,35 @@ void update_clawed_robot(Object& obj, UpdateContext& ctx) {
         Audio::play_at(Audio::CH_ANY, kSoundClawed, obj.x.whole, obj.y.whole);
     }
 
+    // &481f-&4824: capture "damaged" state. The 6502 ROR/LSR &11 keeps
+    // bit 7 of state as a sticky "recently took >=8 damage" flag for
+    // one frame so the teleport-away check below can skip.
+    bool recently_damaged = (obj.state & 0x80) != 0;
+    obj.state = static_cast<uint8_t>(obj.state & 0x7f);
+
     // Gain 2 energy per update
     if (obj.energy < 0xff - 1) obj.energy += 2;
     NPC::enforce_minimum_energy(obj, min_energy);
 
-    // Teleport away if low energy or can't reach player
-    if (obj.energy < 0x8c) {
-        if (ctx.rng.next() == 0) {
-            // Teleport to bottom of world
-            obj.y.whole = 0xfe;
-            obj.velocity_x = 0;
-            obj.velocity_y = 0;
-            return;
-        }
+    // &4837-&4845 teleport-away gate:
+    //   (energy < 0x8c) OR ((directness bits == 0) AND (frame_counter == 0))
+    //   AND NOT recently_damaged
+    // 6502 uses &06 this_object_frame_counter (slot*0x11+global).
+    uint8_t per_obj_counter = static_cast<uint8_t>(
+        ctx.this_slot * 0x11 + ctx.frame_counter);
+    bool directness_zero = (obj.target_and_flags & 0xc0) == 0;
+    bool should_teleport =
+        (obj.energy < 0x8c) ||
+        (directness_zero && per_obj_counter == 0);
+    if (should_teleport && !recently_damaged) {
+        // &489e STA &16 (ty = 0) + &0ce5 set_teleporting. We don't have
+        // the teleporting flag plumbed for clawed robots, so deactivate
+        // by zeroing y.whole (is_active gate); the slot will respawn
+        // from its tertiary entry when conditions match.
+        obj.y.whole = 0;
+        obj.velocity_x = 0;
+        obj.velocity_y = 0;
+        return;
     }
 
     // &4714 can_see_or_has_seen_player gate. Pursue/fire only at
