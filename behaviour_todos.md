@@ -28,7 +28,7 @@ comments) are not listed here unless the comment misrepresents what the
 | 14 | collectable.cpp:114-144 | &415b update_inactive_grenade | Doesn't check `ctx.player_object_fired`; 6502 promotes to ACTIVE_GRENADE when the held grenade is RCD-fired. Held-then-RCD-fired grenades sit inert. | At the top: `if (ctx.player_object_fired == ctx.this_slot) { /* promote to ACTIVE_GRENADE */ return; }`. |
 | ~~15~~ | ~~npc_helpers.cpp:38-41~~ | ~~cancel_gravity helper~~ | ~~Decrements `velocity_y` only when `>0`; 6502 `DEC acceleration_y` is unconditional. Every flier that is currently rising receives full gravity.~~ | ~~Drop the guard: `obj.velocity_y--;` (with int8 saturation).~~ DONE |
 | 16 | collectable.cpp:386-401 | &41ed coronium "player holding" | Proxies holding with `abs(dx)<=1 && abs(dy)<=1 && vx==player.vx`; misfires when player just stands next to a coronium boulder. | `bool player_holding = (ctx.held_object_slot == static_cast<uint8_t>(ctx.this_slot));` |
-| 17 | npc_helpers.cpp:567-577 | &31da move_towards_target_with_probability | Helper chases the target slot's live x/y instead of `obj.tx/obj.ty`; LOS-derived path waypoints are ignored, NPCs walk straight into walls. | Replace target.x/y with obj.tx/obj.ty in the diamond-metric so the path waypoint actually drives motion. |
+| ~~17~~ | ~~npc_helpers.cpp:567-577~~ | ~~&31da move_towards_target_with_probability~~ | ~~Helper chases the target slot's live x/y instead of `obj.tx/obj.ty`; LOS-derived path waypoints are ignored, NPCs walk straight into walls.~~ | ~~Replace target.x/y with obj.tx/obj.ty in the diamond-metric so the path waypoint actually drives motion.~~ DONE |
 
 ## MEDIUM — subtle correctness, edge cases, RNG drift
 

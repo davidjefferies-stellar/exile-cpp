@@ -559,15 +559,11 @@ void move_towards_target_with_probability(Object& obj, UpdateContext& ctx,
     uint8_t roll = ctx.rng.next();
     if (roll > prob_threshold) return;
 
-    // Resolve target slot — low 5 bits of target_and_flags, zero = player.
-    uint8_t slot = obj.target_and_flags & 0x1f;
-    const Object& target = (slot < GameConstants::PRIMARY_OBJECT_SLOTS &&
-                            ctx.mgr.object(slot).is_active())
-                           ? ctx.mgr.object(slot)
-                           : ctx.mgr.player();
-
-    int8_t tdx = static_cast<int8_t>(target.x.whole - obj.x.whole);
-    int8_t tdy = static_cast<int8_t>(target.y.whole - obj.y.whole);
+    // &31e1 set_target_object_x_y_from_this_object_tx_ty: chase the path
+    // waypoint (obj.tx/obj.ty), not the live target slot's position, so
+    // LOS-derived detours actually drive the motion.
+    int8_t tdx = static_cast<int8_t>(obj.tx - obj.x.whole);
+    int8_t tdy = static_cast<int8_t>(obj.ty - obj.y.whole);
 
     // Approximates &3347's diamond metric with sign*magnitude per axis;
     // the max_accel clamp saturates long before the ratio matters for
