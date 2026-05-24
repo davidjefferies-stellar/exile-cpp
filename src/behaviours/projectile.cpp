@@ -926,6 +926,17 @@ static void fireball_damage_and_animate(Object& obj, UpdateContext& ctx,
 // &4AD6 update_fireball. Stationary fire: gate on permanent vs temporary,
 // then run the shared damage/animate tail.
 void update_fireball(Object& obj, UpdateContext& ctx) {
+    // &4ad6-&4adc water-removal: when completely underwater, AND the
+    // waterline-negative flag with two peeked rnd bytes (state[1] and
+    // state[2]); if all three have bit 7 set, fizzle. ~1-in-4 per frame
+    // submerged. Without this, fireballs persist forever in water.
+    if (Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole) &&
+        (ctx.rng.peek(1) & ctx.rng.peek(2) & 0x80)) {
+        if (ctx.particles) ctx.particles->emit(ParticleType::PLASMA, 30, obj, ctx.cosmetic_rng);
+        obj.flags |= ObjectFlags::PENDING_REMOVAL;
+        return;
+    }
+
     // &4ade reads this_object_target_object: zero = temporary fireball
     // (from plasma_ball mutation), non-zero = permanent (from tertiary).
     // That's the low 5 bits of target_and_flags (&0906), NOT state
