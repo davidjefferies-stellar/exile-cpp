@@ -183,6 +183,18 @@ void update_npc_path(Object& obj, UpdateContext& ctx) {
         break;
     }
     case 1: {
+        // &3d40-&3d4a use_slightly_relaxed_path. ~1-in-512 chance of
+        // dropping the directness one level so the NPC eventually loses
+        // interest if the target stays just out of clear LOS.
+        if ((ctx.rng.next() & 0xff) == 0 && (ctx.rng.next() & 0x80) == 0) {
+            uint8_t d = obj.target_and_flags &
+                        (TargetFlags::DIRECTNESS_TWO |
+                         TargetFlags::DIRECTNESS_ONE);
+            if (d >= TargetFlags::DIRECTNESS_ONE) {
+                obj.target_and_flags = static_cast<uint8_t>(
+                    obj.target_and_flags - TargetFlags::DIRECTNESS_ONE);
+            }
+        }
         // use_slightly_relaxed_path (&3d40): head roughly toward target
         // but jitter the position by ±~2 tiles so the NPC doesn't line
         // up perfectly. Mirrors the 6502's &3d51 use_vector_between_
