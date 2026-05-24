@@ -314,8 +314,12 @@ void update_fluffy(Object& obj, UpdateContext& ctx) {
         is_squealing = true;
     }
 
-    // Every 8 frames, check for nearby enemies (imps)
-    if ((ctx.frame_counter & 0x0b) == 0) {
+    // &42a8-&42ac every-8-frames enemy scan. 6502 uses &06 this_object_
+    // frame_counter (slot*0x11+global) so multiple fluffies don't scan
+    // on the same frames.
+    uint8_t fluffy_counter = static_cast<uint8_t>(
+        ctx.this_slot * 0x11 + ctx.frame_counter);
+    if ((fluffy_counter & 0x0b) == 0) {
         // Search for nearby imps or flying enemies
         for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
             const Object& other = ctx.mgr.object(i);
@@ -1294,8 +1298,12 @@ void update_gargoyle(Object& obj, UpdateContext& ctx) {
     uint8_t type = static_cast<uint8_t>(obj.tertiary_data_offset & 0x7f);
     if (type >= 5) type = 0;
 
-    // &4170-&4175: fire when (freq_mask & frame_counter) == 0.
-    if ((kFreqMask[type] & ctx.frame_counter) == 0) {
+    // &4170-&4175: fire when (freq_mask & this_object_frame_counter) == 0.
+    // 6502 uses &06 (slot*0x11 + global) — phases per-slot so multiple
+    // gargoyles don't fire in lockstep.
+    uint8_t per_obj_counter = static_cast<uint8_t>(
+        ctx.this_slot * 0x11 + ctx.frame_counter);
+    if ((kFreqMask[type] & per_obj_counter) == 0) {
         int8_t vx = kVx[type];
         int8_t vy = kVy[type];
         // &33ab-&33b0 invert_if_negative flips vx when x_flip is set —
