@@ -198,6 +198,22 @@ void update_mood(Object& npc, UpdateContext& ctx) {
         }
     }
 
+    // &2804-&280d: 50%-skip find_target for the variant's food so a
+    // hungry NPC can target a visible food primary even when not yet
+    // adjacent. Stamps target_and_flags the same way the phobia branch
+    // does on a hit (DIRECTNESS_ONE, AVOID cleared).
+    if ((ctx.rng.next() & 0x80) == 0) {
+        bool _player = false, _primary = false;
+        int food_slot = find_target(npc, ctx, ctx.this_slot,
+                                    kFood[cat], 0xff, 16,
+                                    _player, _primary);
+        if (food_slot >= 0) {
+            npc.target_and_flags = static_cast<uint8_t>(
+                (food_slot & TargetFlags::OBJECT_MASK) |
+                TargetFlags::DIRECTNESS_ONE);
+        }
+    }
+
     // &2812-&281c eating: touched object's type matches the variant's
     // food. Mark the food for removal so it's not re-detected next
     // frame, matching consider_absorbing_object_touched at &3bef.
