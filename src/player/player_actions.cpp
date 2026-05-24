@@ -265,6 +265,21 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
     }
     if (player_immobility_thrust_ > 0) player_immobility_thrust_--;
 
+    // &3798-&37a2 every-16-frames energy regen. &37a0 BCS skip preserves
+    // the value on overflow rather than wrapping past 0xff.
+    if (every_sixteen_frames_) {
+        int e = int(player.energy) + 4;
+        if (e <= 0xff) player.energy = static_cast<uint8_t>(e);
+    }
+
+    // &37ac-&37b2 damage_immobility_set. Effective rule: if energy <
+    // 0x10, force movement immobility to (0x10 - energy). Re-arms the
+    // continuous wobble + jetpack cut-out below the damage threshold.
+    if (player.energy < 0x10) {
+        player_immobility_movement_ =
+            static_cast<uint8_t>(0x10 - player.energy);
+    }
+
     // Build a working copy of the input with movement / thrust masked
     // off while immobilised. lie_down also clears (per &24b1 LSR &31).
     InputState inp = inp_in;
@@ -689,5 +704,22 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
         if (w == 0 || (player_weapons_collected_[w] & 0x80)) {
             player_weapon_ = w;
         }
+    }
+
+    // &37e6-&380d jetpack drain. Eligible iff jumping/flying (state low
+    // nibble >= 0x0a OR forced this frame by jetpack/up/down/boost-
+    // horizontal via &2c7a) AND currently accelerating AND functioning
+    // jetpack. Cadence: every 2 frames on boost, every 8 otherwise.
+    bool flying_now = inp.jetpack || inp.move_up || inp.move_down ||
+                      (inp.boost && (inp.move_left || inp.move_right));
+    bool jumping_state = (player.state & 0x0f) >= 0x0a;
+    bool thrusting = (accel_x != 0 || accel_y != 0);
+    bool functioning = (weapon_energy_[0] > 0) &&
+                       (player_immobility_movement_ < 0x06) &&
+                       (player_immobility_thrust_ == 0);
+    if ((flying_now || jumping_state) && thrusting && functioning) {
+        bool drain_tick = inp.boost ? every_two_frames_
+                                    : every_eight_frames_;
+        if (drain_tick) weapon_energy_[0]--;
     }
 }
