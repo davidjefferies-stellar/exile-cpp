@@ -50,6 +50,13 @@ struct Object {
     // update_rotating_player (&3814-&3856) — the angle of incidence
     // chooses which way to tumble.
     uint8_t    pre_collision_angle = 0;
+    // 6502 &50/&54/&52/&56 previous_(x_fraction|x|y_fraction|y). Captured
+    // from the object table at &1a27-&1a33 at the start of each object
+    // update; the per-type updater can revert position from this snapshot
+    // via &28aa set_position_from_previous_position (used by placeholders
+    // and disturb-pinned collectables).
+    Fixed8_8   prev_x = {};
+    Fixed8_8   prev_y = {};
 
     bool is_active() const { return y.whole != 0; }
     bool is_flipped_h() const { return flags & ObjectFlags::FLIP_HORIZONTAL; }

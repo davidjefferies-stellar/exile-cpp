@@ -100,12 +100,17 @@ void update_collectable(Object& obj, UpdateContext& ctx) {
         obj.energy &= 0x7f;
     }
 
-    // &4ba5-&4ba7: if undisturbed, pin position by zeroing velocity.
-    // Net effect is the object stays put on its tile until touched.
+    // &4ba5-&4bac: if undisturbed, set_velocities_to_zero_and_position_
+    // from_previous_position. Reverting position undoes any drift physics
+    // applied last frame (gravity, wind) — the 6502 owns motion in the
+    // per-type update so position is naturally pinned; we need the revert
+    // because our physics step runs after this routine.
     bool undisturbed = (obj.energy & 0x80) != 0;
     if (undisturbed) {
         obj.velocity_x = 0;
         obj.velocity_y = 0;
+        obj.x = obj.prev_x;
+        obj.y = obj.prev_y;
     }
 }
 

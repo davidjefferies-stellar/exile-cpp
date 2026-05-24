@@ -13,7 +13,7 @@ comments) are not listed here unless the comment misrepresents what the
 | # | File:line | 6502 ref | What's wrong | Fix |
 |---|-----------|----------|--------------|-----|
 | ~~1~~ | ~~environment.cpp:1050-1059~~ | ~~&419f update_maggot_machine~~ | ~~Routine has been replaced with a maggot spawner; the original squeals + h-flips every 64 frames and (when underwater) triggers earthquake+flood+explosion. Machine never blows up underwater, never chirps.~~ | ~~Replace body with underwater check -> squeal + flip + damaged-palette flash. Maggot spawning lives elsewhere (&25aa).~~ DONE (underwater earthquake/flood branch deferred — needs mutable Game state in UpdateContext) |
-| 2 | environment.cpp:1145-1178 | &4b64 update_placeholder | Partial: kept touch+can_trigger gate. Strict 6502 LOS path replaced with anchor-Chebyshev (old port behaviour) because we lack `prev_x/y` to pin position each pinned frame — gravity drift would otherwise sink placeholders. Full 6502 gate needs prev-position plumbing. | Add `prev_x/y` to Object, restore each pinned frame, then re-enable the 6502 every-16 + non-equipment + player-LOS gate. |
+| ~~2~~ | ~~environment.cpp:1145-1178~~ | ~~&4b64 update_placeholder~~ | ~~Converts on any touch and uses anchor-Chebyshev distance, missing the four-step 6502 gate (touch+can_trigger, else every-16, range != 9, player-LOS). Equipment placeholders pop into view as the camera pans.~~ | ~~Port the four-step gate verbatim; use `check_for_obstruction_between_objects_80` to slot 0.~~ DONE (prev_x/y now plumbed; placeholder pinned via position-from-previous; PLACEHOLDER added to gravity_exempt) |
 | ~~3~~ | ~~environment.cpp:198-205~~ | ~~&4cfb update_door BPL~~ | ~~Stop-door branch uses `wide_next > 0`; 6502's BPL fires when `>= 0`. Doors clamped to exactly 0 fall through to open-end logic and can auto-cycle.~~ | ~~`closed_end = (wide_next >= 0)`.~~ DONE |
 | ~~4~~ | ~~environment.cpp:520-559~~ | ~~&499d / &4a09 update_switch~~ | ~~Switch press always plays the click sound; 6502 plays a second "switch had effect" sound (`c7 c3 c1 03`) only when a toggled byte actually changed.~~ | ~~Inside `process_switch_effects`, capture pre-data, compare post-data, fire the second `play_sound` on diff.~~ DONE |
 | ~~5~~ | ~~environment.cpp:673~~ | ~~&4dd2 update_transporter_beam~~ | ~~Palette cycles from global frame counter; every transporter beam in the world is in phase. 6502 uses per-object `&06` which is slot*0x11 + global.~~ | ~~Use a per-object frame counter (Object has none today; compute `slot*0x11 + frame_counter`).~~ DONE |
@@ -82,7 +82,7 @@ These are documented or rare enough they can wait.
 - environment.cpp:130-136 door axis pin: matches on second read.
 - collectable.cpp:198-207 destinator chirp stochastic vs deterministic `&06 AND #&1f`.
 - collectable.cpp:99-101 disturb pin clears energy bit 0 (`ASL/LSR` quirk) — port preserves it.
-- collectable.cpp:99-101 disturb pin also reverts position in 6502; port only zeros velocity.
+- ~~collectable.cpp:99-101 disturb pin also reverts position in 6502; port only zeros velocity.~~ DONE (uses obj.prev_x/y)
 - collectable.cpp:401 radiation underwater uses centre-of-object instead of top.
 - npc_helpers.cpp:412 aim_toward Manhattan denom vs 6502 lookup table.
 - projectile.cpp:382 active-grenade rotates palette from post-INC timer (one frame off).

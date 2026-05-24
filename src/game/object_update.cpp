@@ -177,6 +177,11 @@ void Game::update_objects() {
         Object& obj = object_mgr_.object(slot);
         if (!obj.is_active()) continue;
 
+        // &1a27-&1a33 prelude: snapshot current position into prev_x/y so
+        // per-type updaters can revert via set_position_from_previous.
+        obj.prev_x = obj.x;
+        obj.prev_y = obj.y;
+
         // Step 3: &1afd-&1b54 — snap held primary flush to player's
         // facing side, then run the shared check_for_collisions. Drift
         // (held_expected_* vs post-resolve) feeds &1ca9 drop test.
@@ -428,7 +433,12 @@ void Game::update_objects() {
             uint8_t tflags = (tidx < static_cast<uint8_t>(ObjectType::COUNT))
                              ? object_types_flags[tidx] : 0;
             bool fully_static = obj.weight() >= 7;
-            bool gravity_exempt = (tflags & ObjectTypeFlags::INTANGIBLE) != 0;
+            // 6502 placeholders pin position via set_position_from_
+            // previous_position each frame they stay; the per-type
+            // update fully owns motion, so the +1 gravity our shared
+            // physics step adds is a port artefact. Exempt them.
+            bool gravity_exempt = (tflags & ObjectTypeFlags::INTANGIBLE) != 0 ||
+                                  obj.type == ObjectType::PLACEHOLDER;
             // Energy-bit-7 pin: pure collectables (keys + equipment)
             // that route through update_collectable, which clears bit 7
             // on touch. Excludes types in 0x4a..0x63 that use their own

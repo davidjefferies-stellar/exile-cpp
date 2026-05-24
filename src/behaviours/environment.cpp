@@ -1169,17 +1169,20 @@ void update_engine_fire(Object& obj, UpdateContext& ctx) {
     obj.x.fraction = static_cast<uint8_t>(xf + 0x90);
 }
 
-// &4b64 update_placeholder_object. Convert when:
+// &4b64 update_placeholder_object. Convert iff:
 //   touched + toucher can trigger switches (&4b66), OR
-//   in range of the activation anchor (port-only proxy for the 6502's
-//   `every-16 + non-equipment + player-LOS` check at &4b6b-&4b7d). We
-//   skip the strict 6502 path because the original also restores the
-//   placeholder's position from `prev_x/y` each "stay" frame and our
-//   port lacks that field, so placeholders pinned via the LOS gate
-//   would slowly drift downward as gravity accumulates between checks.
+//   every-16-frames AND real_type is NOT equipment (range 9) AND LOS to
+//   the player (slot 0) is clear (&4b6b-&4b7d).
+// Otherwise &4bac set_velocities_to_zero_and_position_from_previous_position
+// — zero velocity + revert position so gravity drift is undone.
 void update_placeholder(Object& obj, UpdateContext& ctx) {
     obj.velocity_x = 0;
     obj.velocity_y = 0;
+    // &4bac position-from-previous: undo any drift physics applied last
+    // frame before we get the chance to skip it via gravity_exempt this
+    // frame. Belt-and-braces with the gravity exemption in object_update.
+    obj.x = obj.prev_x;
+    obj.y = obj.prev_y;
 
     uint8_t real_type = obj.tertiary_data_offset & 0x7f;
     if (real_type == 0 ||
@@ -1191,14 +1194,15 @@ void update_placeholder(Object& obj, UpdateContext& ctx) {
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
         should_convert =
             object_can_trigger_switches(ctx.mgr.object(obj.touching));
-    } else {
-        uint8_t anchor_x = ctx.mgr.activation_anchor_x();
-        uint8_t anchor_y = ctx.mgr.activation_anchor_y();
-        int8_t  dx = static_cast<int8_t>(anchor_x - obj.x.whole);
-        int8_t  dy = static_cast<int8_t>(anchor_y - obj.y.whole);
-        uint8_t adx = static_cast<uint8_t>(dx < 0 ? -dx : dx);
-        uint8_t ady = static_cast<uint8_t>(dy < 0 ? -dy : dy);
-        should_convert = (adx <= 16 && ady <= 16);
+    } else if ((ctx.frame_counter & 0x0f) == 0) {
+        // &4b6b every-16-frames gate. &4b71-&4b74: equipment (range 9)
+        // never converts via LOS — only on direct touch.
+        constexpr int kEquipmentRange = 9;
+        if (get_range_for_object_type(real_type) != kEquipmentRange) {
+            // &4b7a check_for_obstruction_between_objects_80 to slot 0.
+            should_convert =
+                NPC::has_line_of_sight(obj, 0, /*max_tiles=*/16, ctx);
+        }
     }
     if (!should_convert) return;
 
