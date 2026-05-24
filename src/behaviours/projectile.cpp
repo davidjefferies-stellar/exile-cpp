@@ -757,7 +757,10 @@ void update_red_mushroom_ball(Object& obj, UpdateContext& ctx) {
 // energy, but the lifespan (~64 frames) matches.
 void update_invisible_debris(Object& obj, UpdateContext& ctx) {
     obj.timer++;
-    if (obj.timer >= 64) obj.energy = 0;
+    // &4796 JMP set_object_for_removal: quiet removal at lifespan end.
+    // energy=0 would re-enter step 12 and mutate the slot into an
+    // EXPLOSION with default duration + particles.
+    if (obj.timer >= 64) obj.flags |= ObjectFlags::PENDING_REMOVAL;
 }
 
 // &4799 update_red_drop. Explodes on tile or non-slime object contact.
