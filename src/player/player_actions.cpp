@@ -146,9 +146,11 @@ void Game::throw_held(Object& player) {
     uint8_t w = held.weight();
     if (w > 6) w = 6;
 
-    // &32e9-&32ee: random 0..7 added to base magnitude.
+    // &32e9-&32ee: random 0..7 + base + carry-out of the rnd routine
+    // (AND #&07 preserves C between the rnd JSR and the ADC).
     uint8_t base = THROW_MAG_BY_WEIGHT[w];
-    uint8_t mag  = static_cast<uint8_t>(base + (rng_.next() & 0x07));
+    uint8_t r    = rng_.next();
+    uint8_t mag  = static_cast<uint8_t>(base + (r & 0x07) + rng_.last_carry());
 
     // &32f1 calculate_vector_from_magnitude_and_angle.
     int8_t throw_vx = 0, throw_vy = 0;
@@ -549,8 +551,11 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
 
         int8_t angle = static_cast<int8_t>(player_aim_angle_);
         if (inp.aim_centre) {
+            // &3120-&3126 falls through into handle_raising_aim's DEC
+            // &d3, so pressing I also nudges accel to -1 this frame.
             angle = 0;
             player_aim_velocity_ = 0;
+            accel = -1;
         }
 
         // &30fe BEQ skip_acceleration: with accel==0 the velocity gets

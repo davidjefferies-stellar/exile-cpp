@@ -20,12 +20,12 @@ uint8_t angle_from_vector(int8_t vx, int8_t vy) {
 
     // &22e2-&22ef. Seed 0b00001000; ASL small / conditional SBC / ROL
     // angle five times leaves the division bits in low 5; the sentinel
-    // overflows out on the 5th ROL and ends the loop.
+    // overflows out on the 5th ROL and ends the loop. The 6502's CMP
+    // clobbers the carry out of ASL, so the shifted-out bit is lost.
     uint8_t angle = 0x08;
     while (true) {
-        bool carry_in = (small & 0x80) != 0;
         small = static_cast<uint8_t>(small << 1);
-        bool ge = carry_in || small >= magnitude;
+        bool ge = small >= magnitude;
         if (ge) small = static_cast<uint8_t>(small - magnitude);
         bool sentinel_out = (angle & 0x80) != 0;
         angle = static_cast<uint8_t>((angle << 1) | (ge ? 1 : 0));

@@ -18,6 +18,10 @@ public:
     // Convenience: random value AND mask
     uint8_t next_masked(uint8_t mask) { return next() & mask; }
 
+    // Carry out of the last ADC inside next(). Mirrors the 6502 caller
+    // doing AND #imm (which preserves C) and feeding C into a later ADC.
+    uint8_t last_carry() const { return carry_; }
+
     // Get current state for save/load
     uint8_t state(int i) const { return state_[i]; }
 
