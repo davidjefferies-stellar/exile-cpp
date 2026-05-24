@@ -475,43 +475,43 @@ void update_tracer_bullet(Object& obj, UpdateContext& ctx) {
     emit_projectile_trail(obj, ctx);
 }
 
-// &4326: Cannonball — 170 (&aa) damage, no gravity, no timer-based
-// lifespan (unlike most projectiles). The 6502 routine falls through into
-// blue-death-ball (&4332) which shares the expiry-on-tile-hit logic.
+// &4332 update_blue_death_ball: damageable touch -> explode dur 16;
+// tile collision -> explode dur 16; lifespan timer 0 -> explode dur 0;
+// else face velocity + trail particles. The damage itself comes from
+// the radial explosion, not the per-touch hit.
+void update_blue_death_ball(Object& obj, UpdateContext& ctx) {
+    int tgt = bullet_touching_damageable(obj, ctx.mgr);
+    if (tgt >= 0)        { explode_object_with_duration(obj, 0x10); return; }
+    if (obj.tile_collision) { explode_object_with_duration(obj, 0x10); return; }
+    if (obj.timer > 0) obj.timer--;
+    if (obj.timer == 0)  { explode_object_with_duration(obj, 0);    return; }
+    emit_projectile_trail(obj, ctx);
+}
+
+// &4326 update_cannonball: cancel gravity, deal 170 damage on touch,
+// then fall through to update_blue_death_ball for the explosion +
+// tile-collision + lifespan-timer plumbing.
 void update_cannonball(Object& obj, UpdateContext& ctx) {
     NPC::cancel_gravity(obj);
-    // Damage on touch (any object, not just player)
-    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
-        Object& target = ctx.mgr.object(obj.touching);
+    int tgt = bullet_touching_damageable(obj, ctx.mgr);
+    if (tgt >= 0) {
+        Object& target = ctx.mgr.object(tgt);
         uint16_t hurt = std::min<uint16_t>(170, target.energy);
         if (target.energy > 170) target.energy -= 170;
         else                     target.energy = 0;
+        target.flags |= ObjectFlags::WAS_DAMAGED;
         if (ctx.damage_events) {
             DamageVisual ev;
             ev.src_x = obj.x.whole; ev.src_y = obj.y.whole;
             ev.src_x_frac = obj.x.fraction; ev.src_y_frac = obj.y.fraction;
             ev.tgt_x = target.x.whole; ev.tgt_y = target.y.whole;
             ev.tgt_x_frac = target.x.fraction; ev.tgt_y_frac = target.y.fraction;
-            ev.tgt_slot = static_cast<int8_t>(obj.touching);
+            ev.tgt_slot = static_cast<int8_t>(tgt);
             ev.amount = hurt;
             ctx.damage_events->push_back(ev);
         }
-        obj.energy = 0; // explode
     }
-    emit_projectile_trail(obj, ctx);
-}
-
-// &4332: Blue death ball - dangerous projectile
-void update_blue_death_ball(Object& obj, UpdateContext& ctx) {
-    common_bullet_update(obj, ctx, 40);
-    // Death ball has slight homing
-    if (ctx.every_eight_frames) {
-        const Object& player = ctx.mgr.player();
-        int8_t dx = static_cast<int8_t>(player.x.whole - obj.x.whole);
-        if (dx > 0 && obj.velocity_x < 0x10) obj.velocity_x++;
-        if (dx < 0 && obj.velocity_x > -0x10) obj.velocity_x--;
-    }
-    emit_projectile_trail(obj, ctx);
+    update_blue_death_ball(obj, ctx);
 }
 
 // Port of &434a update_red_bullet:
