@@ -147,10 +147,11 @@ void update_door(Object& obj, UpdateContext& ctx) {
         hit_by_aim_cone(obj, ctx, ObjectType::REMOTE_CONTROL_DEVICE)) {
         uint8_t door_colour = (obj.tertiary_data_offset >> 4) & 0x07;
         if (ctx.player_keys_collected[door_colour] & 0x80) {
+            // &31c2-&31cd consider_toggling_lock followed by &4cad ORA
+            // #&04 forces MOVING set on the lock frame regardless of the
+            // new lock state. Don't clear MOVING here.
             data ^= DoorFlag::LOCKED;
-            if (data & DoorFlag::LOCKED) {
-                data &= ~DoorFlag::MOVING;
-            } else {
+            if (!(data & DoorFlag::LOCKED)) {
                 data |= DoorFlag::OPENING;
             }
             // &31d0-&31d3 lock/unlock chime — same params for both
