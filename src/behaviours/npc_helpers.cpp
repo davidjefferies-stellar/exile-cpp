@@ -34,10 +34,11 @@ static int firing_centre(const Object& o, bool is_x) {
 }
 
 // Port-only helper. 6502 inlines `DEC this_object_acceleration_y` per
-// flier (birds &4686, wasps &4f31) to cancel &1f01's +1 gravity.
+// flier (birds &4686, wasps &4f31) to cancel &1f01's +1 gravity. The
+// DEC is unconditional; gating on vy>0 let rising fliers still receive
+// gravity, which is the &15 audit's CRITICAL #15.
 void cancel_gravity(Object& obj) {
-    // Counteract the +1 gravity applied by physics each frame.
-    if (obj.velocity_y > 0) obj.velocity_y--;
+    if (obj.velocity_y > -128) obj.velocity_y--;
 }
 
 // Reduced port. 6502 uses &3311 calculate_firing_vector_from_angle_A
