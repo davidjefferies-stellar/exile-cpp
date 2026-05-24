@@ -1169,38 +1169,38 @@ void update_engine_fire(Object& obj, UpdateContext& ctx) {
     obj.x.fraction = static_cast<uint8_t>(xf + 0x90);
 }
 
-// &4B64 update_placeholder_object + &4B7F convert_placeholder_object.
-// data byte low 7 bits = real object type; placeholder converts on LOS or
-// touch. Port-only: LOS approximated as Chebyshev distance (no raycast).
+// &4b64 update_placeholder_object. Convert iff:
+//   touched + toucher can trigger switches (heavy enough, not blacklisted)
+//   OR  every-16-frames AND real_type is NOT equipment (range 9) AND
+//       LOS to the player (slot 0) is clear.
+// Equipment placeholders only convert on direct touch.
 void update_placeholder(Object& obj, UpdateContext& ctx) {
-    // Keep the placeholder pinned — zero velocity every frame so an errant
-    // stream from physics / wind / water can't drift it off its tile.
     obj.velocity_x = 0;
     obj.velocity_y = 0;
 
-    // Convert on physical contact (touching != 0x80 means something's there).
-    bool touched = obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS;
-
-    // &359a anchor-proximity gate. 6502 uses A=&80 (16 tiles); viewport
-    // is ~20 wide so anything tighter leaves placeholders visible.
-    uint8_t anchor_x = ctx.mgr.activation_anchor_x();
-    uint8_t anchor_y = ctx.mgr.activation_anchor_y();
-    int8_t dx = static_cast<int8_t>(anchor_x - obj.x.whole);
-    int8_t dy = static_cast<int8_t>(anchor_y - obj.y.whole);
-    uint8_t adx = static_cast<uint8_t>(dx < 0 ? -dx : dx);
-    uint8_t ady = static_cast<uint8_t>(dy < 0 ? -dy : dy);
-    bool visible = (adx <= 16 && ady <= 16);
-
-    if (!touched && !visible) return;
-
-    // Pull the real object type out of the tertiary data byte that
-    // spawn_tertiary_object copied into obj.tertiary_data_offset (with the
-    // spawn bit already stripped).
     uint8_t real_type = obj.tertiary_data_offset & 0x7f;
     if (real_type == 0 ||
         real_type >= static_cast<uint8_t>(ObjectType::COUNT)) {
-        return;  // Nothing to convert to; stay a placeholder.
+        return;  // No backing type; stay a placeholder.
     }
+
+    bool should_convert = false;
+    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
+        // &4b66 check_if_object_can_trigger_switches.
+        should_convert =
+            object_can_trigger_switches(ctx.mgr.object(obj.touching));
+    } else if ((ctx.frame_counter & 0x0f) == 0) {
+        // &4b6b every-16-frames gate. &4b71-&4b74: equipment (range 9)
+        // never converts via LOS.
+        constexpr int kEquipmentRange = 9;
+        if (get_range_for_object_type(real_type) != kEquipmentRange) {
+            // &4b7a check_for_obstruction_between_objects_80 to slot 0.
+            should_convert =
+                NPC::has_line_of_sight(obj, 0, /*max_tiles=*/16, ctx);
+        }
+    }
+    if (!should_convert) return;
+
     obj.type = static_cast<ObjectType>(real_type);
     obj.sprite = object_types_sprite[real_type];
     obj.palette = object_types_palette_and_pickup[real_type] & 0x7f;
