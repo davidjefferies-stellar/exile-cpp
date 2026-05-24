@@ -378,20 +378,12 @@ static void coronium_common(Object& obj, UpdateContext& ctx) {
         }
     }
 
-    // Radiation damage to player (&41eb-&4203)
-    // If touching player directly, always damage.
-    // If player is holding this object, 1 in 4 chance per frame.
+    // Radiation damage to player (&41eb-&4203). If touching player
+    // directly, always damage; if the player is holding this exact slot
+    // (&41f0 CMP &dd player_object_held), 1-in-4 chance per frame.
     bool touching_player = (obj.touching == 0);
-    bool player_holding = false;
-
-    // Approximate held-check: player at adjacent position with same velocity
-    const Object& player = ctx.mgr.player();
-    int8_t dx = static_cast<int8_t>(obj.x.whole - player.x.whole);
-    int8_t dy = static_cast<int8_t>(obj.y.whole - player.y.whole);
-    if (std::abs(dx) <= 1 && std::abs(dy) <= 1 &&
-        obj.velocity_x == player.velocity_x) {
-        player_holding = true;
-    }
+    bool player_holding =
+        ctx.held_object_slot == static_cast<uint8_t>(ctx.this_slot);
 
     if (touching_player || (player_holding && (ctx.rng.next() & 0xc0) == 0)) {
         // Per-column waterline (radiation blocked by water). SURFACE_Y
