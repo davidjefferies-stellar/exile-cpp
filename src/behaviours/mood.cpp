@@ -80,7 +80,14 @@ int find_target(const Object& npc, UpdateContext& ctx, int self_slot,
     int best_slot = -1;
     int best_dist = 0x7fff;
     bool best_primary = false, best_player = false;
-    for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+    // &3c4a randomises the walking order so equidistant phobia matches
+    // tie-break non-deterministically. XOR the loop index with a nibble
+    // of rnd so each call visits slots in a different sequence; the
+    // first-best-wins comparison then yields varied picks across calls.
+    uint8_t order_xor = static_cast<uint8_t>(ctx.rng.next() & 0x0f);
+    for (int raw = 0; raw < GameConstants::PRIMARY_OBJECT_SLOTS; raw++) {
+        int i = (raw ^ order_xor) & 0x0f;
+        if (i >= GameConstants::PRIMARY_OBJECT_SLOTS) continue;
         if (i == self_slot) continue;
         const Object& other = ctx.mgr.object(i);
         if (!other.is_active()) continue;
