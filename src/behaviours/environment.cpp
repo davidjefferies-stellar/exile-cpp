@@ -1065,15 +1065,24 @@ void update_cannon(Object& obj, UpdateContext& ctx) {
     // never trigger anyway.
 }
 
-// &419F: Maggot machine - spawns maggots
+// &419f update_maggot_machine. Every 64 frames: squeal + h-flip (the
+// underwater branch sets earthquake/flooding + explodes, but that needs
+// mutable Game state we don't expose through UpdateContext yet — for
+// now, treat fully-submerged the same as not). Then flash the damaged
+// palette for 8 out of every 64 frames. Maggot spawning is in &25aa.
 void update_maggot_machine(Object& obj, UpdateContext& ctx) {
-    if (ctx.every_sixty_four_frames) {
-        int slot = ctx.mgr.create_object_at(ObjectType::MAGGOT, 4, obj);
-        if (slot >= 0) {
-            Object& maggot = ctx.mgr.object(slot);
-            maggot.velocity_x = (ctx.rng.next() & 0x07) - 3;
-            maggot.velocity_y = -4;
-        }
+    uint8_t phase = ctx.frame_counter & 0x3f;
+    if (phase == 0) {
+        // &41b7 play_squeal.
+        static constexpr uint8_t kSoundSqueal[4] = { 0x33, 0x03, 0x2d, 0x84 };
+        Audio::play_at(Audio::CH_ANY, kSoundSqueal, obj.x.whole, obj.y.whole);
+        // &41ba flip_this_object_horizontally.
+        obj.flags ^= ObjectFlags::FLIP_HORIZONTAL;
+    }
+    // &41bd-&41bf use_damaged_palette_if_carry_clear: damaged palette
+    // for the first 8 frames of each 64-frame cycle.
+    if (phase < 8) {
+        obj.palette ^= 0x30;
     }
 }
 
