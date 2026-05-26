@@ -28,3 +28,6 @@ docs/
 *.dec
 *.log
 exile-EXILE1-disassembly.txt
+# Exception: extracted BBC saves under save_disks/ are reference data,
+# not runtime output — keep them tracked.
+!save_disks/extracted/**/*.sav
