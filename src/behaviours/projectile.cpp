@@ -604,13 +604,19 @@ void update_lightning(Object& obj, UpdateContext& ctx) {
     int8_t prev_vx = obj.velocity_x;
     int8_t prev_vy = obj.velocity_y;
 
-    bool touching = (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS);
     bool damaged_something = false;
 
-    // &4101-&4110: damage the touching object (except ACTIVE_CHATTER).
-    if (touching) {
-        Object& target = ctx.mgr.object(obj.touching);
-        if (target.type != ObjectType::ACTIVE_CHATTER) {
+    // &4101-&4110: damage the touching object. &4103 calls &1fc9 which
+    // excludes PROJECTILES range (0x12-0x1b), EXPLOSION (0x44), BUSH
+    // (0x40), and FIREBALL (0x37); &4108 skips ACTIVE_CHATTER (0x01).
+    int tgt = bullet_touching_damageable(obj, ctx.mgr);
+    if (tgt >= 0) {
+        Object& target = ctx.mgr.object(tgt);
+        uint8_t tt = static_cast<uint8_t>(target.type);
+        bool skip = (target.type == ObjectType::ACTIVE_CHATTER) ||
+                    (target.type == ObjectType::FIREBALL) ||
+                    (tt >= 0x12 && tt <= 0x1b);
+        if (!skip) {
             uint16_t hurt = std::min<uint16_t>(80, target.energy);
             if (target.energy > 80) target.energy -= 80;
             else                    target.energy = 0;
@@ -620,7 +626,7 @@ void update_lightning(Object& obj, UpdateContext& ctx) {
                 ev.src_x_frac = obj.x.fraction; ev.src_y_frac = obj.y.fraction;
                 ev.tgt_x = target.x.whole; ev.tgt_y = target.y.whole;
                 ev.tgt_x_frac = target.x.fraction; ev.tgt_y_frac = target.y.fraction;
-                ev.tgt_slot = static_cast<int8_t>(obj.touching);
+                ev.tgt_slot = static_cast<int8_t>(tgt);
                 ev.amount = hurt;
                 ctx.damage_events->push_back(ev);
             }
