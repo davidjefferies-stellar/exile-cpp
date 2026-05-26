@@ -47,9 +47,12 @@ static bool hit_by_aim_cone(const Object& target, UpdateContext& ctx,
     const Object& fired = ctx.mgr.object(ctx.player_object_fired);
     if (!fired.is_active() || fired.type != control_type) return false;
 
-    // Chebyshev range gate at 3 tiles. The 6502 raycast at &359c also
-    // returns the distance in &83 in &20-fractions — we approximate
-    // with the tile count × 8 below.
+    // Port-only deviation from &0bd2: 6502 calls &359c which raycasts
+    // and returns the actual ray distance in &20-fractions (&83). We
+    // use Chebyshev*8 which over-quantises diagonal hits — a target
+    // 2.5 tiles diagonal reads as 16 (2*8), the 6502 would read ~20.
+    // Net effect: aim cone widens slightly on diagonals. Accepted as
+    // the LOS raycast helper here doesn't surface a distance.
     int8_t fdx = static_cast<int8_t>(fired.x.whole - target.x.whole);
     int8_t fdy = static_cast<int8_t>(fired.y.whole - target.y.whole);
     int adx = fdx < 0 ? -fdx : fdx;
