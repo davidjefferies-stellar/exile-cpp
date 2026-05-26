@@ -766,7 +766,9 @@ void update_hive(Object& obj, UpdateContext& ctx) {
             count++;
         }
     }
-    uint8_t roll = ctx.rng.next() & ctx.rng.next() & ctx.rng.next() & 0x07;
+    // &4bca-&4bd1: JSR rnd + AND &da + AND &dc (both peeks) + AND #&07.
+    // Two peek bytes vs three next() — preserve the rng stream.
+    uint8_t roll = ctx.rng.next() & ctx.rng.peek(1) & ctx.rng.peek(3) & 0x07;
     if (roll < count) return;
 
     // &4bd7-&4bde find_object A=0x0e Y=0x86: skip spawning if any
