@@ -492,26 +492,6 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                    static_cast<uint8_t>(ObjectType::RED_MAGENTA_IMP);
     if (tidx >= 5) tidx = 0;
 
-    // &27c9/&2814/&4552 food absorption + WAS_FED latch. Hoisted above
-    // the at-home block so an imp eating in its pipe drops same frame,
-    // matching the 6502's post-stimuli was-fed promotion.
-    bool was_fed_before = (obj.state & kNPC_WAS_FED) != 0;
-    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
-        Object& touched = ctx.mgr.object(obj.touching);
-        if (touched.is_active() &&
-            static_cast<uint8_t>(touched.type) == imp_food_type[tidx]) {
-            touched.flags |= ObjectFlags::PENDING_REMOVAL;
-            obj.state |= kNPC_WAS_FED;
-            if (!was_fed_before) {
-                ctx.mgr.log_diag(
-                    "imp p%d tidx=%u FED by type=0x%02x @%u,%u",
-                    ctx.this_slot, tidx,
-                    static_cast<unsigned>(touched.type),
-                    obj.x.whole, obj.y.whole);
-            }
-        }
-    }
-
     // &450c-&453f at-home gift drop. Runs on any PIPE tile, drops gift
     // when fed+counter>0, ALWAYS despawns at end — without &453f the imp
     // camps the pipe and re-runs the block forever.
@@ -649,6 +629,28 @@ void update_imp(Object& obj, UpdateContext& ctx) {
     // &4542-&4548: minimum energy per type. Reached only via the
     // not_home branch in the 6502, so kept after the at-home block.
     NPC::enforce_minimum_energy(obj, imp_minimum_energy[tidx]);
+
+    // &4548 check_for_npc_stimuli food absorption (not-home branch only,
+    // per the BNE &4542 at &4515). An imp can NOT eat and drop a gift on
+    // the same frame — the at-home branch returns before reaching here.
+    {
+        bool was_fed_before = (obj.state & kNPC_WAS_FED) != 0;
+        if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
+            Object& touched = ctx.mgr.object(obj.touching);
+            if (touched.is_active() &&
+                static_cast<uint8_t>(touched.type) == imp_food_type[tidx]) {
+                touched.flags |= ObjectFlags::PENDING_REMOVAL;
+                obj.state |= kNPC_WAS_FED;
+                if (!was_fed_before) {
+                    ctx.mgr.log_diag(
+                        "imp p%d tidx=%u FED by type=0x%02x @%u,%u",
+                        ctx.this_slot, tidx,
+                        static_cast<unsigned>(touched.type),
+                        obj.x.whole, obj.y.whole);
+                }
+            }
+        }
+    }
 
     // &4548: check_for_npc_stimuli — updates the mood based on
     // environmental factors (time, damage, eating, …). Our Mood::
