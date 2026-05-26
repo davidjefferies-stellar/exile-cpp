@@ -668,12 +668,14 @@ void update_lightning(Object& obj, UpdateContext& ctx) {
     // For |size| in [1..4] this gives 0x6d..0x70 (QUARTER..NEST).
     obj.sprite = static_cast<uint8_t>(std::abs(static_cast<int>(size)) + 0x6c);
 
-    // &4142-&4148: v-flip every frame (bit 0 of frame_counter), h-flip
-    // every two frames (bit 1).
-    if (ctx.frame_counter & 0x01)
-        obj.flags ^= ObjectFlags::FLIP_VERTICAL;
-    if ((ctx.frame_counter & 0x03) == 0)
-        obj.flags ^= ObjectFlags::FLIP_HORIZONTAL;
+    // &4142-&4148 LSR/ROR sequence: y_flip bit 7 := fc bit 0 (toggle
+    // every frame), x_flip bit 7 := fc bit 1 (toggle every two frames).
+    // 6502 assigns the bit; XOR-toggling drifts since our flag is a bit
+    // in obj.flags rather than the 6502's dedicated &39/&37 byte.
+    obj.flags = (obj.flags & ~ObjectFlags::FLIP_VERTICAL) |
+                ((ctx.frame_counter & 0x01) ? ObjectFlags::FLIP_VERTICAL : 0);
+    obj.flags = (obj.flags & ~ObjectFlags::FLIP_HORIZONTAL) |
+                ((ctx.frame_counter & 0x02) ? ObjectFlags::FLIP_HORIZONTAL : 0);
 
     // &414a-&4152: DEC acceleration_y (cancel gravity), then velocity =
     // previous_velocity. After update_lightning returns, our physics
