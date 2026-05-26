@@ -172,6 +172,12 @@ void update_door(Object& obj, UpdateContext& ctx) {
 
     // &4cbe-&4cd5: energy refill above colour threshold, else slow->destroy
     // ladder. Door re-spawns from tertiary entry once explosion slot is reaped.
+    // Port deviation: 6502 has a known dead branch at &4cd3 (BCS never
+    // taken — carry was cleared by the preceding fall-through) that
+    // overwrites door energy with (data | 0x08) on the not-slow path.
+    // We skip the garbage write — the energy is refilled to 0xff next
+    // frame anyway, but if you're diffing against the original this
+    // single byte will differ on the SLOW_OR_DESTROYED transition frame.
     if (obj.energy >= doors_energy_table[colour_pair]) {
         obj.energy = 0xff;
     } else if (slow) {
