@@ -3,16 +3,20 @@
 [![tests](https://github.com/davidjefferies-stellar/exile-cpp/actions/workflows/tests.yml/badge.svg)](https://github.com/davidjefferies-stellar/exile-cpp/actions/workflows/tests.yml)
 
 A C++ port of the BBC Micro masterpiece **Exile** (Peter Irvin & Jeremy Smith, 1988),
-working from the original 6502 disassembly. The goal of the project is educational -
+working from the original 6502 disassembly. 
+
+The goal of the project is educational -
 to re-author the 6502 in C++ for easier study and to preserve its groundbreaking 
 concepts and techniques for a future where people no longer know 6502.
+
+This project is **not** a remake, remaster, reimagining or beginnings of a sequel to **Exile**. As such its is only intended to be playable in-so-far as is necessary to achieve the educational goals of the project. If you wish to play **Exile** from start to finish (and I would very much recommend that you do) then that is best achieved using an original copy of the game running on original hardware or under emulation.
 
 The disassembly used as the spec is the superb effort by Level7 and lives at 
 `exile-standard-disassembly.txt`in the project root.
 
 ## Build
 
-Visual Studio solution. There's no CMake / headless build path right now.
+Visual Studio solution. 
 
 **Command line (MSBuild):**
 
@@ -80,15 +84,11 @@ Map-mode toggle and the rest of the debug overlays (tile grid, object
 labels, switch / transporter wires, collision shading, debug text) live
 on the bottom-HUD checkboxes — click them to toggle.
 
-## Save / load
+## Map save / load
 
-Three different files, three different keys.
-
-| Key | File | Notes |
-|-----|------|-------|
-| `;` | `exile.sav` | Writes a text-format snapshot of mutable game state: frame counter, RNG, player, events, 16 primaries, 32 secondaries, 235 tertiary bytes. Landscape is *not* in this file — it's deterministic from the seed (or comes from `exile.map`). |
-| `'` | `exile.sav` | Loads the snapshot back. |
-| `\` | `exile.map` | Writes the current 256×256 landscape grid (post-bake, plus any tertiary edits). Shows a "Saved exile.map" / "Save FAILED" banner. |
+The 256×256 landscape grid lives in `exile.map`. Press `\` to write the
+current grid (post-bake, plus any tertiary edits) — a short "Saved
+exile.map" / "Save FAILED" banner confirms the write.
 
 **When does the map load procedurally vs. from disk?**
 
@@ -103,6 +103,42 @@ algorithm.
 So: delete (or rename) `exile.map` to get the procedural map; press `\`
 once to capture the current grid and the game will load that one
 forever after.
+
+## Game save / load
+
+Game state (everything *except* the landscape) is saved and loaded
+separately. Two formats, auto-detected by file size:
+
+- **Native text format** (any size other than 1024 bytes). Human-readable
+  `[player] [events] [object N] [secondary N] [rng]` sections. Press `;`
+  to write the current state to `exile.sav`; press `'` to load it back.
+  The landscape isn't persisted — it's deterministic from the seed (or
+  comes from `exile.map`, see the section above) — so the save only
+  needs the mutable state (frame counter, RNG, player, the 16 primary
+  and 32 secondary slots, 235 bytes of tertiary data, particles, input).
+
+- **BBC binary format** (exactly 1024 bytes). The original Exile save
+  layout: 0x37e bytes of XOR-streamed (BCD-keyed) state followed by
+  0x82 bytes of page-align padding. `Game::load_bbc_save` decrypts via
+  a port of the supervisor's `&2f80 decrypt_temporary_copy_of_game_state`
+  and rejects the file if the trailing `player_teleports_x/_y` spawn
+  pair or the checksum at offset 0x35a don't match. Once decrypted, the
+  layout maps to supervisor memory `&1a20..&1d9d` — the same range the
+  real BBC's load routine writes into.
+
+Both formats are loaded the same way. Open the **Saves** panel via the
+HUD checkbox to see a scrollable list of `save_disks/*.sav` files
+(numeric sort, mouse + arrow-key navigation); click a row or press
+Enter to load. The load path probes the file size: 1024 bytes means
+BBC, anything else means native. If `exile.ini` has
+`[player] bbc_save = ...`, that file is dropped over the world on
+startup instead of the default spawn — handy for jumping straight into
+a late-game state.
+
+The full byte-level layout of the BBC binary format is documented in
+`docs/save_game_format.md`. The `save_disks/` directory holds the
+original game's saves 1-end extracted from `.ssd` floppy disk images;
+see `tools/extract_ssd_saves.py` for the extraction script.
 
 ## Landscape generator: C++ vs pseudo-6502
 
@@ -159,4 +195,21 @@ src/
   player/       Input, motion, action, sprite handling.
   game/         Top-level loop orchestration (game.cpp ≤ ~200 lines).
 ```
+
+## Licence
+
+The C++ source in this repository is © 2025-2026 David Jefferies and is
+released under the [PolyForm Noncommercial 1.0.0](LICENSE) licence —
+free to use, copy, modify and distribute for any non-commercial purpose
+(study, research, hobby, education). Commercial use is not permitted.
+
+No copyright is asserted over the original BBC Micro *Exile* (1988) by
+Peter Irvin and Jeremy Smith, published by Superior Software. This is a
+fan port written for study and preservation; the C++ source does not
+embed the original binary. The port was produced by reading a publicly
+circulated 6502 disassembly (`exile-standard-disassembly.txt`), included
+in this repository for cross-reference only — it is third-party material
+and is not licensed for redistribution by this project. All rights in
+the original game remain with its authors and publisher; if you are a
+rights-holder and would like anything removed, please open an issue.
 
