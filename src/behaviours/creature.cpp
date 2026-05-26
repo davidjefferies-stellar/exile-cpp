@@ -19,11 +19,12 @@ void update_player(Object& obj, UpdateContext& ctx) {
 
 // Common chatter logic shared by active and inactive (port of &48a7-&48c0)
 static void chatter_common(Object& obj, UpdateContext& ctx) {
-    // &48a7-&48af: whistle one sets timer bit 7 (the inactive-chatter
-    // activation gate) and forces mood to MINUS_TWO.
+    // &48ad-&48af STA &12 / STA &11: whistle one writes A=0x80 to both
+    // timer and state, clearing low bits — not OR / set_mood, which
+    // preserved them. A mid-chatter retrigger must reset cleanly.
     if (ctx.whistle_one_active) {
-        obj.timer |= 0x80;
-        Mood::set_mood(obj, NPCMood::MINUS_TWO);
+        obj.timer = 0x80;
+        obj.state = NPCMood::MINUS_TWO;
     }
 
     // &48b1-&48b6: NPC stimuli (type 7) + path update.
