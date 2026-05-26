@@ -899,7 +899,7 @@ void update_green_frogman(Object& obj, UpdateContext& ctx) {
 //   &4475 LSR &2b ; this_object_visibility   ; clear top bit → invisible
 // Bit 7 of palette is our visibility flag (matches update_invisible_bird).
 void update_invisible_frogman(Object& obj, UpdateContext& ctx) {
-    obj.palette &= 0x7f;
+    obj.visible = false;  // &4475 LSR &2b unconditional
     update_green_frogman(obj, ctx);
 }
 
@@ -1259,11 +1259,9 @@ void update_red_magenta_bird(Object& obj, UpdateContext& ctx) {
 // 6502 stores visibility at &2b; we use bit 7 of obj.palette since
 // that's the plot path that honours invisibility in our port.
 void update_invisible_bird(Object& obj, UpdateContext& ctx) {
-    // &462b-&462f: if bird hasn't taken damage recently, clear the top
-    // bit of this_object_visibility to make it invisible again.
-    if (obj.state == 0) {
-        obj.palette &= 0x7f;    // invisible this frame
-    }
+    // &462b-&462f: state == 0 means not recently damaged; clear visibility
+    // (default true from &1ae1 reset) so the renderer skips the draw.
+    if (obj.state == 0) obj.visible = false;
     update_bird_common(obj, ctx);
 }
 

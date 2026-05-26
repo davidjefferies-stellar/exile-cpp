@@ -41,6 +41,11 @@ struct Object {
     // check_demotion (&1bd6) to bump stationary supported objects into
     // the tighter 4-tile demote radius.
     bool       bottom_collision = false;
+    // 6502 &2b this_object_visibility. Set true at start of each object
+    // update (&1ae1 STX with X=0xff); update_invisible_bird (&462f) and
+    // update_invisible_frogman (&4475) LSR it to hide when undamaged.
+    // Renderer skips draw if false.
+    bool       visible = true;
     // Max(|vx|,|vy|) at the moment of a tile collision, captured BEFORE
     // the bounce-reflect / damp pass. Mirrors the 6502's &1d
     // this_object_pre_collision_velocity_magnitude (set at &30b7).

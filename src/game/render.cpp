@@ -584,7 +584,7 @@ void Game::render() {
         info.palette = obj.palette;
         info.flip_h = obj.is_flipped_h();
         info.flip_v = obj.is_flipped_v();
-        info.visible = true;
+        info.visible = obj.visible;
         info.type = obj.type;
         bool teleporting = (obj.flags & ObjectFlags::TELEPORTING) != 0;
         info.teleport_timer = teleporting ? obj.timer : 0;

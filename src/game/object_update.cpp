@@ -188,6 +188,9 @@ void Game::update_objects() {
         // per-type updaters can revert via set_position_from_previous.
         obj.prev_x = obj.x;
         obj.prev_y = obj.y;
+        // &1ae1 STX &2b with X=0xff: visibility defaults to visible
+        // every frame; invisible_bird / invisible_frogman clear it later.
+        obj.visible = true;
 
         // Step 3: &1afd-&1b54 — snap held primary flush to player's
         // facing side, then run the shared check_for_collisions. Drift
