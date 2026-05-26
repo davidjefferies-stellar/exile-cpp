@@ -441,13 +441,12 @@ void Game::update_objects() {
                                   obj.type == ObjectType::PLACEHOLDER;
             // Energy-bit-7 pin: pure collectables (keys + equipment)
             // that route through update_collectable, which clears bit 7
-            // on touch. Excludes types in 0x4a..0x63 that use their own
-            // update routines (FLASK, INACTIVE_GRENADE, REMOTE_CONTROL_
-            // DEVICE, POWER_POD, DESTINATOR, CORONIUM_BOULDER, CORONIUM_
-            // CRYSTAL): those need real physics and never get their bit
-            // 7 cleared, so a blanket >=0x4a gate freezes them forever.
+            // on touch. POWER_POD (0x4b) has its own update routine but
+            // clears bit 7 on touch too (see update_power_pod), so it
+            // needs the pin while undisturbed.
             uint8_t ti = static_cast<uint8_t>(obj.type);
             bool uses_update_collectable =
+                ti == 0x4b ||
                 (ti >= 0x51 && ti <= 0x54) ||
                 (ti >= 0x56 && ti <= 0x57) ||
                 (ti >= 0x59 && ti <= 0x63);

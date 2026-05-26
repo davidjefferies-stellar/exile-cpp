@@ -413,12 +413,13 @@ void Game::integrate_player_motion(Object& player,
     player.flags &= ~ObjectFlags::SUPPORTED;
     if (!any_top_collision && any_bottom_collision) {
         player.flags |= ObjectFlags::SUPPORTED;
-    } else if (was_supported && player.velocity_y > -4 && !any_top_collision) {
+    } else if (was_supported && player.velocity_y >= 0 && !any_top_collision) {
         // No fresh bottom collision but were supported last frame and
-        // not rising fast. Probe ~24 frac (3 pixels) below the feet —
-        // covers a single bounce gap without extending so far that
-        // walking off a ledge keeps SUPPORTED set. The vy-zero clamp
-        // below means the gap doesn't accumulate across frames.
+        // not rising. Probe ~24 frac (3 pixels) below the feet — covers
+        // a single bounce gap without extending so far that walking off
+        // a ledge keeps SUPPORTED set. Gate strictly on vy >= 0 so the
+        // first frames of jetpack thrust (vy = -1, -2, ...) aren't
+        // mistaken for a bounce gap and the upward velocity zeroed.
         int feet_abs_y = static_cast<int>(player.y.whole) * 256 +
                          static_cast<int>(player.y.fraction) + sprite_h_frac;
         bool found_support = false;
