@@ -182,8 +182,9 @@ static uint8_t check_top_bot_section(const Ctx& ctx, uint8_t y_section) {
         // unflipped the &2ed5 path inverts; for flipped just stays 0).
         if (A >= ctx.top_y_rounded) {
             uint8_t depth = static_cast<uint8_t>(A - ctx.top_y_rounded);
-            // &2e9e: CMP height; BCC skip; LDA height. Clamp to height.
-            if (depth > ctx.height) depth = ctx.height;
+            // &2e9e: CMP height; BCC skip; LDA height. BCC fires for
+            // A < height, so depth >= height clamps to height.
+            if (depth >= ctx.height) depth = ctx.height;
             top_obstr = depth;
         }
     }
