@@ -1055,12 +1055,14 @@ void update_maggot(Object& obj, UpdateContext& ctx) {
 void update_piranha_or_wasp(Object& obj, UpdateContext& ctx) {
     const bool is_wasp = (obj.type == ObjectType::WASP);
 
-    // &4f2b-&4f33 gravity tweak: piranhas +4 (sink), wasps -1
-    // (cancel_gravity vs the main loop's +1).
+    // &4f2b-&4f33: piranha STA accel_y=4, falls through to &4f31 DEC
+    // accel_y -> net +3 (overwrites gravity, not added to it). Wasp
+    // skips STA, goes straight to DEC -> -1 (cancels &1f01 +1 gravity).
     if (is_wasp) {
         NPC::cancel_gravity(obj);
     } else {
-        if (obj.velocity_y < 127 - 4) obj.velocity_y += 4;
+        NPC::cancel_gravity(obj);
+        if (obj.velocity_y < 127 - 3) obj.velocity_y += 3;
     }
 
     // &4f33-&4f3b 1-in-2 retarget. BIT &db / BVS skip means "retarget
