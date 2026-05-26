@@ -101,6 +101,12 @@ void ObjectManager::init_object_from_type(Object& obj, ObjectType type) {
     obj.velocity_x = 0;
     obj.velocity_y = 0;
     obj.tile_collision = false;
+    // Transient collision/render fields: must reset on slot reuse so a
+    // freshly-spawned object doesn't inherit a wedged-supported flag
+    // (causes premature demote-radius bump) or an invisible state
+    // (renderer skipped the draw on the spawn frame).
+    obj.bottom_collision = false;
+    obj.visible = true;
 }
 
 // min_free_slots is a spawn-priority knob, mirroring the 6502's
