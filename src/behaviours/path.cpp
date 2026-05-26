@@ -127,10 +127,8 @@ void update_target_directness(Object& obj, UpdateContext& ctx) {
 
     bool los = has_line_of_sight(obj, target_slot, /*max_tiles=*/16, ctx);
     if (los) {
-        // &3d04-&3d08: target visible -> snap to DIRECTNESS_THREE.
-        obj.target_and_flags = static_cast<uint8_t>(
-            (obj.target_and_flags & ~TargetFlags::DIRECTNESS_MASK)
-            | TargetFlags::DIRECTNESS_THREE);
+        // &3d04-&3d08 ORA #&c0: set both directness bits, preserve other flags.
+        obj.target_and_flags |= TargetFlags::DIRECTNESS_THREE;
         // &3d0e: set this_object_tx/ty from target (unless AVOIDING, in
         // which case head in the opposite direction). Wrap-around
         // arithmetic in uint8_t matches the 6502's 256-wrap world.
