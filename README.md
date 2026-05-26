@@ -5,14 +5,14 @@
 A C++ port of the BBC Micro masterpiece **Exile** (Peter Irvin & Jeremy Smith, 1988),
 working from the original 6502 disassembly. 
 
-The goal of the project is educational -
+The goal of the project is purely educational -
 to re-author the 6502 in C++ for easier study and to preserve its groundbreaking 
 concepts and techniques for a future where people no longer know 6502.
 
-This project is **not** a remake, remaster, reimagining or beginnings of a sequel to **Exile**. As such its is only intended to be playable in-so-far as is necessary to achieve the educational goals of the project. If you wish to play **Exile** from start to finish (and I would very much recommend that you do) then that is best achieved using an original copy of the game running on original hardware or under emulation.
+This project is **not** a remake or remaster or beginnings of a sequel to **Exile**. Its is only intended to be playable in-so-far as is necessary to achieve the educational goals of the project. If you wish to play **Exile** from start to finish (and it is very much recommended that you do) then that is best achieved using an original copy of the game running on original hardware or under emulation.
 
-The disassembly used as the spec is the superb effort by Level7 and lives at 
-`exile-standard-disassembly.txt`in the project root.
+The disassembly used as the spec is the superbly annotated version by Level7 and lives at 
+`exile-standard-disassembly.txt`in the project root. All veriable and function names have been retained from this version for easier cross-reference. Each function in C++ is annotated with the original address of the function from this disassembly.
 
 ## Build
 
@@ -196,6 +196,11 @@ src/
   game/         Top-level loop orchestration (game.cpp ≤ ~200 lines).
 ```
 
+## AI Disclosure
+
+AI-assisted tooling has been used during the development of this project.
+
+
 ## Licence
 
 The C++ source in this repository is © 2025-2026 David Jefferies and is
@@ -206,10 +211,14 @@ free to use, copy, modify and distribute for any non-commercial purpose
 No copyright is asserted over the original BBC Micro *Exile* (1988) by
 Peter Irvin and Jeremy Smith, published by Superior Software. This is a
 fan port written for study and preservation; the C++ source does not
-embed the original binary. The port was produced by reading a publicly
+embed the original binary. 
+
+The port was produced by reading a publicly
 circulated 6502 disassembly (`exile-standard-disassembly.txt`), included
 in this repository for cross-reference only — it is third-party material
-and is not licensed for redistribution by this project. All rights in
+and is not licensed for redistribution by this project. 
+
+All rights in
 the original game remain with its authors and publisher; if you are a
 rights-holder and would like anything removed, please open an issue.
 
