@@ -949,7 +949,10 @@ void update_sucking_nest(Object& obj, UpdateContext& ctx) {
         uint8_t power = sucking_nests_power[variant];
         bool attract = (sucking_nests_direction[variant] & 0x01) != 0;
         uint8_t max_tiles = static_cast<uint8_t>(power / 8);
-        for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
+        // &3442 LDX #&0f then loops decrementing — high slot to low. LOS
+        // and damage paths consume rng peeks, so iteration order matters
+        // for stream determinism.
+        for (int i = GameConstants::PRIMARY_OBJECT_SLOTS - 1; i >= 0; i--) {
             if (i == ctx.this_slot) continue;
             Object& other = ctx.mgr.object(i);
             if (!other.is_active()) continue;
