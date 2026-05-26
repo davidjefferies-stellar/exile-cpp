@@ -18,7 +18,9 @@ deps/PDCurses-3.9/
 CLAUDE.md
 
 # Local porting notes — kept out of the repo so they can stay rough.
-docs/
+# docs/* (not docs/) so negations below can re-include specific files.
+docs/*
+!docs/save_game_format.md
 behaviour_todos.md
 
 # Per-developer Claude Code session state.
