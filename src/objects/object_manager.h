@@ -21,6 +21,12 @@ public:
     Object& object(int slot) { return primary_[slot]; }
     const Object& object(int slot) const { return primary_[slot]; }
 
+    // Whole primary array for callers needing to walk the slot table
+    // (object-object collision, door-substitution). Replaces reinterpret_
+    // cast off &object(0) which assumed contiguous std::array layout.
+    const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&
+        primary_array() const { return primary_; }
+
     // ========================================================================
     // Object Creation (port of &1e62)
     // ========================================================================

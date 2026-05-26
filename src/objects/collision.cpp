@@ -87,7 +87,7 @@ bool point_in_tile_solid_with_doors(
     ResolvedTile r = resolve_tile_with_tertiary(landscape, tile_x, tile_y);
     uint8_t tile = substitute_door_for_obstruction(
         r.tile_and_flip, r.data_offset,
-        reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(mgr.object(0)),
+        mgr.primary_array(),
         mgr.tertiary_data_byte(r.data_offset));
     if (!is_tile_type_solid(tile & TileFlip::TYPE_MASK)) return false;
     return tile_and_flip_obstructs_point(tile, x_frac, y_frac);

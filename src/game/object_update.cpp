@@ -257,9 +257,7 @@ void Game::update_objects() {
         // unlike the 6502 (&1b50 skips statics); symmetric so it matches.
         {
             auto early_coll = Collision::check_object_collision(
-                obj, slot,
-                reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
-                    object_mgr_.object(0)));
+                obj, slot, object_mgr_.primary_array());
             if (early_coll.collided) {
                 obj.touching = static_cast<uint8_t>(early_coll.other_slot);
                 Object& other = object_mgr_.object(early_coll.other_slot);
@@ -473,8 +471,7 @@ void Game::update_objects() {
                 // 6502 &2a64 check_for_collisions runs regardless of
                 // weight, so we do too.
                 auto obj_coll = Collision::check_object_collision(
-                    obj, slot,
-                    reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(object_mgr_.object(0)));
+                    obj, slot, object_mgr_.primary_array());
                 // Stamp on overlap only; cross-frame staleness is
                 // handled by the &1dd6-&1dda OR #&80 at slot-loop end.
                 if (obj_coll.collided) {
@@ -521,9 +518,7 @@ void Game::update_objects() {
                 {
                     uint8_t self_idx = static_cast<uint8_t>(obj.type);
                     bool is_projectile = (self_idx >= 0x13 && self_idx <= 0x19);
-                    auto& all_primaries =
-                        reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
-                            object_mgr_.object(0));
+                    auto& all_primaries = object_mgr_.primary_array();
                     bool eligible =
                         !is_projectile &&
                         !(obj.flags & ObjectFlags::NEWLY_CREATED) &&
@@ -586,8 +581,7 @@ void Game::update_objects() {
                 // after physics so velocity-driven moves register this
                 // frame; end-of-update OR #&80 clears staleness.
                 auto obj_coll = Collision::check_object_collision(
-                    obj, slot,
-                    reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(object_mgr_.object(0)));
+                    obj, slot, object_mgr_.primary_array());
                 if (obj_coll.collided) {
                     obj.touching = static_cast<uint8_t>(obj_coll.other_slot);
                     object_mgr_.object(obj_coll.other_slot).touching =
