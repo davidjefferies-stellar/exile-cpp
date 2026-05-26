@@ -560,13 +560,18 @@ void update_imp(Object& obj, UpdateContext& ctx) {
             bool landed = obj.is_supported() &&
                           !(obj.flags & ObjectFlags::NEWLY_CREATED);
             ctx.mgr.log_diag(
-                "imp p%d AT-PIPE @%u,%u landed=%d fed=%d gifts=%u",
+                "imp p%d AT-PIPE @%u,%u home=0x%02x raw=0x%02x landed=%d "
+                "timer=%u fed=%d gifts=%u sup=%d nc=%d",
                 ctx.this_slot, obj.x.whole, obj.y.whole,
+                home_type, res.raw_tile_type,
                 landed ? 1 : 0,
+                static_cast<unsigned>(obj.timer),
                 (obj.state & kNPC_WAS_FED) ? 1 : 0,
                 ctx.imp_gifts_remaining
                     ? static_cast<unsigned>(ctx.imp_gifts_remaining[tidx])
-                    : 0xffu);
+                    : 0xffu,
+                obj.is_supported() ? 1 : 0,
+                (obj.flags & ObjectFlags::NEWLY_CREATED) ? 1 : 0);
 
             // &452b-&453f: home-despawn fires for BOTH fed and unfed imps
             // in the 6502 (the unfed BEQ at &452c skips the gift spawn but
