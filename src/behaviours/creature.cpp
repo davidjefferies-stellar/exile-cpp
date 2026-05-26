@@ -473,6 +473,19 @@ constexpr uint8_t kNPC_WAS_FED = 0x10;
 // NPC_CLIMBING (bit 5), NPC_WAS_FED (bit 4), grounded-frame counter (bits 3-0).
 // Walking/climbing/jumping physics not yet ported.
 void update_imp(Object& obj, UpdateContext& ctx) {
+    // Diag: timer at entry. If despawn fires unexpectedly, this shows
+    // whether timer was 1 going IN (set outside update_imp) or got set
+    // mid-frame by the at-home block's non-PIPE branch.
+    ctx.mgr.log_diag(
+        "imp p%d ENTRY timer=%u flags=0x%02x sup=%d nc=%d touching=0x%02x "
+        "vx=%d vy=%d @%u.%02x,%u.%02x",
+        ctx.this_slot, static_cast<unsigned>(obj.timer), obj.flags,
+        obj.is_supported() ? 1 : 0,
+        (obj.flags & ObjectFlags::NEWLY_CREATED) ? 1 : 0,
+        obj.touching,
+        (int)obj.velocity_x, (int)obj.velocity_y,
+        obj.x.whole, obj.x.fraction, obj.y.whole, obj.y.fraction);
+
     // &44ef-&44f7: newly-created imps start in MINUS_TWO (aggressive).
     // obj.timer is used as a port-only "has-left-home" latch (0 = still
     // on its spawn pipe, 1 = has stepped off a PIPE tile at least once).
@@ -519,6 +532,11 @@ void update_imp(Object& obj, UpdateContext& ctx) {
         // imp whose physics step set SUPPORTED on frame 1 would trip
         // the at-home despawn before it ever walks out of the pipe.
         if (home_type != static_cast<uint8_t>(TileType::PIPE)) {
+            ctx.mgr.log_diag(
+                "imp p%d LATCH_LEFT home @%u,%u home_type=0x%02x raw=0x%02x"
+                " (timer 0->1)",
+                ctx.this_slot, obj.x.whole, obj.y.whole,
+                home_type, res.raw_tile_type);
             obj.timer = 1;
         }
         // Log every frame an imp with WAS_FED is alive so we can see
