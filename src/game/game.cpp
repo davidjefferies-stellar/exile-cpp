@@ -1010,7 +1010,7 @@ void Game::tick_blaster() {
     // accelerate_all_objects (&343a-&34b0). Duration = 9 matches the
     // 6502: &4a79-&4a7b sets tertiary_data_offset to 10, then
     // update_explosion DECs to 9 before running the damage loop.
-    Behaviors::apply_explosion_radius(object_mgr_, player,
+    Behaviors::apply_explosion_radius(object_mgr_, landscape_, player,
                                        /*source_slot=*/0, /*duration=*/9,
                                        renderer_ && renderer_->damage_overlay_enabled()
                                            ? &damage_events_ : nullptr);

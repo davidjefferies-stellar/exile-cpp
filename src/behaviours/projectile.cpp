@@ -1021,14 +1021,16 @@ void update_explosion(Object& obj, UpdateContext& ctx) {
         static_cast<unsigned>(obj.sprite),
         obj.x.whole, obj.y.whole);
 
-    apply_explosion_radius(ctx.mgr, obj, /*source_slot=*/-1,
+    apply_explosion_radius(ctx.mgr, ctx.landscape, obj, /*source_slot=*/-1,
                            obj.tertiary_data_offset, ctx.damage_events);
 }
 
 // &4fd8-&4fe2 + accelerate_all_objects (&343a-&34b0). power = duration*4,
-// damages only when duration>=8. Per target: remaining =
-// power - (weight*2+8) - distance; skip if <0; weight==7 means no push.
-void apply_explosion_radius(ObjectManager& mgr, const Object& source,
+// damages only when duration>=8. Per target: &344a check_for_obstruction_
+// between_objects_A gates on LOS (walls block damage and push); remaining
+// = power - (weight*2+8) - distance; skip if <0; weight==7 means no push.
+void apply_explosion_radius(ObjectManager& mgr, const Landscape& landscape,
+                            const Object& source,
                             int source_slot, uint8_t duration,
                             std::vector<DamageVisual>* damage_events) {
     uint8_t power   = static_cast<uint8_t>(duration << 2);
@@ -1064,6 +1066,43 @@ void apply_explosion_radius(ObjectManager& mgr, const Object& source,
 
         int remaining = int(power) - weight_factor - dist_units;
         if (remaining <= 0) continue;
+
+        // &344a check_for_obstruction_between_objects_A: walls block the
+        // explosion's damage + accelerate path. Raycast 16-frac steps from
+        // source centre toward target; bail on any solid tile.
+        {
+            int sx16 = src_fx + 0x80;  // approximate object centre
+            int sy16 = src_fy + 0x80;
+            int tx16 = other_fx + 0x80;
+            int ty16 = other_fy + 0x80;
+            int dx16 = tx16 - sx16;
+            int dy16 = ty16 - sy16;
+            int adx16 = std::abs(dx16);
+            int ady16 = std::abs(dy16);
+            int max_axis = std::max(adx16, ady16);
+            if (max_axis > 0) {
+                int steps = max_axis / 0x20;
+                if (steps == 0) steps = 1;
+                int vx16 = dx16 / steps;
+                int vy16 = dy16 / steps;
+                int px = sx16, py = sy16;
+                bool blocked = false;
+                for (int s = 0; s < steps; ++s) {
+                    px += vx16;
+                    py += vy16;
+                    uint8_t tx = static_cast<uint8_t>((px >> 8) & 0xff);
+                    uint8_t ty = static_cast<uint8_t>((py >> 8) & 0xff);
+                    uint8_t xf = static_cast<uint8_t>(px & 0xff);
+                    uint8_t yf = static_cast<uint8_t>((py & 0xf8) | 0x04);
+                    if (Collision::point_in_tile_solid_with_doors(
+                            landscape, mgr, tx, ty, xf, yf)) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if (blocked) continue;
+            }
+        }
 
         if (damages && remaining >= 4) {
             uint16_t hurt = static_cast<uint16_t>(std::min(255, remaining * 2));

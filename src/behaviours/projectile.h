@@ -2,6 +2,8 @@
 #include "objects/object.h"
 #include "behaviours/npc_helpers.h"
 
+class Landscape;
+
 namespace Behaviors {
 
 void update_active_grenade(Object& obj, UpdateContext& ctx);
@@ -37,7 +39,8 @@ void explode_object_with_duration(Object& obj, uint8_t duration);
 // source itself isn't damaged or pushed. When damage_events is non-null
 // every hit and the source's effective tile radius are pushed for the
 // "Damage" debug overlay.
-void apply_explosion_radius(ObjectManager& mgr, const Object& source,
+void apply_explosion_radius(ObjectManager& mgr, const Landscape& landscape,
+                            const Object& source,
                             int source_slot, uint8_t duration,
                             std::vector<DamageVisual>* damage_events = nullptr);
 
