@@ -68,6 +68,8 @@ void drop(Object& held, Object& player, uint8_t& held_slot) {
     held_slot = 0x80; // No object held (bit 7 set = negative in 6502 terms)
 }
 
+// &32be-&32c1: bit 7 of object_types_palette_and_pickup_table (&02ef)
+// is the pickup flag (per the table header at &028a).
 bool is_pickupable(ObjectType type) {
     uint8_t idx = static_cast<uint8_t>(type);
     if (idx >= static_cast<uint8_t>(ObjectType::COUNT)) return false;
