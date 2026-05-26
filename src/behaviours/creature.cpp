@@ -321,13 +321,14 @@ void update_fluffy(Object& obj, UpdateContext& ctx) {
     uint8_t fluffy_counter = static_cast<uint8_t>(
         ctx.this_slot * 0x11 + ctx.frame_counter);
     if ((fluffy_counter & 0x0b) == 0) {
-        // Search for nearby imps or flying enemies
+        // &42ae-&42b2 find_object_ignoring_obstructions in
+        // OBJECT_RANGE_FLYING_ENEMIES (0x22..0x31): clawed robots,
+        // Triax, maggot, gargoyle, all imps, birds.
         for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
             const Object& other = ctx.mgr.object(i);
             if (!other.is_active()) continue;
-            // Check if it's an imp type (0x29-0x2d)
             uint8_t t = static_cast<uint8_t>(other.type);
-            if (t >= 0x29 && t <= 0x2d) {
+            if (t >= 0x22 && t <= 0x31) {
                 int8_t dx = static_cast<int8_t>(other.x.whole - obj.x.whole);
                 int8_t dy = static_cast<int8_t>(other.y.whole - obj.y.whole);
                 uint8_t dist = static_cast<uint8_t>(
