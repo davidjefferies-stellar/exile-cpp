@@ -481,6 +481,16 @@ void update_imp(Object& obj, UpdateContext& ctx) {
     if (obj.flags & ObjectFlags::NEWLY_CREATED) {
         obj.state = NPCMood::MINUS_TWO;
         obj.timer = 0;
+        ctx.mgr.log_diag(
+            "imp p%d NEWLY_CREATED type=0x%02x @%u,%u flags=0x%02x "
+            "energy=0x%02x vx=%d vy=%d sup=%d bot=%d vis=%d tslot=%u",
+            ctx.this_slot, static_cast<unsigned>(obj.type),
+            obj.x.whole, obj.y.whole, obj.flags, obj.energy,
+            (int)obj.velocity_x, (int)obj.velocity_y,
+            obj.is_supported() ? 1 : 0,
+            obj.bottom_collision ? 1 : 0,
+            obj.visible ? 1 : 0,
+            static_cast<unsigned>(obj.tertiary_slot));
     }
 
     // &44f9-&4504: speed from mood (excited 0x28, neutral 0x10).

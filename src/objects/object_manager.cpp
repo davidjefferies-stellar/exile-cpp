@@ -373,6 +373,15 @@ void ObjectManager::return_to_tertiary(int primary_slot) {
                        static_cast<uint8_t>(obj.type),
                        obj.x.whole, obj.y.whole);
     uint8_t tidx = static_cast<uint8_t>(obj.type);
+    // Diag: imp paths into return_to_tertiary (caller-agnostic).
+    if (tidx >= 0x29 && tidx <= 0x2d) {
+        log_diag(
+            "imp p%d RETURN_TO_TERTIARY type=0x%02x @%u,%u flags=0x%02x "
+            "energy=0x%02x tslot=%u",
+            primary_slot, tidx, obj.x.whole, obj.y.whole,
+            obj.flags, obj.energy,
+            static_cast<unsigned>(obj.tertiary_slot));
+    }
     uint8_t type_flags = (tidx < static_cast<uint8_t>(ObjectType::COUNT))
                          ? object_types_flags[tidx] : 0;
 
@@ -408,6 +417,14 @@ void ObjectManager::remove_object(int primary_slot) {
         record_debug_event(EVT_REMOVE, static_cast<uint8_t>(primary_slot),
                            static_cast<uint8_t>(obj.type),
                            obj.x.whole, obj.y.whole);
+        uint8_t tidx = static_cast<uint8_t>(obj.type);
+        if (tidx >= 0x29 && tidx <= 0x2d) {
+            log_diag(
+                "imp p%d REMOVE_OBJECT type=0x%02x @%u,%u flags=0x%02x "
+                "energy=0x%02x",
+                primary_slot, tidx, obj.x.whole, obj.y.whole,
+                obj.flags, obj.energy);
+        }
     }
     // Port of &1e29 remove_object_for_touching_and_targeting: walk every
     // other slot and clear any touching/target field that pointed at the
@@ -499,6 +516,21 @@ bool ObjectManager::check_demotion(int primary_slot, uint8_t frame_counter) {
     // &1d3c: DO_NOT_KEEP_AS_SECONDARY skips the secondary demotion step.
     bool to_secondary =
         (type_flags & ObjectTypeFlags::DO_NOT_KEEP_AS_SECONDARY) == 0;
+
+    // Diag: imp despawn via check_demotion. Captures every variable
+    // entering the gate so we can see whether x==3 (tighter radius),
+    // bottom_collision, or velocities pushed an imp out too early.
+    if (tidx >= 0x29 && tidx <= 0x2d) {
+        log_diag(
+            "imp p%d CHECK_DEMOTION fire: x=%u dist=%u tflags=0x%02x "
+            "vx=%d vy=%d bot_coll=%d @%u,%u anchor=%u,%u path=%s",
+            primary_slot, x, check_distance, type_flags,
+            (int)obj.velocity_x, (int)obj.velocity_y,
+            obj.bottom_collision ? 1 : 0,
+            obj.x.whole, obj.y.whole,
+            activation_anchor_x_, activation_anchor_y_,
+            update_tertiary ? "tertiary" : (to_secondary ? "secondary" : "remove"));
+    }
 
     if (update_tertiary) {
         return_to_tertiary(primary_slot);  // also clears the primary slot

@@ -338,6 +338,14 @@ void Game::update_objects() {
         // obj.tertiary_slot so dedup blocks immediate respawn.
         if (obj.energy == 0 && obj.type != ObjectType::EXPLOSION &&
             !object_type_is_indestructible(static_cast<uint8_t>(obj.type))) {
+            // Diag: imps reaching energy==0 (step 12 explosion mutation).
+            uint8_t tidx_e = static_cast<uint8_t>(obj.type);
+            if (tidx_e >= 0x29 && tidx_e <= 0x2d) {
+                object_mgr_.log_diag(
+                    "imp p%d ENERGY_ZERO -> explosion @%u,%u flags=0x%02x "
+                    "touching=0x%02x",
+                    slot, obj.x.whole, obj.y.whole, obj.flags, obj.touching);
+            }
             // &1ce3-&1cf3 dispatch top-two-bits = 00 (indestructible) is
             // a no-op for flasks/keys/pickups/EXPLOSION itself. Without
             // the guard, grenade radius mutates flasks; without the
@@ -403,6 +411,14 @@ void Game::update_objects() {
         // back to tertiary — that would re-arm bit 7 and respawn
         // collected items a few frames later.
         if (obj.flags & ObjectFlags::PENDING_REMOVAL) {
+            uint8_t tidx_r = static_cast<uint8_t>(obj.type);
+            if (tidx_r >= 0x29 && tidx_r <= 0x2d) {
+                object_mgr_.log_diag(
+                    "imp p%d PENDING_REMOVAL reap type=0x%02x @%u,%u "
+                    "flags=0x%02x energy=0x%02x",
+                    slot, tidx_r, obj.x.whole, obj.y.whole,
+                    obj.flags, obj.energy);
+            }
             object_mgr_.remove_object(slot);
             if (slot == held_object_slot_) held_object_slot_ = 0x80;
             continue;
