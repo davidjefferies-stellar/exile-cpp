@@ -1180,29 +1180,27 @@ static void update_bird_common(Object& obj, UpdateContext& ctx) {
         obj.state = 0x80;   // non-zero -> visible
     }
 
-    // &465b-&4668 sprite cycle: |v|%0x14 >> 2, with 4->2 so the 4-frame
-    // wing cycle dips through the middle pose on fast movement.
-    {
+    // &4659 BNE skips the sprite + path block when state != 0 (just-
+    // damaged or invisible bird that just revealed). Gate on it.
+    if (obj.state == 0) {
+        // &465b-&4668 sprite cycle: |v|%0x14 >> 2, 4 -> 2 so fast
+        // movement still dips through the middle pose.
         uint8_t off = NPC::update_sprite_offset_using_velocities(obj, 0x14);
         off >>= 2;
         if (off == 4) off = 2;
         NPC::change_object_sprite_to_base_plus_A(obj, off);
+
+        // &466b-&4670: eat any wasp touching, then aim at the next one.
+        NPC::consider_absorbing_object_touched(obj, ObjectType::WASP, ctx.mgr);
+        NPC::consider_finding_target(obj, ObjectType::WASP, ctx);
+
+        // &467a-&4686: NPC path + move toward target (mag 0x40, max
+        // accel 8, 1-in-4 probability).
+        NPC::move_towards_target_with_probability(obj, ctx, 0x40, 8, 0x40);
+
+        // &4686 DEC accel_y cancels gravity (post-path re-applied it).
+        NPC::cancel_gravity(obj);
     }
-
-    // &466b-&4670: eat any wasp we're touching, then aim at the next one.
-    //   LDA #&11 ; OBJECT_WASP / JSR &3be1 ; consider_absorbing_object_touched
-    //   LDA #&11 / LDY #&00    / JSR &3bf8 ; consider_finding_target
-    NPC::consider_absorbing_object_touched(obj, ObjectType::WASP, ctx.mgr);
-    NPC::consider_finding_target(obj, ObjectType::WASP, ctx);
-
-    // &467a-&4686: NPC path update, then move towards the current target
-    // with magnitude 0x40, max-accel 8, 1-in-4 probability (0x40 / 256).
-    NPC::move_towards_target_with_probability(obj, ctx, 0x40, 8, 0x40);
-
-    // &4686 `DEC this_object_acceleration_y` - cancel gravity (again,
-    // because the post-path code may have re-introduced it). We use the
-    // same cancel_gravity helper on velocity_y.
-    NPC::cancel_gravity(obj);
 
     // &4688: if in any water, dampen both velocities twice (divide by 4).
     // Per-column waterline — SURFACE_Y shortcut would dampen birds flying
