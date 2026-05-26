@@ -393,47 +393,80 @@ static int asr1_floor(int x) {
     return -((-x + 1) / 2);
 }
 
-// &2bc6-&2bed apply_collision_to_object_velocity. Halve transfer; if
-// smallest overlap is in this axis add the original back (&2bcf 1.5x).
-// &2be5 add_to_final_velocity runs twice (PHA/JSR/PLA + fall-through),
-// each pass clamped by &327f prevent_overflow.
 static int clamp_s8(int v) {
     if (v >  127) return  127;
     if (v < -128) return -128;
     return v;
 }
-static int process_one_side(int transfer, bool double_it, int start_v) {
-    int processed = asr1_floor(transfer);
-    if (double_it) processed = clamp_s8(processed + transfer);
-    int mid = clamp_s8(start_v + processed);
-    return  clamp_s8(mid     + processed);
-}
 
 // Port of &2bee calculate_transfer_velocities + &2bc6 apply_collision_
-// to_object_velocity. `smallest_overlap_in_this_axis` mirrors the impact
-// axis bits in collision_velocity_direction_flags_table (&29dc) —
-// transfers on the impact axis are doubled.
+// to_object_velocity. The 6502 call convention is A = other_v, X = this_v
+// — the disassembly's &a0/&a1 labels ("this/other_initial_velocity") are
+// misleading because those bytes hold the OPPOSITE-side velocity until
+// the apply step overwrites them. Bugs from the previous port: (a)
+// half_diff used (this - other) instead of (other - this), so signs were
+// flipped throughout; (b) the lighter-side path swapped recipients
+// instead of routing through invert_if_positive at &2bd8, so a light
+// object hitting a heavy one transferred ALL its momentum into the
+// heavy object (player pushed cannon, bullet pushed robot tiles).
 VelocityTransfer apply_mass_ratio_velocity(
         int8_t this_v_in, int8_t other_v_in,
         uint8_t this_weight, uint8_t other_weight,
         bool smallest_overlap_in_this_axis) {
 
-    int half_diff = asr1_floor(int(this_v_in) - int(other_v_in));
+    // &2bee-&2bfc half_velocity_difference. A = other_v, then
+    // SBC &a0 (= this_v) → half_diff = (other_v - this_v) / 2.
+    int half_diff = asr1_floor(int(other_v_in) - int(this_v_in));
 
-    int wdiff = int(this_weight) - int(other_weight);
-    int wdiff_abs = wdiff < 0 ? -wdiff : wdiff;
+    // &2bfe-&2c07 halve again for each unit of |weight_diff|. wdiff == 0
+    // still halves once (INX at &2c02 floors shifts to 1).
+    int wdiff_abs = this_weight >= other_weight
+                    ? int(this_weight) - int(other_weight)
+                    : int(other_weight) - int(this_weight);
     int shifts = wdiff_abs == 0 ? 1 : wdiff_abs;
     int lesser = half_diff;
     for (int i = 0; i < shifts; i++) lesser = asr1_floor(lesser);
     // &2c09-&2c0b CMP #&80 / ADC #0: round up by 1 if negative.
     if (lesser < 0) lesser += 1;
-    int greater = lesser - half_diff;
+    // &2c0f-&2c12 greater = lesser - half_diff.
+    int greater = clamp_s8(lesser - half_diff);
 
-    int this_xfer  = (wdiff > 0) ?  greater : -lesser;
-    int other_xfer = (wdiff > 0) ?  lesser  : -greater;
+    // &2bd4 BIT &9e weight_difference_sign. The ROR at &2b42 shifted the
+    // SBC carry (this_w >= other_w) into bit 7, so heavier-or-equal sets
+    // it negative and skips the invert + recipient-swap at &2bd8-&2bde.
+    bool this_heavier_or_equal = (this_weight >= other_weight);
 
-    int this_out  = process_one_side(this_xfer,  smallest_overlap_in_this_axis, this_v_in);
-    int other_out = process_one_side(other_xfer, smallest_overlap_in_this_axis, other_v_in);
+    // &2bc6 apply_collision_to_object_velocity per side. Halve (ROR
+    // signed); if axis-impact, ADC the raw transfer back — the ROR's
+    // carry-out (= transfer & 1) is picked up by that ADC so axis-
+    // doubled odd transfers gain +1. If this is lighter, invert_if_
+    // positive (negate when A >= 0). Then PHA/JSR/PLA/fall-through adds
+    // processed to the recipient TWICE, each pass clamped by &327f
+    // prevent_overflow.
+    auto apply_one = [&](int transfer, int& target_v) {
+        int processed = asr1_floor(transfer);
+        if (smallest_overlap_in_this_axis) {
+            processed = clamp_s8(processed + transfer + (transfer & 1));
+        }
+        if (!this_heavier_or_equal && processed >= 0) {
+            processed = -processed;
+        }
+        target_v = clamp_s8(target_v + processed);
+        target_v = clamp_s8(target_v + processed);
+    };
+
+    // &2bd6 BMI / &2bdb DEX recipient routing.
+    //   this heavier-or-equal: lesser → this, greater → other.
+    //   this lighter:          lesser → other, greater → this.
+    int this_out  = this_v_in;
+    int other_out = other_v_in;
+    if (this_heavier_or_equal) {
+        apply_one(lesser,  this_out);
+        apply_one(greater, other_out);
+    } else {
+        apply_one(lesser,  other_out);
+        apply_one(greater, this_out);
+    }
 
     VelocityTransfer out;
     out.this_v  = static_cast<int8_t>(this_out);
