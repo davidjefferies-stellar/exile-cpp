@@ -19,6 +19,7 @@ CLAUDE.md
 
 # Local porting notes — kept out of the repo so they can stay rough.
 docs/
+behaviour_todos.md
 
 # Per-developer Claude Code session state.
 .claude/
