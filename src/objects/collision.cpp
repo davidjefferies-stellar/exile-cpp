@@ -147,15 +147,17 @@ TileCollisionResult check_tile_collision(const Landscape& landscape, const Objec
     }
 
     if (result.any) {
-        // Coarse angle from push direction; used only by some behaviors.
-        if      (result.push_x > 0 && result.push_y == 0) result.angle = 0x00;
-        else if (result.push_x > 0 && result.push_y > 0)  result.angle = 0x20;
-        else if (result.push_y > 0)                       result.angle = 0x40;
+        // Coarse angle from push direction. Diagonals tested first so
+        // (push_x<0, push_y>0) and (push_x<0, push_y<0) reach 0x60/0xA0
+        // instead of being swallowed by the pure-axis cases below.
+        if      (result.push_x > 0 && result.push_y > 0)  result.angle = 0x20;
         else if (result.push_x < 0 && result.push_y > 0)  result.angle = 0x60;
-        else if (result.push_x < 0)                       result.angle = 0x80;
         else if (result.push_x < 0 && result.push_y < 0)  result.angle = 0xA0;
-        else if (result.push_y < 0)                       result.angle = 0xC0;
-        else                                              result.angle = 0xE0;
+        else if (result.push_x > 0 && result.push_y < 0)  result.angle = 0xE0;
+        else if (result.push_x > 0)                       result.angle = 0x00;
+        else if (result.push_y > 0)                       result.angle = 0x40;
+        else if (result.push_x < 0)                       result.angle = 0x80;
+        else                                              result.angle = 0xC0;
     }
     return result;
 }
