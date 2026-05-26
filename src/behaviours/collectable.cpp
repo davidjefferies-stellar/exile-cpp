@@ -321,7 +321,9 @@ void update_full_flask(Object& obj, UpdateContext& ctx) {
 // (apply_player_input); doors/transporters/cannon read the same flag
 // via check_if_object_hit_by_remote_control (&0bc5).
 void update_control_device(Object& obj, UpdateContext& ctx) {
-    update_collectable(obj, ctx);
+    // 6502 &4351 does NOT call update_collectable — RCDs ignore the
+    // undisturbed-pin gate so a thrown RCD that spawns with energy bit 7
+    // set still physics-falls instead of sitting locked on its spawn tile.
 
     // check_if_object_fired (&0bbf) — this_object == player_object_fired?
     if (ctx.player_object_fired != static_cast<uint8_t>(ctx.this_slot)) {
