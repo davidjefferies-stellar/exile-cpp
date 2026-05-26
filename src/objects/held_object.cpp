@@ -55,19 +55,6 @@ void update_position(Object& held, const Object& player) {
                  (player.flags & ObjectFlags::FLIP_HORIZONTAL);
 }
 
-// Port of &1ca9: check if held object drifted too far from expected position.
-// Original checks 3 tiles horizontally and 6 vertically (0x30 in sub-tile units
-// which at 0x10/pixel = 3 pixels, but in tile units = ~3 tiles).
-bool should_drop(const Object& held, const Object& player) {
-    int8_t dx = static_cast<int8_t>(held.x.whole - player.x.whole);
-    int8_t dy = static_cast<int8_t>(held.y.whole - player.y.whole);
-
-    uint8_t abs_dx = (dx < 0) ? static_cast<uint8_t>(-dx) : static_cast<uint8_t>(dx);
-    uint8_t abs_dy = (dy < 0) ? static_cast<uint8_t>(-dy) : static_cast<uint8_t>(dy);
-
-    return abs_dx > 3 || abs_dy > 6;
-}
-
 void pickup(Object& held, Object& player, uint8_t& held_slot, int slot) {
     held_slot = static_cast<uint8_t>(slot);
     // Clear the collectable "undisturbed" pin (energy bit 7) — held items

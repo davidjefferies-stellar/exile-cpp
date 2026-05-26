@@ -9,10 +9,6 @@ namespace HeldObject {
 // Port of &1afd-&1b48: centers vertically, offsets horizontally by facing direction.
 void update_position(Object& held, const Object& player);
 
-// Check if the held object should be dropped.
-// Port of &1ca9: drops if distance > 0x30 from expected position.
-bool should_drop(const Object& held, const Object& player);
-
 // Pick up an object: set it as held.
 void pickup(Object& held, Object& player, uint8_t& held_slot, int slot);
 
