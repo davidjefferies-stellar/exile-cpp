@@ -90,7 +90,7 @@ void ObjectManager::init_object_from_type(Object& obj, ObjectType type) {
         obj.energy |= 0x80;
     }
     obj.flags = ObjectFlags::NEWLY_CREATED | ObjectFlags::NOT_PLOTTED;
-    obj.touching = 0xff; // Not touching anything
+    obj.touching = 0x80; // Not touching anything; matches struct default
     obj.target_and_flags = 0; // Targets nothing
     obj.tertiary_data_offset = 0;
     obj.tertiary_slot = 0;
