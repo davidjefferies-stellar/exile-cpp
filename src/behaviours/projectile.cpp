@@ -1008,6 +1008,11 @@ void update_explosion(Object& obj, UpdateContext& ctx) {
     }
     obj.tertiary_data_offset--;
 
+    // &4fd0-&4fd6: skip the radius/accelerate pass when (rnd & 7) >=
+    // remaining_duration so hits taper as the explosion ages. peek(3)
+    // matches BIT &dc; using next() would burn an extra rng byte.
+    if ((ctx.rng.peek(3) & 0x07) >= obj.tertiary_data_offset) return;
+
     ctx.mgr.log_diag(
         "exp p%d tdo=%u pal=0x%02x sprite=0x%02x @%u,%u",
         ctx.this_slot,
