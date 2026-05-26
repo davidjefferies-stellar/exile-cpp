@@ -141,6 +141,27 @@ struct StartupConfig {
     // samples-per-tick is realigned automatically. Allowed: 25/50/75/100.
     int target_fps = GameConstants::TARGET_FPS_DEFAULT;
 
+    // [render] subpixel_rendering — three modes:
+    //   off      : always snap fractions to the BBC pixel grid (16
+    //              frac per X-pixel, 8 frac per Y-row). No judder,
+    //              chunky motion. Matches the original BBC display.
+    //   on       : never snap; every frac unit advances the screen
+    //              position. Smooth motion but surfaces the 6502's
+    //              gravity-vs-tile-collision oscillation as 1-2 px
+    //              judder on grounded objects.
+    //   adaptive : per-object — snap when velocity is small (near-
+    //              stationary objects don't judder) and don't snap
+    //              when velocity is large (walking / falling renders
+    //              smoothly). Default.
+    // Stored as the renderer's enum so the parser can fail loudly on
+    // unknown spellings.
+    enum class SubpixelMode {
+        Off       = 0,
+        On        = 1,
+        Adaptive  = 2,
+    };
+    SubpixelMode subpixel_mode = SubpixelMode::Adaptive;
+
     // [audio] — master enable for the synthesised sound. When false,
     // Audio::play / play_at become no-ops; the device still opens so
     // toggling at runtime stays cheap. Defaults to true to match the

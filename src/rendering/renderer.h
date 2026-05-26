@@ -49,6 +49,11 @@ struct SpriteRenderInfo {
     // 6502 &0cfe reduce_sprite_if_teleporting. When non-zero, render shrinks
     // the sprite based on (timer & 7) — zero means no teleport effect.
     uint8_t teleport_timer = 0;
+    // Object's current velocity. Used in adaptive subpixel mode to decide
+    // whether to snap the rendered position to the BBC pixel grid:
+    // near-stationary objects snap (no judder), fast ones don't (smooth).
+    int8_t  velocity_x = 0;
+    int8_t  velocity_y = 0;
 };
 
 struct PlayerState {
@@ -147,13 +152,21 @@ public:
     virtual int viewport_width_tiles() const = 0;
     virtual int viewport_height_tiles() const = 0;
 
-    // Current tile size in screen pixels (after zoom). Used by the
-    // camera so it can snap its sub-tile fraction to a pixel boundary
-    // and stop the world juddering as the player's grounded position
-    // oscillates by 1 fraction unit per gravity / collision tick.
-    // Default 32 matches TILE_PX_BASE_Y for renderers that don't zoom.
-    virtual int tile_pixel_size_y() const { return 32; }
-    virtual int tile_pixel_size_x() const { return 32; }
+    // Sub-pixel rendering mode. Off (default): always snap each frac
+    // to the BBC pixel grid (16 frac/px in X, 8 frac/row in Y). On:
+    // never snap — every frac unit advances the screen position.
+    // Adaptive: snap when the object is near-stationary, smooth when
+    // moving fast enough that the judder would be invisible anyway.
+    enum class SubpixelMode {
+        Off       = 0,
+        On        = 1,
+        Adaptive  = 2,
+    };
+    virtual void set_subpixel_mode(SubpixelMode /*mode*/) {}
+    // Per-frame camera-motion hint used by Adaptive mode to decide
+    // whether to snap the viewport fraction (i.e. follow the player at
+    // sub-pixel precision or at BBC-pixel precision).
+    virtual void set_camera_motion(int8_t /*vx*/, int8_t /*vy*/) {}
 
     // Input: get last key press (non-blocking)
     virtual int get_key() = 0;

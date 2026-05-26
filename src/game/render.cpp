@@ -110,15 +110,14 @@ void Game::render() {
     camera_.follow_player(player_obj.x.whole, player_obj.y.whole,
                           vp_w_half, vp_h_half);
 
-    // Camera fraction tracks the player with hysteresis: a single-frame
-    // +1/-1 oscillation (the gravity vs tile-collision tug-of-war on a
-    // grounded player) is held, but sustained motion in one direction
-    // advances. Without this the world juddered 1 px every frame
-    // because the player's y.fraction ticks K -> K+1 -> K each frame
-    // and our scale puts a pixel boundary roughly every 2-3 frac units.
-    camera_.update_display_frac(player_obj.x.fraction, player_obj.y.fraction);
-    uint8_t vp_fx = camera_.display_frac_x;
-    uint8_t vp_fy = camera_.display_frac_y;
+    // Camera fraction tracks the player directly. Judder absorption
+    // happens inside the renderer (per [render] subpixel_rendering).
+    // The camera-motion hint lets Adaptive mode snap the viewport when
+    // the player is near-stationary.
+    renderer_->set_camera_motion(player_obj.velocity_x,
+                                 player_obj.velocity_y);
+    uint8_t vp_fx = player_obj.x.fraction;
+    uint8_t vp_fy = player_obj.y.fraction;
     // Earthquake test-event shake (port-only). Perturb the fractional
     // viewport centre with each call; when test_shake_frames_ hits 0
     // the perturbation stops and the camera returns to player.
@@ -595,6 +594,9 @@ void Game::render() {
         info.type = obj.type;
         bool teleporting = (obj.flags & ObjectFlags::TELEPORTING) != 0;
         info.teleport_timer = teleporting ? obj.timer : 0;
+        // Velocity drives Adaptive subpixel snap inside world_to_screen.
+        info.velocity_x = obj.velocity_x;
+        info.velocity_y = obj.velocity_y;
         // &1c09 STA this_object_y with #&11: at the dematerialise frame
         // the 6502 punts the sprite offscreen for one tick before the
         // &1c1e reposition. Equivalent here is to skip drawing it.

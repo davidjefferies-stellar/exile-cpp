@@ -278,6 +278,23 @@ StartupConfig load_startup_config(const std::string& path) {
             if (key == "enabled" && parse_bool(value, b)) {
                 cfg.audio_enabled = b;
             }
+        } else if (section == "render") {
+            if (key == "subpixel_rendering") {
+                if (value == "off" || value == "false" || value == "no" ||
+                    value == "0") {
+                    cfg.subpixel_mode = StartupConfig::SubpixelMode::Off;
+                } else if (value == "on" || value == "true" ||
+                           value == "yes" || value == "1") {
+                    cfg.subpixel_mode = StartupConfig::SubpixelMode::On;
+                } else if (value == "adaptive" || value == "auto") {
+                    cfg.subpixel_mode = StartupConfig::SubpixelMode::Adaptive;
+                } else {
+                    std::fprintf(stderr,
+                        "exile.ini:%d: unknown subpixel_rendering value '%s'"
+                        " (expected off / on / adaptive)\n",
+                        line_no, value.c_str());
+                }
+            }
         } else if (section == "logs") {
             bool b = false;
             if (key == "enabled" && parse_bool(value, b)) {

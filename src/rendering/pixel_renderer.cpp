@@ -233,21 +233,53 @@ int PixelRenderer::draw_text(int x, int y, const char* s,
 // Centre tile's top-left is at (win_w/2, hud_y_px/2); other tiles
 // offset by (dx, dy) tiles from that. vp_w/h_tiles() overrenders by
 // ±1 tile so the screen edges stay covered during sub-tile pan.
+// Adaptive subpixel: snap only when the object is fully stationary on
+// both axes (|vx| < 1 && |vy| < 1, i.e. exactly 0). Any motion at all
+// renders at sub-pixel precision — even the 1-frame gravity tick lets
+// the object slide smoothly. The grounded-object judder is killed not
+// by snapping but by the object spending most of its time at vel=0
+// while gravity hasn't yet flipped it back to vy=1.
+static constexpr int kAdaptiveSnapThreshold = 4;
+
+static bool should_snap_for_velocity(IRenderer::SubpixelMode mode,
+                                     int8_t vx, int8_t vy) {
+    if (mode == IRenderer::SubpixelMode::Off) return true;
+    if (mode == IRenderer::SubpixelMode::On)  return false;
+    int amx = (vx < 0) ? -int(vx) : int(vx);
+    int amy = (vy < 0) ? -int(vy) : int(vy);
+    return amx < kAdaptiveSnapThreshold && amy < kAdaptiveSnapThreshold;
+}
+
 bool PixelRenderer::world_to_screen(uint8_t wx, uint8_t wy,
                                     int& sx, int& sy,
                                     uint8_t wx_frac,
-                                    uint8_t wy_frac) const {
+                                    uint8_t wy_frac,
+                                    int8_t  vx,
+                                    int8_t  vy) const {
     int dx = static_cast<int8_t>(wx - vp_center_x);
     int dy = static_cast<int8_t>(wy - vp_center_y);
     int tpx = tile_px_x();
     int tpy = tile_px_y();
+    // [render] subpixel_rendering decides whether to mask sub-tile
+    // fractions to the BBC's render grid (16 frac per X-pixel, 8 per
+    // Y-row). Off -> always snap (no judder, BBC-faithful chunky
+    // motion). On -> never snap (smooth but exposes the gravity vs
+    // tile-collision tug-of-war as 1-2 px judder on grounded objects).
+    // Adaptive -> snap only when velocity is below kAdaptiveSnapThreshold;
+    // near-stationary objects look stable, fast ones look smooth.
+    bool snap_view = should_snap_for_velocity(subpixel_mode, cam_vx, cam_vy);
+    bool snap_obj  = should_snap_for_velocity(subpixel_mode, vx, vy);
+    uint8_t fvpx = vp_frac_x & (snap_view ? 0xf0 : 0xff);
+    uint8_t fvpy = vp_frac_y & (snap_view ? 0xf8 : 0xff);
+    uint8_t fwx  = wx_frac    & (snap_obj  ? 0xf0 : 0xff);
+    uint8_t fwy  = wy_frac    & (snap_obj  ? 0xf8 : 0xff);
     // Two independent floors, not one combined. Combined form snaps at
     // different vp_frac_x crossings depending on wx_frac, so static
     // objects oscillate +/-1px relative to their tile as the player walks.
-    int sub_x_view = floor_div_256(-int(vp_frac_x) * tpx);
-    int sub_y_view = floor_div_256(-int(vp_frac_y) * tpy);
-    int sub_x_obj  = floor_div_256( int(wx_frac)   * tpx);
-    int sub_y_obj  = floor_div_256( int(wy_frac)   * tpy);
+    int sub_x_view = floor_div_256(-int(fvpx) * tpx);
+    int sub_y_view = floor_div_256(-int(fvpy) * tpy);
+    int sub_x_obj  = floor_div_256( int(fwx)  * tpx);
+    int sub_y_obj  = floor_div_256( int(fwy)  * tpy);
     sx = f.width / 2 + dx * tpx + sub_x_view + sub_x_obj + pan_px_x;
     sy = hud_y_px() / 2 + dy * tpy + sub_y_view + sub_y_obj + pan_px_y;
     return sx > -tpx && sx < f.width && sy > -tpy && sy < hud_y_px();
@@ -261,8 +293,13 @@ void PixelRenderer::screen_to_tile_offset(int sx, int sy,
                                           int& tdx, int& tdy) const {
     int tpx = tile_px_x();
     int tpy = tile_px_y();
-    int frac_off_x = int(vp_frac_x) * tpx / 256;
-    int frac_off_y = int(vp_frac_y) * tpy / 256;
+    // Match world_to_screen's snap so clicks invert to the tile
+    // actually drawn under the cursor. Uses the camera-motion hint so
+    // Adaptive mode lines up with whatever the renderer is currently
+    // showing.
+    bool snap_view = should_snap_for_velocity(subpixel_mode, cam_vx, cam_vy);
+    int frac_off_x = int(vp_frac_x & (snap_view ? 0xf0 : 0xff)) * tpx / 256;
+    int frac_off_y = int(vp_frac_y & (snap_view ? 0xf8 : 0xff)) * tpy / 256;
     int rel_x = sx - f.width / 2 - pan_px_x + frac_off_x;
     int rel_y = sy - hud_y_px() / 2 - pan_px_y + frac_off_y;
     tdx = (rel_x >= 0) ? (rel_x / tpx) : -((-rel_x + tpx - 1) / tpx);
@@ -579,7 +616,8 @@ void PixelRenderer::render_object(Fixed8_8 world_x, Fixed8_8 world_y,
     if (info.type == ObjectType::INVISIBLE_DEBRIS) return;
     int sx, sy;
     if (!world_to_screen(world_x.whole, world_y.whole, sx, sy,
-                          world_x.fraction, world_y.fraction)) return;
+                          world_x.fraction, world_y.fraction,
+                          info.velocity_x, info.velocity_y)) return;
     if (info.sprite_id > 0x80) return;
 
     // &0d91 object pos = sprite top-left (no sprite-height offset).

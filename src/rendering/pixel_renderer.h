@@ -88,8 +88,10 @@ public:
     void render_hud(const PlayerState& player) override;
     int viewport_width_tiles() const override;
     int viewport_height_tiles() const override;
-    int tile_pixel_size_x() const override { return tile_px_x(); }
-    int tile_pixel_size_y() const override { return tile_px_y(); }
+    void set_subpixel_mode(SubpixelMode mode) override { subpixel_mode = mode; }
+    void set_camera_motion(int8_t vx, int8_t vy) override {
+        cam_vx = vx; cam_vy = vy;
+    }
     int get_key() override;
     bool consume_pan_tiles(int& dx, int& dy) override;
     bool consume_left_click(int& tile_dx, int& tile_dy) override;
@@ -231,6 +233,15 @@ public:
     int scale = 3;
     int zoom_den = 1;
 
+    // [render] subpixel_rendering ini setting. Off snaps fractions to
+    // the BBC pixel grid; On honours every frac unit; Adaptive snaps
+    // only when the object (or camera) is near-stationary. See
+    // set_subpixel_mode() / set_camera_motion() and the velocity test
+    // inside world_to_screen.
+    SubpixelMode subpixel_mode = SubpixelMode::Off;
+    int8_t cam_vx = 0;
+    int8_t cam_vy = 0;
+
     // Mouse / pan / click state
     int prev_mouse_x = 0;
     int prev_mouse_y = 0;
@@ -321,8 +332,13 @@ public:
     void draw_glyph(int x, int y, char ch, uint32_t fg, uint32_t bg);
     int draw_text(int x, int y, const char* s, uint32_t fg, uint32_t bg);
 
+    // vx / vy are the object's velocity, used by Adaptive subpixel mode
+    // to decide whether to snap this draw to the BBC pixel grid. Tiles
+    // and other stationary draws can omit them (default 0 → always snap
+    // in Adaptive mode, which is what stationary things want).
     bool world_to_screen(uint8_t wx, uint8_t wy, int& sx, int& sy,
-                         uint8_t wx_frac = 0, uint8_t wy_frac = 0) const;
+                         uint8_t wx_frac = 0, uint8_t wy_frac = 0,
+                         int8_t vx = 0, int8_t vy = 0) const;
 
     void screen_to_tile_offset(int sx, int sy, int& tdx, int& tdy) const;
 

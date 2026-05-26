@@ -93,6 +93,10 @@ bool Game::init() {
     show_fps_     = cfg.show_fps;
     target_fps_   = cfg.target_fps;
     Audio::set_logic_rate(target_fps_);
+    if (renderer_) {
+        renderer_->set_subpixel_mode(
+            static_cast<IRenderer::SubpixelMode>(cfg.subpixel_mode));
+    }
     player_weapon_ = cfg.weapon;
 
     // [audio] enabled gates Audio::play / play_at. The device is already
