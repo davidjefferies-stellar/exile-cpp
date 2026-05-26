@@ -451,16 +451,15 @@ bool ObjectManager::check_demotion(int primary_slot, uint8_t frame_counter) {
     if (x == 0) return false;  // &1bc7 BEQ skip_distance_check
 
     // &1bca-&1bda: for X=2 (KEEP_AS_PRIMARY_FOR_LONGER only), bump to X=3
-    // when the object is slow AND supported, so stationary objects use
-    // the tighter demote_distances_[2] radius. Moving or airborne ones
-    // stay on demote_distances_[1] so they aren't demoted in mid-travel.
+    // when the object is slow AND any-bottom-collision, so stationary
+    // objects use the tighter demote_distances_[2] radius. &1bd6 reads
+    // &19 = &18 | &29e5 — object-supported objects count, not just tile.
     if (x == 0x02) {
         uint8_t max_v = std::max<uint8_t>(
             static_cast<uint8_t>(std::abs(obj.velocity_x)),
             static_cast<uint8_t>(std::abs(obj.velocity_y)));
         bool slow = max_v < 5;
-        bool supported = (obj.flags & ObjectFlags::SUPPORTED) != 0;
-        if (slow && supported) x = 0x03;
+        if (slow && obj.bottom_collision) x = 0x03;
     }
 
     // &1bdb distances_to_remove_objects_table[X-1]. ROM defaults {1,12,4};

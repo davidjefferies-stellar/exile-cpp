@@ -36,6 +36,11 @@ struct Object {
     // our update order is (update_fn, physics) rather than (physics, update_fn),
     // so the bullet updater reads the previous frame's flag.
     bool       tile_collision = false;  // true if axis-separated move was undone
+    // 6502 &19 this_object_any_bottom_collision = &18 | &29e5. Set when
+    // this frame's tile OR object collision pushed up; read by
+    // check_demotion (&1bd6) to bump stationary supported objects into
+    // the tighter 4-tile demote radius.
+    bool       bottom_collision = false;
     // Max(|vx|,|vy|) at the moment of a tile collision, captured BEFORE
     // the bounce-reflect / damp pass. Mirrors the 6502's &1d
     // this_object_pre_collision_velocity_magnitude (set at &30b7).

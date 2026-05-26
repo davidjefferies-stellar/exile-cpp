@@ -163,6 +163,13 @@ static void resolve_obj_overlap_response(Object& obj, int slot,
     // &2b1d-&2b27 symmetric touching stamp.
     obj.touching   = static_cast<uint8_t>(other_slot);
     other.touching = static_cast<uint8_t>(slot);
+
+    // &29e5 object_collision_y_flags bit 7 — set when this object was
+    // pushed up (its bottom edge hit the other's top). Mirror to both
+    // objects' transient bottom_collision so &19 = &18 | &29e5 in
+    // check_demotion sees object-supported stationary objects.
+    if (axis_y && sign == -1) obj.bottom_collision   = true;
+    if (axis_y && sign == +1) other.bottom_collision = true;
 }
 
 // Full 18-step update loop - port of &1a0b-&1e18
@@ -195,11 +202,13 @@ void Game::update_objects() {
             // or a pre-pickup impact magnitude pins update_full_flask's
             // >= 0x14 trigger and bleeds water indefinitely.
             obj.pre_collision_magnitude = 0;
+            obj.bottom_collision = false;
             TileCollision::Result tcr = TileCollision::resolve(
                 obj, prev_held_x.whole, prev_held_x.fraction,
                 prev_held_y.whole, prev_held_y.fraction,
                 landscape_, object_mgr_, /*skip_slot=*/-1);
             obj.tile_collision = tcr.top_or_bottom_collision;
+            if (tcr.landed_on_bottom) obj.bottom_collision = true;
         }
 
         // Step 7: Check demotion
@@ -493,6 +502,7 @@ void Game::update_objects() {
                 // SUPPORTED re-set from tcr.landed_on_bottom below;
                 // 6502 derives it from tile_collision_y_flags bit 7.
                 obj.flags &= ~ObjectFlags::SUPPORTED;
+                obj.bottom_collision = false;
 
                 TileCollision::Result tcr = TileCollision::resolve(
                     obj, ou_old_x.whole, ou_old_x.fraction,
@@ -502,6 +512,7 @@ void Game::update_objects() {
                 obj.tile_collision = tcr.top_or_bottom_collision;
                 if (tcr.landed_on_bottom) {
                     obj.flags |= ObjectFlags::SUPPORTED;
+                    obj.bottom_collision = true;
                 }
 
                 // Port of &2b51-&2bb0 — split detection keeps the
