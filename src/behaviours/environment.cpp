@@ -920,16 +920,17 @@ void update_sucking_nest(Object& obj, UpdateContext& ctx) {
         if (trigger == 0xff) {
             active = true;
         } else {
+            // &3cb2-&3cba find_object: ONE randomised LOS cap per call,
+            // used across the slot scan. Roll once outside the loop.
+            uint8_t r = ctx.rng.next();
+            uint8_t cap8 = static_cast<uint8_t>(r & 0x4f);
+            uint8_t cap_tiles = static_cast<uint8_t>(cap8 / 8);
             for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
                 const Object& other = ctx.mgr.object(i);
                 if (!other.is_active()) continue;
                 if (static_cast<uint8_t>(other.type) != trigger) continue;
-                // 6502 find_object carry-clear LOS: randomised cap per
-                // call (see has_line_of_sight_randomized). One slot from
-                // self to candidate here stands in for find_object's
-                // slot loop — close enough for activation gating.
-                if (NPC::has_line_of_sight_randomized(
-                        obj, static_cast<uint8_t>(i), ctx)) {
+                if (NPC::has_line_of_sight(
+                        obj, static_cast<uint8_t>(i), cap_tiles, ctx)) {
                     active = true;
                     break;
                 }
