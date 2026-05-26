@@ -506,9 +506,17 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
     }
 
     // Port of &1f3d add_jetpack_thrust_particles: emit one jetpack
-    // particle per frame while the player is accelerating.
+    // particle per frame while the player is accelerating. [debug]
+    // jetpack_boost_tint pins colour to red/magenta during boost so the
+    // 2x accel path is visible — cf_base=0xe1 (red, no CYCLE), cf_rand
+    // =0x04 (only bit 2 flips, so result is colour 1 or 5).
     if (accel_x != 0 || accel_y != 0) {
-        particles_.emit(ParticleType::JETPACK, 1, player, cosmetic_rng_);
+        if (jetpack_boost_tint_ && boost_active) {
+            particles_.emit(ParticleType::JETPACK, 1, player, cosmetic_rng_,
+                            /*angle=*/0xc0, /*cf_base=*/0xe1, /*cf_rand=*/0x04);
+        } else {
+            particles_.emit(ParticleType::JETPACK, 1, player, cosmetic_rng_);
+        }
     }
 
     // Whistles: &2cac whistle_one (low note only) and &2c99 whistle_two

@@ -140,16 +140,19 @@ void ParticleSystem::update(uint8_t waterline_y, uint8_t waterline_y_frac, Rando
 // ---------- Emission (port of &218c / &218e / associated helpers) ----------
 
 void ParticleSystem::emit(ParticleType type, int count, const Object& src,
-                          Random& rng, uint8_t angle, int cf_base_override) {
+                          Random& rng, uint8_t angle, int cf_base_override,
+                          int cf_rand_override) {
     if (type >= ParticleType::COUNT || count <= 0) return;
     const TypeData& t = TYPES[static_cast<int>(type)];
-    // &46e4 trick: callers can rewrite cf_base for one emit. The
-    // cf_rand mask stays the type's stock value so the random-bit
-    // pattern (which pairs colours like green/yellow for the icer
-    // trail) is preserved.
+    // &46e4 trick: callers can rewrite cf_base for one emit. cf_rand
+    // is normally the type's stock mask (preserves icer green/yellow
+    // pairing etc); the override is a port-only debug knob — see header.
     uint8_t cf_base = (cf_base_override < 0)
                      ? t.cf_base
                      : static_cast<uint8_t>(cf_base_override);
+    uint8_t cf_rand = (cf_rand_override < 0)
+                     ? t.cf_rand
+                     : static_cast<uint8_t>(cf_rand_override);
 
     // &2197-&2209 build base position. Flags drive two per-axis bits:
     // consider-flip (start at sprite edge when flipped) and use-centre
@@ -220,9 +223,9 @@ void ParticleSystem::emit(ParticleType type, int count, const Object& src,
         // &2220-&222a: ttl.
         p.ttl = static_cast<uint8_t>((rng.next() & t.ttl_rand) + t.ttl_base);
 
-        // &220d-&2215: colour and flags. cf_base is type default OR the
-        // per-call override (see top of emit()).
-        uint8_t cf = (rng.next() & t.cf_rand) ^ cf_base;
+        // &220d-&2215: colour and flags. cf_base/cf_rand are type
+        // defaults OR per-call overrides (see top of emit()).
+        uint8_t cf = (rng.next() & cf_rand) ^ cf_base;
         p.colour_and_flags = cf;
 
         // &222e-&2263: velocity (signed random + base) and position (fraction

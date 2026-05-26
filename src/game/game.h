@@ -156,6 +156,12 @@ private:
     bool   show_fps_  = false;
     double fps_value_ = 0.0;
 
+    // [debug] jetpack_boost_tint — recolours jetpack thrust particles to
+    // a red/magenta combo while the booster (Right Ctrl / [) is held, so
+    // the 2x acceleration path is visible at a glance. Plumbed into the
+    // particle emit at player_actions.cpp's add_jetpack_thrust_particles.
+    bool   jetpack_boost_tint_ = false;
+
     // [debug] target_fps — locked logic + render tick rate. 25 = BBC
     // original speed; 50/75/100 fast-forward. Audio sample count is
     // realigned via Audio::set_logic_rate in Game::init.

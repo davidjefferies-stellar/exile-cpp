@@ -308,6 +308,8 @@ StartupConfig load_startup_config(const std::string& path) {
                 cfg.grenade_chain = b;
             } else if (key == "icer_drop" && parse_bool(value, b)) {
                 cfg.icer_drop = b;
+            } else if (key == "jetpack_boost_tint" && parse_bool(value, b)) {
+                cfg.jetpack_boost_tint = b;
             } else if (key == "show_fps" && parse_bool(value, b)) {
                 cfg.show_fps = b;
             } else if (key == "target_fps") {

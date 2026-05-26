@@ -91,6 +91,7 @@ bool Game::init() {
     invincible_   = cfg.invincible;
     sucking_nest_damages_player_ = cfg.sucking_nest_damages_player;
     show_fps_     = cfg.show_fps;
+    jetpack_boost_tint_ = cfg.jetpack_boost_tint;
     target_fps_   = cfg.target_fps;
     Audio::set_logic_rate(target_fps_);
     if (renderer_) {

@@ -66,8 +66,13 @@ public:
     // TYPES table; >= 0 substitutes the byte directly (port of the
     // 6502's &46e4 STA particle_types_colour_and_flags_table+&2c
     // trick used by per-bullet projectile-trail colours at &46e1).
+    // `cf_rand_override` is a port-only extension to cf_base_override:
+    // < 0 keeps the type's stock cf_rand; >= 0 substitutes the mask used
+    // in the colour-spread XOR. Lets debug emits pin two-colour combos
+    // (e.g. 0x04 -> bit 2 flips, choosing between red and magenta).
     void emit(ParticleType type, int count, const Object& src, Random& rng,
-              uint8_t angle = 0xc0, int cf_base_override = -1);
+              uint8_t angle = 0xc0, int cf_base_override = -1,
+              int cf_rand_override = -1);
 
     // Emit a single particle at an explicit world tile (whole coords only,
     // fractions = 0). Used by the star-field at &26ce-&26e3 which fills

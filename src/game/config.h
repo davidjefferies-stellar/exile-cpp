@@ -128,6 +128,12 @@ struct StartupConfig {
     // collision tuning work; left as a reference. Default false.
     bool icer_drop = false;
 
+    // [debug] jetpack_boost_tint — when true, jetpack thrust particles
+    // switch from their cycling stock palette to a red/magenta combo
+    // while the booster is active (Right Ctrl / [). Lets you see at a
+    // glance whether the 2x acceleration path is engaged. Default false.
+    bool jetpack_boost_tint = false;
+
     // [debug] show_fps — when true, render a measured frames-per-second
     // value in the top-right corner of the window. Sampled over a 30-
     // frame rolling window in Game::run, so the number reflects actual
