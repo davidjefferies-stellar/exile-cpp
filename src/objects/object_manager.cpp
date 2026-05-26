@@ -207,7 +207,9 @@ uint8_t ObjectManager::pack_energy_fractions(uint8_t energy, uint8_t x_frac, uin
 }
 
 void ObjectManager::unpack_energy_fractions(uint8_t packed, uint8_t& energy, uint8_t& x_frac, uint8_t& y_frac) {
-    energy = packed & 0xf0;
+    // &0c32 ORA #&0f — set low nibble so promoted object reads as
+    // full-fraction energy. Without this, energy is 0x0f short.
+    energy = packed | 0x0f;
     x_frac = ((packed >> 2) & 0x03) << 6;
     y_frac = (packed & 0x03) << 6;
 }
