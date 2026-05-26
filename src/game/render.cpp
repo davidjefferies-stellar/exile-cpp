@@ -110,33 +110,24 @@ void Game::render() {
     camera_.follow_player(player_obj.x.whole, player_obj.y.whole,
                           vp_w_half, vp_h_half);
 
+    // Camera fraction tracks the player with hysteresis: a single-frame
+    // +1/-1 oscillation (the gravity vs tile-collision tug-of-war on a
+    // grounded player) is held, but sustained motion in one direction
+    // advances. Without this the world juddered 1 px every frame
+    // because the player's y.fraction ticks K -> K+1 -> K each frame
+    // and our scale puts a pixel boundary roughly every 2-3 frac units.
+    camera_.update_display_frac(player_obj.x.fraction, player_obj.y.fraction);
+    uint8_t vp_fx = camera_.display_frac_x;
+    uint8_t vp_fy = camera_.display_frac_y;
     // Earthquake test-event shake (port-only). Perturb the fractional
     // viewport centre with each call; when test_shake_frames_ hits 0
     // the perturbation stops and the camera returns to player.
-    uint8_t vp_fx = player_obj.x.fraction;
-    uint8_t vp_fy = player_obj.y.fraction;
     if (test_shake_frames_ > 0) {
         int8_t dx = static_cast<int8_t>((rng_.next() & 0x7f) - 0x40);
         int8_t dy = static_cast<int8_t>((rng_.next() & 0x7f) - 0x40);
         vp_fx = static_cast<uint8_t>(vp_fx + dx);
         vp_fy = static_cast<uint8_t>(vp_fy + dy);
         test_shake_frames_--;
-    }
-    // Snap the viewport fraction to the renderer's pixel grid. Without
-    // this the gravity/tile-collision tug-of-war on the player
-    // (y.fraction ticks K->K+1->K every frame) drags the whole world
-    // back and forth by 1 px. The 6502 never saw this — its renderer
-    // was pixel-aligned. Snap covers x too in case future motion code
-    // produces a similar oscillation there.
-    {
-        int tpx = renderer_->tile_pixel_size_x();
-        int tpy = renderer_->tile_pixel_size_y();
-        // step = frac units per screen pixel = 256 / tile_px. Clamp >= 1
-        // so very high zoom (tile_px > 256) still produces a valid mask.
-        int step_x = (tpx > 0 && tpx <= 256) ? (256 / tpx) : 1;
-        int step_y = (tpy > 0 && tpy <= 256) ? (256 / tpy) : 1;
-        vp_fx = static_cast<uint8_t>((vp_fx / step_x) * step_x);
-        vp_fy = static_cast<uint8_t>((vp_fy / step_y) * step_y);
     }
     renderer_->set_viewport(camera_.center_x, camera_.center_y, vp_fx, vp_fy);
 
