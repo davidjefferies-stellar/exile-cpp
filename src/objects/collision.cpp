@@ -391,17 +391,20 @@ static int asr1_floor(int x) {
     return -((-x + 1) / 2);
 }
 
-// Apply one side of the transfer (port of &2bc6-&2bed). The transfer is
-// halved and, if the smallest overlap is in this axis, the original is
-// added back to give a 1.5× kick (the &2bcf ADC &a2,X "doubling" path).
-// Result is clamped to signed 8-bit per &327f prevent_overflow.
+// &2bc6-&2bed apply_collision_to_object_velocity. Halve transfer; if
+// smallest overlap is in this axis add the original back (&2bcf 1.5x).
+// &2be5 add_to_final_velocity runs twice (PHA/JSR/PLA + fall-through),
+// each pass clamped by &327f prevent_overflow.
+static int clamp_s8(int v) {
+    if (v >  127) return  127;
+    if (v < -128) return -128;
+    return v;
+}
 static int process_one_side(int transfer, bool double_it, int start_v) {
     int processed = asr1_floor(transfer);
-    if (double_it) processed += transfer;
-    int sum = start_v + processed;
-    if (sum >  127) sum =  127;
-    if (sum < -128) sum = -128;
-    return sum;
+    if (double_it) processed = clamp_s8(processed + transfer);
+    int mid = clamp_s8(start_v + processed);
+    return  clamp_s8(mid     + processed);
 }
 
 // Port of &2bee calculate_transfer_velocities + &2bc6 apply_collision_
