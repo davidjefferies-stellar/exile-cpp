@@ -194,7 +194,12 @@ void update_power_pod(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// &4374: Destinator - key item for completing the game
+// &4374: Destinator - key item for completing the game.
+// Port deferred: 6502 &4374-&4386 reads &19ab ship_moving and the engine
+// tile's tertiary data byte (&09ae) to trigger end-game flooding when
+// the destinator is returned to the ship. Neither ship_moving nor the
+// flooding cascade are wired into UpdateContext yet, so the routine
+// here is cosmetic flashing only — the game can't be completed.
 void update_destinator(Object& obj, UpdateContext& ctx) {
     update_collectable(obj, ctx);
     // Flash more vigorously
