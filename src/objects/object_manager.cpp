@@ -107,6 +107,7 @@ void ObjectManager::init_object_from_type(Object& obj, ObjectType type) {
     // (renderer skipped the draw on the spawn frame).
     obj.bottom_collision = false;
     obj.visible = true;
+    obj.has_left_home = false;
 }
 
 // min_free_slots is a spawn-priority knob, mirroring the 6502's

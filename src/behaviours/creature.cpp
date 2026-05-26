@@ -473,13 +473,13 @@ constexpr uint8_t kNPC_WAS_FED = 0x10;
 // NPC_CLIMBING (bit 5), NPC_WAS_FED (bit 4), grounded-frame counter (bits 3-0).
 // Walking/climbing/jumping physics not yet ported.
 void update_imp(Object& obj, UpdateContext& ctx) {
-    // Diag: timer at entry. If despawn fires unexpectedly, this shows
-    // whether timer was 1 going IN (set outside update_imp) or got set
-    // mid-frame by the at-home block's non-PIPE branch.
+    // Diag: state at entry. Shows left_home latch + transient flags so
+    // the despawn cause is obvious in the log.
     ctx.mgr.log_diag(
-        "imp p%d ENTRY timer=%u flags=0x%02x sup=%d nc=%d touching=0x%02x "
-        "vx=%d vy=%d @%u.%02x,%u.%02x",
-        ctx.this_slot, static_cast<unsigned>(obj.timer), obj.flags,
+        "imp p%d ENTRY left_home=%d timer=%u flags=0x%02x sup=%d nc=%d "
+        "touching=0x%02x vx=%d vy=%d @%u.%02x,%u.%02x",
+        ctx.this_slot, obj.has_left_home ? 1 : 0,
+        static_cast<unsigned>(obj.timer), obj.flags,
         obj.is_supported() ? 1 : 0,
         (obj.flags & ObjectFlags::NEWLY_CREATED) ? 1 : 0,
         obj.touching,
@@ -487,13 +487,14 @@ void update_imp(Object& obj, UpdateContext& ctx) {
         obj.x.whole, obj.x.fraction, obj.y.whole, obj.y.fraction);
 
     // &44ef-&44f7: newly-created imps start in MINUS_TWO (aggressive).
-    // obj.timer is used as a port-only "has-left-home" latch (0 = still
-    // on its spawn pipe, 1 = has stepped off a PIPE tile at least once).
-    // Mirrors the 6502's &18 tile_collision_y_flags semantics for the
-    // at-home despawn gate without needing per-axis collision history.
+    // Port-only has_left_home latch (false = still on spawn pipe, true =
+    // has stepped off a PIPE tile). Lives in its own Object field — the
+    // sprite cycle below (update_sprite_offset_using_velocities at &2557)
+    // writes obj.timer = (timer+1+speed) % 0x0c every frame, so storing
+    // the latch in timer corrupted it (despawn fires when timer==1).
     if (obj.flags & ObjectFlags::NEWLY_CREATED) {
         obj.state = NPCMood::MINUS_TWO;
-        obj.timer = 0;
+        obj.has_left_home = false;
         ctx.mgr.log_diag(
             "imp p%d NEWLY_CREATED type=0x%02x @%u,%u flags=0x%02x "
             "energy=0x%02x vx=%d vy=%d sup=%d bot=%d vis=%d tslot=%u",
@@ -532,12 +533,13 @@ void update_imp(Object& obj, UpdateContext& ctx) {
         // imp whose physics step set SUPPORTED on frame 1 would trip
         // the at-home despawn before it ever walks out of the pipe.
         if (home_type != static_cast<uint8_t>(TileType::PIPE)) {
-            ctx.mgr.log_diag(
-                "imp p%d LATCH_LEFT home @%u,%u home_type=0x%02x raw=0x%02x"
-                " (timer 0->1)",
-                ctx.this_slot, obj.x.whole, obj.y.whole,
-                home_type, res.raw_tile_type);
-            obj.timer = 1;
+            if (!obj.has_left_home) {
+                ctx.mgr.log_diag(
+                    "imp p%d LATCH_LEFT home @%u,%u home_type=0x%02x raw=0x%02x",
+                    ctx.this_slot, obj.x.whole, obj.y.whole,
+                    home_type, res.raw_tile_type);
+            }
+            obj.has_left_home = true;
         }
         // Log every frame an imp with WAS_FED is alive so we can see
         // what tile/state it's actually in. Quiet when not fed, since
@@ -579,11 +581,11 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                           !(obj.flags & ObjectFlags::NEWLY_CREATED);
             ctx.mgr.log_diag(
                 "imp p%d AT-PIPE @%u,%u home=0x%02x raw=0x%02x landed=%d "
-                "timer=%u fed=%d gifts=%u sup=%d nc=%d",
+                "left_home=%d fed=%d gifts=%u sup=%d nc=%d",
                 ctx.this_slot, obj.x.whole, obj.y.whole,
                 home_type, res.raw_tile_type,
                 landed ? 1 : 0,
-                static_cast<unsigned>(obj.timer),
+                obj.has_left_home ? 1 : 0,
                 (obj.state & kNPC_WAS_FED) ? 1 : 0,
                 ctx.imp_gifts_remaining
                     ? static_cast<unsigned>(ctx.imp_gifts_remaining[tidx])
@@ -593,12 +595,10 @@ void update_imp(Object& obj, UpdateContext& ctx) {
 
             // &452b-&453f: home-despawn fires for BOTH fed and unfed imps
             // in the 6502 (the unfed BEQ at &452c skips the gift spawn but
-            // still falls through to &453f set_object_as_far_away). Gating
-            // on `obj.timer == 1` (has-left-home latch above) prevents the
-            // frame-1 race where a freshly-spawned imp already reports
-            // SUPPORTED on its spawn pipe and would vanish back to the
-            // nest before walking out.
-            if (landed && obj.timer == 1) {
+            // still falls through to &453f set_object_as_far_away). Gate
+            // on has_left_home so a freshly-spawned imp doesn't vanish
+            // before walking out of the pipe.
+            if (landed && obj.has_left_home) {
                 // &452b-&4531: gift-spawn is fed-gated and counter-gated.
                 // 6502 DECs first then BMI; we check >0 then DEC, same
                 // arithmetic outcome (initial N -> N drops).

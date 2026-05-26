@@ -46,6 +46,12 @@ struct Object {
     // update_invisible_frogman (&4475) LSR it to hide when undamaged.
     // Renderer skips draw if false.
     bool       visible = true;
+    // Port-only "has-left-home" latch for update_imp's at-home despawn
+    // gate. Earlier port stored it in obj.timer but update_sprite_offset_
+    // using_velocities (&2557) writes timer = (timer+1+speed_div) % 0x0c
+    // every frame, which lands on the despawn-trigger value (1) and
+    // killed freshly-spawned imps on frame 2.
+    bool       has_left_home = false;
     // Max(|vx|,|vy|) at the moment of a tile collision, captured BEFORE
     // the bounce-reflect / damp pass. Mirrors the 6502's &1d
     // this_object_pre_collision_velocity_magnitude (set at &30b7).
