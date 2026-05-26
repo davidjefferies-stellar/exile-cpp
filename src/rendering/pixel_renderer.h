@@ -88,6 +88,8 @@ public:
     void render_hud(const PlayerState& player) override;
     int viewport_width_tiles() const override;
     int viewport_height_tiles() const override;
+    int tile_pixel_size_x() const override { return tile_px_x(); }
+    int tile_pixel_size_y() const override { return tile_px_y(); }
     int get_key() override;
     bool consume_pan_tiles(int& dx, int& dy) override;
     bool consume_left_click(int& tile_dx, int& tile_dy) override;

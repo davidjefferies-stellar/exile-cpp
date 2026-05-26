@@ -122,6 +122,22 @@ void Game::render() {
         vp_fy = static_cast<uint8_t>(vp_fy + dy);
         test_shake_frames_--;
     }
+    // Snap the viewport fraction to the renderer's pixel grid. Without
+    // this the gravity/tile-collision tug-of-war on the player
+    // (y.fraction ticks K->K+1->K every frame) drags the whole world
+    // back and forth by 1 px. The 6502 never saw this — its renderer
+    // was pixel-aligned. Snap covers x too in case future motion code
+    // produces a similar oscillation there.
+    {
+        int tpx = renderer_->tile_pixel_size_x();
+        int tpy = renderer_->tile_pixel_size_y();
+        // step = frac units per screen pixel = 256 / tile_px. Clamp >= 1
+        // so very high zoom (tile_px > 256) still produces a valid mask.
+        int step_x = (tpx > 0 && tpx <= 256) ? (256 / tpx) : 1;
+        int step_y = (tpy > 0 && tpy <= 256) ? (256 / tpy) : 1;
+        vp_fx = static_cast<uint8_t>((vp_fx / step_x) * step_x);
+        vp_fy = static_cast<uint8_t>((vp_fy / step_y) * step_y);
+    }
     renderer_->set_viewport(camera_.center_x, camera_.center_y, vp_fx, vp_fy);
 
     // Mirror the current paint tile to the renderer so the editor

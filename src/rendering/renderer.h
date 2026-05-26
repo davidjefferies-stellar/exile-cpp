@@ -147,6 +147,14 @@ public:
     virtual int viewport_width_tiles() const = 0;
     virtual int viewport_height_tiles() const = 0;
 
+    // Current tile size in screen pixels (after zoom). Used by the
+    // camera so it can snap its sub-tile fraction to a pixel boundary
+    // and stop the world juddering as the player's grounded position
+    // oscillates by 1 fraction unit per gravity / collision tick.
+    // Default 32 matches TILE_PX_BASE_Y for renderers that don't zoom.
+    virtual int tile_pixel_size_y() const { return 32; }
+    virtual int tile_pixel_size_x() const { return 32; }
+
     // Input: get last key press (non-blocking)
     virtual int get_key() = 0;
 
