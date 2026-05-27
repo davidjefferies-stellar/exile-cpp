@@ -294,6 +294,11 @@ StartupConfig load_startup_config(const std::string& path) {
                         " (expected off / on / adaptive)\n",
                         line_no, value.c_str());
                 }
+            } else if (key == "zoom_den") {
+                unsigned long v;
+                if (parse_uint(value, v) && v >= 1) {
+                    cfg.zoom_den = static_cast<int>(v);
+                }
             }
         } else if (section == "logs") {
             bool b = false;
@@ -310,6 +315,8 @@ StartupConfig load_startup_config(const std::string& path) {
                 cfg.icer_drop = b;
             } else if (key == "jetpack_boost_tint" && parse_bool(value, b)) {
                 cfg.jetpack_boost_tint = b;
+            } else if (key == "profile" && parse_bool(value, b)) {
+                cfg.profile = b;
             } else if (key == "show_fps" && parse_bool(value, b)) {
                 cfg.show_fps = b;
             } else if (key == "target_fps") {

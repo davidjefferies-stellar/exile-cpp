@@ -17,6 +17,51 @@
 // chain stays readable. All entry points are members of Game; nothing
 // here is reachable from a release-only path.
 
+// ---------- Frame profiler report ---------------------------------------
+//
+// Called from tick() once the [debug] profile window fills (~1s). Writes
+// the mean ms/frame per phase to exile-debug.log, then resets the window.
+// Resets even when the log is closed so the accumulators don't grow
+// unbounded. Render sub-phases are listed under render; "other" is the
+// render time not covered by begin/tiles/objects/end (overlays, HUD-text).
+void Game::emit_profile_report() {
+    using S = Profile::Section;
+    int frames = profiler_.frames();
+    if (debug_log_.is_open() && frames > 0) {
+        int vp_w = renderer_->viewport_width_tiles();
+        int vp_h = renderer_->viewport_height_tiles();
+        char hdr[96];
+        std::snprintf(hdr, sizeof(hdr),
+                      "[profile] %d frames @ %dx%d tiles, avg ms/frame:\n",
+                      frames, vp_w, vp_h);
+        debug_log_ << hdr;
+
+        const S order[] = { S::Frame, S::Input, S::Player, S::Objects,
+                            S::Events, S::Particles, S::Render,
+                            S::RenderBegin, S::RenderTiles,
+                            S::RenderWater, S::RenderTileResolve,
+                            S::RenderTileInfo, S::RenderTileBlit,
+                            S::RenderObjects, S::RenderEnd };
+        for (S s : order) {
+            char line[64];
+            std::snprintf(line, sizeof(line), "  %-10s %7.3f\n",
+                          Profile::name(s), profiler_.avg_ms(s));
+            debug_log_ << line;
+        }
+        // Render time not attributed to a sub-phase (overlays + HUD text).
+        double other = profiler_.avg_ms(S::Render)
+                     - profiler_.avg_ms(S::RenderBegin)
+                     - profiler_.avg_ms(S::RenderTiles)
+                     - profiler_.avg_ms(S::RenderObjects)
+                     - profiler_.avg_ms(S::RenderEnd);
+        char line[64];
+        std::snprintf(line, sizeof(line), "  %-10s %7.3f\n", "  other", other);
+        debug_log_ << line;
+        debug_log_.flush();
+    }
+    profiler_.reset();
+}
+
 // ---------- One-shot startup diagnostics --------------------------------
 //
 // Writes a census of the freshly-baked landscape into exile-debug.log so

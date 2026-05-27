@@ -10,6 +10,26 @@
 #include "world/tile_data.h"
 #include "objects/object_data.h"
 
+// Pre-decoded sprite sheet: logical colour 0..3 per pixel, flat
+// BBC_SHEET_W x BBC_SHEET_H. TU-local (NOT a PixelRenderer member) so it
+// can never alter the class layout. blit_sprite reads sprite_idx() — one
+// array access per atlas sample instead of bbc_sprite_pixel's per-pixel
+// 2-bpp bit-deinterleave (the large-window hot path). Eagerly built before
+// main; BBC_SPRITE_DATA is constant-initialised so it is ready in time.
+static std::array<uint8_t, BBC_SHEET_W * BBC_SHEET_H> make_sprite_index() {
+    std::array<uint8_t, BBC_SHEET_W * BBC_SHEET_H> a{};
+    for (int y = 0; y < BBC_SHEET_H; ++y)
+        for (int x = 0; x < BBC_SHEET_W; ++x)
+            a[static_cast<size_t>(y) * BBC_SHEET_W + x] = bbc_sprite_pixel(x, y);
+    return a;
+}
+static const std::array<uint8_t, BBC_SHEET_W * BBC_SHEET_H>
+    g_sprite_index = make_sprite_index();
+
+static inline uint8_t sprite_idx(int x, int y) {
+    return g_sprite_index[static_cast<size_t>(y) * BBC_SHEET_W + x];
+}
+
 void PixelRenderer::apply_pending_resize() {
     if (f.pending_w > 0 && f.pending_h > 0 &&
         (f.pending_w != f.width || f.pending_h != f.height)) {
@@ -77,7 +97,7 @@ void PixelRenderer::blit_sprite_at_native(int cell_x, int cell_y,
             int ax = px / 2;       // 2:1 horizontal scale
             if (ax >= e.w) ax = e.w - 1;
             int src_x = e.x + (flip_h ? (e.w - 1 - ax) : ax);
-            uint8_t idx = bbc_sprite_pixel(src_x, src_y);
+            uint8_t idx = sprite_idx(src_x, src_y);
             if (idx == 0) continue;             // transparent
             row[ppx] = lut[idx];
         }
@@ -130,6 +150,17 @@ void PixelRenderer::blit_sprite(int dst_x, int dst_y, uint8_t sprite_id,
     int sy_num = zoom_den;
     int sy_den = PX_SCALE_Y * scale;
 
+    // Flip handled as origin + sign*a, hoisted out of the loop, rather than
+    // the equivalent `base + (flip ? extent-1-a : a)` per pixel. MSVC /O2
+    // miscompiles that inlined flip ternary when fused with the sprite-pixel
+    // index math (Release-only: tiles render flipped / missing; Debug is
+    // fine). Keeping the per-pixel source coord as plain int multiply-add
+    // sidesteps it.
+    const int sy_origin = flip_v ? (int(e.y) + e.h - 1) : int(e.y);
+    const int sy_sign   = flip_v ? -1 : 1;
+    const int sx_origin = flip_h ? (int(e.x) + e.w - 1) : int(e.x);
+    const int sx_sign   = flip_h ? -1 : 1;
+
     for (int py = 0; py < h_screen; ++py) {
         int ppy = dst_y + py;
         if (ppy < 0 || ppy >= hud_y) continue;
@@ -158,10 +189,10 @@ void PixelRenderer::blit_sprite(int dst_x, int dst_y, uint8_t sprite_id,
             int count = 0;
             bool any_fg = false;
             for (int ay = ay0; ay < ay1; ++ay) {
-                int src_y = e.y + (flip_v ? (e.h - 1 - ay) : ay);
+                int src_y = sy_origin + sy_sign * ay;
                 for (int ax = ax0; ax < ax1; ++ax) {
-                    int src_x = e.x + (flip_h ? (e.w - 1 - ax) : ax);
-                    uint8_t idx = bbc_sprite_pixel(src_x, src_y);
+                    int src_x = sx_origin + sx_sign * ax;
+                    uint8_t idx = sprite_idx(src_x, src_y);
                     if (idx == 0) continue;
                     uint32_t c = lut[idx];
                     r_sum += (c >> 16) & 0xff;

@@ -10,6 +10,15 @@
 #include "world/tile_data.h"
 #include "world/water.h"
 #include <cstdio>
+#include <chrono>
+
+// Nanoseconds between two steady_clock samples — used by the [debug]
+// profile breakdown of the tile loop. Free helper (no lambdas per repo style).
+static inline uint64_t prof_ns(std::chrono::steady_clock::time_point a,
+                               std::chrono::steady_clock::time_point b) {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(b - a).count());
+}
 
 // Per-object regen floor for Health overlay. Mirrors enforce_minimum_
 // energy across behaviour TUs (frogmen: shared 0x7f wins over per-variant).
@@ -80,7 +89,8 @@ static bool find_primary_at_slot(const ObjectManager& mgr, uint16_t slot,
 }
 
 void Game::render() {
-    renderer_->begin_frame();
+    { Profile::Scope _p(profiler_, Profile::Section::RenderBegin);
+      renderer_->begin_frame(); }
 
     // Sprite-viewer mode: replace the entire world render with the atlas
     // overlay (palette grid + ROM sheet + selected-sprite detail). The
@@ -98,7 +108,8 @@ void Game::render() {
 
     // Apply right-drag pan from the renderer (if any).
     int pan_dx = 0, pan_dy = 0;
-    if (renderer_->consume_pan_tiles(pan_dx, pan_dy)) {
+    bool panned = renderer_->consume_pan_tiles(pan_dx, pan_dy);
+    if (panned) {
         camera_.apply_pan(pan_dx, pan_dy);
     }
     // Re-derive view center (player pos + pan). Clamp to map extents so
@@ -109,6 +120,16 @@ void Game::render() {
     int vp_h_half = renderer_->viewport_height_tiles() / 2;
     camera_.follow_player(player_obj.x.whole, player_obj.y.whole,
                           vp_w_half, vp_h_half);
+
+    // Log the panned-to map centre so it can be reused as a [player]
+    // start_x/start_y. Only on actual pan steps (not every frame); the
+    // last line written is the final position. Needs [logs] enabled.
+    if (panned && debug_log_.is_open()) {
+        debug_log_ << "pan map centre: start_x = " << std::dec
+                   << int(camera_.center_x) << "  start_y = "
+                   << int(camera_.center_y) << "\n";
+        debug_log_.flush();
+    }
 
     // Camera fraction tracks the player directly. Judder absorption
     // happens inside the renderer (per [render] subpixel_rendering).
@@ -396,22 +417,34 @@ void Game::render() {
     uint8_t start_x = camera_.center_x - static_cast<uint8_t>(vp_w / 2);
     uint8_t start_y = camera_.center_y - static_cast<uint8_t>(vp_h / 2);
 
+    // Water backdrop + tile blits — the vp_w x vp_h hot path that scales
+    // with window size. Profiled together as RenderTiles (block-scoped so
+    // the Scope closes after the tile loop, not at end of render()).
+    {
+    Profile::Scope _p_tiles(profiler_, Profile::Section::RenderTiles);
+    const bool prof = profiler_.enabled();
+    using prof_clk = std::chrono::steady_clock;
+
     // Water backdrop: emulates the 6502 raster palette swap that turns
     // background colour 0 from black to blue below the waterline and cyan
     // on the waterline itself (&12a6-&12d8). Must run before the tile
     // blits so colour-0 transparent pixels reveal the water colour.
+    auto _w0 = prof ? prof_clk::now() : prof_clk::time_point{};
     for (int dx = 0; dx < vp_w; dx++) {
         uint8_t wx = static_cast<uint8_t>(start_x + dx);
         uint8_t wy = Water::get_waterline_y(wx);
         uint8_t wf = Water::get_waterline_y_fraction(wx);
         renderer_->render_water_column(wx, wy, wf);
     }
+    if (prof) profiler_.add(Profile::Section::RenderWater,
+                            prof_ns(_w0, prof_clk::now()));
 
     bool algo_only = renderer_->algo_only_enabled();
     for (int dy = 0; dy < vp_h; dy++) {
         uint8_t wy = static_cast<uint8_t>(start_y + dy);
         for (int dx = 0; dx < vp_w; dx++) {
             uint8_t wx = static_cast<uint8_t>(start_x + dx);
+            auto _t0 = prof ? prof_clk::now() : prof_clk::time_point{};
             ResolvedTile res = resolve_tile_with_tertiary(landscape_, wx, wy);
             uint8_t tile      = res.tile_and_flip;
             uint8_t tile_type = tile & TileFlip::TYPE_MASK;
@@ -441,6 +474,7 @@ void Game::render() {
                                       res.data_offset, res.type_offset,
                                       res.raw_tile_type);
             }
+            auto _t1 = prof ? prof_clk::now() : prof_clk::time_point{};
 
             // Door tiles (METAL_DOOR &03, STONE_DOOR &04) are declared
             // SPRITE_NONE in the tile-sprite table (&04ae / &04af). The
@@ -489,9 +523,17 @@ void Game::render() {
                 }
             }
 
+            auto _t2 = prof ? prof_clk::now() : prof_clk::time_point{};
             renderer_->render_tile(wx, wy, info);
+            if (prof) {
+                auto _t3 = prof_clk::now();
+                profiler_.add(Profile::Section::RenderTileResolve, prof_ns(_t0, _t1));
+                profiler_.add(Profile::Section::RenderTileInfo,    prof_ns(_t1, _t2));
+                profiler_.add(Profile::Section::RenderTileBlit,    prof_ns(_t2, _t3));
+            }
         }
     }
+    } // end RenderTiles scope
 
     // Collision-debug overlay: shade per-x-section solid region using the
     // same tile_threshold_at_x + tile_obstruction_v_flip_bit as collision
@@ -581,6 +623,8 @@ void Game::render() {
     }
 
     // Render active objects
+    {
+    Profile::Scope _p_objs(profiler_, Profile::Section::RenderObjects);
     for (int i = 0; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
         const Object& obj = object_mgr_.object(i);
         if (!obj.is_active()) continue;
@@ -604,6 +648,7 @@ void Game::render() {
 
         renderer_->render_object(obj.x, obj.y, info);
     }
+    } // end RenderObjects scope
 
     // Health-bar overlay above each primary; fill = energy / max. For
     // collectables (types 0x4a..0x64) bit 7 is the "undisturbed" pin —
@@ -1096,9 +1141,9 @@ void Game::render() {
     ps.pockets_used = pockets_used_;
     for (int i = 0; i < 8; i++) ps.keys[i] = player_keys_collected_[i];
     for (int i = 0; i < 6; i++) ps.weapon_energy[i] = weapon_energy_[i];
-    renderer_->render_hud(ps);
-
-    renderer_->end_frame();
+    { Profile::Scope _p(profiler_, Profile::Section::RenderEnd);
+      renderer_->render_hud(ps);
+      renderer_->end_frame(); }
 }
 
 // =============================================================================

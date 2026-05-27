@@ -89,6 +89,11 @@ public:
     int viewport_width_tiles() const override;
     int viewport_height_tiles() const override;
     void set_subpixel_mode(SubpixelMode mode) override { subpixel_mode = mode; }
+    void set_zoom_den(int den) override {
+        if (den < 1) den = 1;
+        if (den > MAX_ZOOM_DEN) den = MAX_ZOOM_DEN;
+        zoom_den = den;
+    }
     void set_camera_motion(int8_t vx, int8_t vy) override {
         cam_vx = vx; cam_vy = vy;
     }
@@ -231,7 +236,7 @@ public:
     // Start two notches zoomed in (3:1) so the BBC tile reads chunkier
     // by default.
     int scale = 3;
-    int zoom_den = 1;
+    int zoom_den = 7;
 
     // [render] subpixel_rendering ini setting. Off snaps fractions to
     // the BBC pixel grid; On honours every frac unit; Adaptive snaps

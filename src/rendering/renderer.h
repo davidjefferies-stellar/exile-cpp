@@ -163,6 +163,9 @@ public:
         Adaptive  = 2,
     };
     virtual void set_subpixel_mode(SubpixelMode /*mode*/) {}
+    // Initial zoom denominator (zoom = scale / zoom_den). Set once from
+    // [render] zoom_den at startup; runtime wheel zoom adjusts it further.
+    virtual void set_zoom_den(int /*den*/) {}
     // Per-frame camera-motion hint used by Adaptive mode to decide
     // whether to snap the viewport fraction (i.e. follow the player at
     // sub-pixel precision or at BBC-pixel precision).

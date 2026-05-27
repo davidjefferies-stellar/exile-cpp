@@ -134,6 +134,12 @@ struct StartupConfig {
     // glance whether the 2x acceleration path is engaged. Default false.
     bool jetpack_boost_tint = false;
 
+    // [debug] profile — when true, time each tick phase (input, player,
+    // objects, events, particles, render + render sub-phases) and write a
+    // per-second summary to exile-debug.log. Needs [logs] enabled = true
+    // to see output. Off by default; the timing has near-zero cost when off.
+    bool profile = false;
+
     // [debug] show_fps — when true, render a measured frames-per-second
     // value in the top-right corner of the window. Sampled over a 30-
     // frame rolling window in Game::run, so the number reflects actual
@@ -167,6 +173,12 @@ struct StartupConfig {
         Adaptive  = 2,
     };
     SubpixelMode subpixel_mode = SubpixelMode::Adaptive;
+
+    // [render] zoom_den — initial zoom denominator (zoom = scale / zoom_den;
+    // scale defaults to 3). 1 = stock 3:1 view. Higher zooms out (more tiles
+    // visible) — handy for map-mode panning to find a location. Clamped to
+    // the renderer's MAX_ZOOM_DEN. Default 1 (no change from stock zoom).
+    int zoom_den = 1;
 
     // [audio] — master enable for the synthesised sound. When false,
     // Audio::play / play_at become no-ops; the device still opens so

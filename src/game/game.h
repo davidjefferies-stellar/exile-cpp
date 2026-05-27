@@ -9,6 +9,7 @@
 #include "rendering/renderer.h"
 #include "rendering/camera.h"
 #include "particles/particle_system.h"
+#include "core/profiler.h"
 #include <fstream>
 #include <vector>
 #include <memory>
@@ -353,6 +354,12 @@ private:
     std::ofstream debug_log_;
     void flush_debug_log();
     void dump_init_diagnostics();
+
+    // [debug] profile — per-phase frame timing. Scopes in tick()/render()
+    // feed it; emit_profile_report() writes a per-second summary to
+    // debug_log_ and resets. Body in game_debug.cpp.
+    Profile::Profiler profiler_;
+    void emit_profile_report();
     void log_walking_diagnosis(const Object& player, const InputState& inp,
                                int8_t pre_vx, int8_t pre_vy,
                                uint8_t pre_xf, uint8_t pre_yf,

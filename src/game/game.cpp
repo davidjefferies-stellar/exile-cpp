@@ -92,11 +92,13 @@ bool Game::init() {
     sucking_nest_damages_player_ = cfg.sucking_nest_damages_player;
     show_fps_     = cfg.show_fps;
     jetpack_boost_tint_ = cfg.jetpack_boost_tint;
+    profiler_.set_enabled(cfg.profile);
     target_fps_   = cfg.target_fps;
     Audio::set_logic_rate(target_fps_);
     if (renderer_) {
         renderer_->set_subpixel_mode(
             static_cast<IRenderer::SubpixelMode>(cfg.subpixel_mode));
+        renderer_->set_zoom_den(cfg.zoom_den);
     }
     player_weapon_ = cfg.weapon;
 
@@ -296,13 +298,15 @@ void Game::run() {
 }
 
 void Game::tick() {
+    auto profile_frame_start = std::chrono::steady_clock::now();
     {
         // Main game loop sequence (matching &19b6). Order inside the
         // frame is: input -> toggles -> anchor -> world updates -> render.
         // While paused the world-update block is skipped so the current
         // state snapshot can be inspected in the banner without values
         // changing every frame.
-        process_input();
+        { Profile::Scope _p(profiler_, Profile::Section::Input);
+          process_input(); }
 
         // Activation-anchor mode is driven by the "Map mode"
         activation_from_camera_ = renderer_->map_mode_enabled();
@@ -415,8 +419,10 @@ void Game::tick() {
             // block is enabled. Body lives in game_debug.cpp.
             tick_test_grenades();
 
-            update_player();
-            update_objects();
+            { Profile::Scope _p(profiler_, Profile::Section::Player);
+              update_player(); }
+            { Profile::Scope _p(profiler_, Profile::Section::Objects);
+              update_objects(); }
 
             // Decrement mushroom timers (port of &19d4-&19dd). The same loop
             // lands on &0819 (door_timer) when X reaches 0 in the 6502, so
@@ -430,11 +436,13 @@ void Game::tick() {
                 object_mgr_.door_timer_--;
             }
 
-            // Random events 
-            update_events();
+            // Random events
+            { Profile::Scope _p(profiler_, Profile::Section::Events);
+              update_events(); }
 
             // Tick the particle pool (port of &207e update_particles).
             {
+                Profile::Scope _p(profiler_, Profile::Section::Particles);
                 const Object& p = object_mgr_.player();
                 uint8_t wy = Water::get_waterline_y(p.x.whole);
                 particles_.update(wy, 0, cosmetic_rng_);
@@ -448,7 +456,8 @@ void Game::tick() {
             capture_rewind_snapshot();
         }
 
-        render();
+        { Profile::Scope _p(profiler_, Profile::Section::Render);
+          render(); }
 
         // Update the audio listener position for distance-attenuated
         // sounds (play_at). Tracks the player tile every frame so
@@ -473,6 +482,16 @@ void Game::tick() {
         if (!paused_) {
             flush_debug_log();
         }
+    }
+
+    // [debug] profile — record this frame's total work (sans the run()
+    // frame-rate sleep) and emit a summary to debug_log_ every ~second.
+    if (profiler_.enabled()) {
+        profiler_.add(Profile::Section::Frame, static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - profile_frame_start).count()));
+        profiler_.mark_frame();
+        if (profiler_.frames() >= target_fps_) emit_profile_report();
     }
 }
 
