@@ -86,6 +86,8 @@ Map-mode toggle and the rest of the debug overlays (tile grid, object
 labels, switch / transporter wires, collision shading, debug text) live
 on the bottom-HUD checkboxes — click them to toggle.
 
+![exile-cpp screenshot 2](docs/images/exile-cpp_2.png)
+
 ## Map save / load
 
 The 256×256 landscape grid lives in `exile.map`. Press `\` to write the
