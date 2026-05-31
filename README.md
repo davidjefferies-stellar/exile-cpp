@@ -42,12 +42,15 @@ msbuild exile.vcxproj /p:Configuration=Release /p:Platform=x64
 5. The working directory at launch is the project root, so `exile.ini`,
    `exile.map`, `data/`, and `resources/` resolve as-is.
 
-The build pulls in two single-header dependencies bundled under `deps/`:
+The build pulls in single-header dependencies bundled under `deps/`:
 
-- `fenster.h` — windowing + framebuffer
+- `sokol_app.h` + `sokol_gfx.h` + `sokol_glue.h` + `sokol_log.h` —
+  windowing, input, and a CPU-framebuffer-as-texture present path
+  (D3D11 backend on Windows). Hardware-accelerated blit; the per-pixel
+  rendering logic stays CPU-side.
 - `fenster_audio.h` — audio (Windows backend is bypassed by our own
   `waveOut` implementation in `src/audio/`; the upstream sets `nBlockAlign`
-  incorrectly for PCM 16-bit mono)
+  incorrectly for PCM 16-bit mono).
 
 ## Run
 
@@ -193,9 +196,11 @@ src/
   behaviours/   Per-type update routines (creature, robot, projectile,
                 environment, collectable) + dispatch table + shared NPC helpers.
   particles/    Particle system (&207e update + per-type tables at &0206).
-  rendering/    Renderer interface + fenster framebuffer backend, palette
-                decode, sprite atlas, debug overlays.
-  audio/        SN76489-style envelope synthesizer over fenster_audio.h.
+  rendering/    Renderer interface + sokol_app/sokol_gfx textured-quad
+                present, CPU framebuffer, palette decode, sprite atlas,
+                debug overlays.
+  audio/        SN76489-style envelope synthesizer (Windows waveOut;
+                fenster_audio.h elsewhere).
   player/       Input, motion, action, sprite handling.
   game/         Top-level loop orchestration (game.cpp ≤ ~200 lines).
 ```
@@ -203,6 +208,25 @@ src/
 ## AI Disclosure
 
 AI-assisted tooling has been used during the development of this project.
+
+
+## With thanks to
+
+- **Level7** — [level7.org.uk/miscellany](https://level7.org.uk/miscellany/).
+  Author of the superbly annotated 6502 disassembly
+  (`exile-standard-disassembly.txt`) that this port works from. Every
+  function in the C++ source is cross-referenced back to the original
+  ROM address from their analysis.
+- **sokol** by Andre Weissflog (floooh) —
+  [github.com/floooh/sokol](https://github.com/floooh/sokol). The
+  windowing, input, and cross-platform GPU layer (D3D11 on Windows
+  here) that replaced the original CPU-blit windowing path. MIT
+  license; the relevant headers (`sokol_app.h`, `sokol_gfx.h`,
+  `sokol_glue.h`, `sokol_log.h`) are vendored under `deps/`.
+- **fenster_audio** by Serge Zaitsev (zserge) —
+  [github.com/zserge/fenster](https://github.com/zserge/fenster). The
+  cross-platform single-header audio driver used for the non-Windows
+  audio backend. MIT license; vendored as `deps/fenster_audio.h`.
 
 
 ## Licence
