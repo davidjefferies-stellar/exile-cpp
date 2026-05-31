@@ -473,19 +473,6 @@ constexpr uint8_t kNPC_WAS_FED = 0x10;
 // NPC_CLIMBING (bit 5), NPC_WAS_FED (bit 4), grounded-frame counter (bits 3-0).
 // Walking/climbing/jumping physics not yet ported.
 void update_imp(Object& obj, UpdateContext& ctx) {
-    // Diag: state at entry. Shows left_home latch + transient flags so
-    // the despawn cause is obvious in the log.
-    ctx.mgr.log_diag(
-        "imp p%d ENTRY left_home=%d timer=%u flags=0x%02x sup=%d nc=%d "
-        "touching=0x%02x vx=%d vy=%d @%u.%02x,%u.%02x",
-        ctx.this_slot, obj.has_left_home ? 1 : 0,
-        static_cast<unsigned>(obj.timer), obj.flags,
-        obj.is_supported() ? 1 : 0,
-        (obj.flags & ObjectFlags::NEWLY_CREATED) ? 1 : 0,
-        obj.touching,
-        (int)obj.velocity_x, (int)obj.velocity_y,
-        obj.x.whole, obj.x.fraction, obj.y.whole, obj.y.fraction);
-
     // &44ef-&44f7: newly-created imps start in MINUS_TWO (aggressive).
     // Port-only has_left_home latch (false = still on spawn pipe, true =
     // has stepped off a PIPE tile). Lives in its own Object field — the
@@ -495,16 +482,6 @@ void update_imp(Object& obj, UpdateContext& ctx) {
     if (obj.flags & ObjectFlags::NEWLY_CREATED) {
         obj.state = NPCMood::MINUS_TWO;
         obj.has_left_home = false;
-        ctx.mgr.log_diag(
-            "imp p%d NEWLY_CREATED type=0x%02x @%u,%u flags=0x%02x "
-            "energy=0x%02x vx=%d vy=%d sup=%d bot=%d vis=%d tslot=%u",
-            ctx.this_slot, static_cast<unsigned>(obj.type),
-            obj.x.whole, obj.y.whole, obj.flags, obj.energy,
-            (int)obj.velocity_x, (int)obj.velocity_y,
-            obj.is_supported() ? 1 : 0,
-            obj.bottom_collision ? 1 : 0,
-            obj.visible ? 1 : 0,
-            static_cast<unsigned>(obj.tertiary_slot));
     }
 
     // &44f9-&4504: speed from mood (excited 0x28, neutral 0x10).
@@ -533,32 +510,7 @@ void update_imp(Object& obj, UpdateContext& ctx) {
         // imp whose physics step set SUPPORTED on frame 1 would trip
         // the at-home despawn before it ever walks out of the pipe.
         if (home_type != static_cast<uint8_t>(TileType::PIPE)) {
-            if (!obj.has_left_home) {
-                ctx.mgr.log_diag(
-                    "imp p%d LATCH_LEFT home @%u,%u home_type=0x%02x raw=0x%02x",
-                    ctx.this_slot, obj.x.whole, obj.y.whole,
-                    home_type, res.raw_tile_type);
-            }
             obj.has_left_home = true;
-        }
-        // Log every frame an imp with WAS_FED is alive so we can see
-        // what tile/state it's actually in. Quiet when not fed, since
-        // unfed wandering imps would flood the log.
-        if (obj.state & kNPC_WAS_FED) {
-            uint8_t gifts = ctx.imp_gifts_remaining
-                ? ctx.imp_gifts_remaining[tidx] : 0xff;
-            ctx.mgr.log_diag(
-                "imp p%d tidx=%u FED-tick @%u,%u xf=0x%02x yf=0x%02x"
-                " raw=0x%02x tile=0x%02x type=0x%02x sup=%d touching=0x%02x"
-                " gifts=%u",
-                ctx.this_slot, tidx,
-                obj.x.whole, obj.y.whole,
-                obj.x.fraction, obj.y.fraction,
-                res.raw_tile_type,
-                home_tile, home_type,
-                obj.is_supported() ? 1 : 0,
-                obj.touching,
-                static_cast<unsigned>(gifts));
         }
         if (home_type == static_cast<uint8_t>(TileType::PIPE)) {
             // &4517-&451a: halve walking_speed twice on the pipe so the
@@ -579,19 +531,6 @@ void update_imp(Object& obj, UpdateContext& ctx) {
             // same frame it appears.
             bool landed = obj.is_supported() &&
                           !(obj.flags & ObjectFlags::NEWLY_CREATED);
-            ctx.mgr.log_diag(
-                "imp p%d AT-PIPE @%u,%u home=0x%02x raw=0x%02x landed=%d "
-                "left_home=%d fed=%d gifts=%u sup=%d nc=%d",
-                ctx.this_slot, obj.x.whole, obj.y.whole,
-                home_type, res.raw_tile_type,
-                landed ? 1 : 0,
-                obj.has_left_home ? 1 : 0,
-                (obj.state & kNPC_WAS_FED) ? 1 : 0,
-                ctx.imp_gifts_remaining
-                    ? static_cast<unsigned>(ctx.imp_gifts_remaining[tidx])
-                    : 0xffu,
-                obj.is_supported() ? 1 : 0,
-                (obj.flags & ObjectFlags::NEWLY_CREATED) ? 1 : 0);
 
             // &452b-&453f: home-despawn fires for BOTH fed and unfed imps
             // in the 6502 (the unfed BEQ at &452c skips the gift spawn but
@@ -609,12 +548,6 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                     int gslot = ctx.mgr.create_object_at(
                         static_cast<ObjectType>(imp_gift_type[tidx]),
                         /*min_free_slots=*/1, obj);
-                    ctx.mgr.log_diag(
-                        "imp p%d DROP gift_type=0x%02x gslot=%d remaining=%u",
-                        ctx.this_slot,
-                        static_cast<unsigned>(imp_gift_type[tidx]),
-                        gslot,
-                        static_cast<unsigned>(ctx.imp_gifts_remaining[tidx]));
                     if (gslot >= 0) {
                         Object& gift = ctx.mgr.object(gslot);
                         // &4533-&4537: gift vx = gift_type, negated by
@@ -650,9 +583,6 @@ void update_imp(Object& obj, UpdateContext& ctx) {
                 // so return_to_tertiary re-arms the spawn gate. PENDING_
                 // REMOVAL routes the slot through step 14's continue,
                 // preventing step 15 from drifting y.whole off zero.
-                ctx.mgr.log_diag(
-                    "imp p%d DESPAWN at pipe @%u,%u",
-                    ctx.this_slot, obj.x.whole, obj.y.whole);
                 ctx.mgr.return_to_tertiary(ctx.this_slot);
                 obj.flags |= ObjectFlags::PENDING_REMOVAL;
                 return;
@@ -667,22 +597,12 @@ void update_imp(Object& obj, UpdateContext& ctx) {
     // &4548 check_for_npc_stimuli food absorption (not-home branch only,
     // per the BNE &4542 at &4515). An imp can NOT eat and drop a gift on
     // the same frame — the at-home branch returns before reaching here.
-    {
-        bool was_fed_before = (obj.state & kNPC_WAS_FED) != 0;
-        if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
-            Object& touched = ctx.mgr.object(obj.touching);
-            if (touched.is_active() &&
-                static_cast<uint8_t>(touched.type) == imp_food_type[tidx]) {
-                touched.flags |= ObjectFlags::PENDING_REMOVAL;
-                obj.state |= kNPC_WAS_FED;
-                if (!was_fed_before) {
-                    ctx.mgr.log_diag(
-                        "imp p%d tidx=%u FED by type=0x%02x @%u,%u",
-                        ctx.this_slot, tidx,
-                        static_cast<unsigned>(touched.type),
-                        obj.x.whole, obj.y.whole);
-                }
-            }
+    if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
+        Object& touched = ctx.mgr.object(obj.touching);
+        if (touched.is_active() &&
+            static_cast<uint8_t>(touched.type) == imp_food_type[tidx]) {
+            touched.flags |= ObjectFlags::PENDING_REMOVAL;
+            obj.state |= kNPC_WAS_FED;
         }
     }
 
