@@ -226,3 +226,4 @@ All rights in
 the original game remain with its authors and publisher; if you are a
 rights-holder and would like anything removed, please open an issue.
 
+![exile-cpp screenshot 3](docs/images/exile-cpp_3.png)
