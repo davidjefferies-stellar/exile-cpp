@@ -443,15 +443,17 @@ VelocityTransfer apply_mass_ratio_velocity(
     bool this_heavier_or_equal = (this_weight >= other_weight);
 
     // &2bc6 apply_collision_to_object_velocity per side. Halve (ROR
-    // signed); if axis-impact, ADC the raw transfer back — the ROR's
-    // carry-out (= transfer & 1) is picked up by that ADC so axis-
-    // doubled odd transfers gain +1. If this is lighter, invert_if_
-    // positive (negate when A >= 0). Then PHA/JSR/PLA/fall-through adds
-    // processed to the recipient TWICE, each pass clamped by &327f
-    // prevent_overflow.
+    // signed); the &2bcd BCS skip_doubling fires when LSR &9f shifted
+    // out a 1 — i.e. when this IS the smallest-overlap axis — so the
+    // &2bcf ADC doubling actually happens on the OPPOSITE axis (the
+    // larger overlap one), NOT the push-out axis. Earlier port had
+    // this inverted, tripling the transfer on the push direction —
+    // pushing Chatter horizontally launched it across the screen.
+    // Then PHA/JSR/PLA/fall-through adds processed to the recipient
+    // TWICE, each pass clamped by &327f prevent_overflow.
     auto apply_one = [&](int transfer, int& target_v) {
         int processed = asr1_floor(transfer);
-        if (smallest_overlap_in_this_axis) {
+        if (!smallest_overlap_in_this_axis) {
             processed = clamp_s8(processed + transfer + (transfer & 1));
         }
         if (!this_heavier_or_equal && processed >= 0) {
