@@ -226,11 +226,7 @@ void update_blue_rolling_robot(Object& obj, UpdateContext& ctx) {
     }
 
     // &4ef1: 1-in-4 gated flip (shared path with magenta/red rolling robot).
-    {
-        uint8_t before_flip = obj.flags & ObjectFlags::FLIP_HORIZONTAL;
-        NPC::consider_face_movement_direction(obj, ctx.rng);
-        log_flip_if_changed(obj, ctx, before_flip);
-    }
+    NPC::consider_face_movement_direction(obj, ctx.rng);
 
     // &4ef9-&4f0d consider_firing. Energy>=0x80 gate, then per-frame
     // probability ((energy>>3)+2)>=rnd via &276a-&2773. Per-type bullet
@@ -521,9 +517,12 @@ static void update_hovering_ball_common(Object& obj, UpdateContext& ctx,
         return;
     }
 
-    // &4415 move_hovering_npc: target = player (slot 0), then a 1-in-8
-    // gated flip-to-velocity (A=#&07 -> AND rnd, 3-bit mask).
+    // &486e move_hovering_npc: target = player; &4872 consider_updating_
+    // npc_path sets obj.tx/ty from the target via LOS-gated directness.
+    // Without it tx/ty stay 0 from init and the ball thrusts toward
+    // world (0,0) -- looks like it's fleeing the player.
     obj.target_and_flags = (obj.target_and_flags & ~0x1fu);
+    NPC::update_npc_path(obj, ctx);
     if ((ctx.rng.next() & 0x07) == 0) {
         NPC::face_movement_direction(obj);
     }

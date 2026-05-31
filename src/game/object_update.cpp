@@ -389,9 +389,8 @@ void Game::update_objects() {
                 Audio::play_at(Audio::CH_ANY, kSoundSqueal,
                                obj.x.whole, obj.y.whole);
             }
-            static constexpr uint8_t kSoundExplosion[4] = { 0x17, 0x03, 0x11, 0x04 };
-            Audio::play_at(Audio::CH_PRIORITY, kSoundExplosion,
-                           obj.x.whole, obj.y.whole);
+            // (explosion sound played inside explode_object_with_duration
+            // above — 6502 &40db JSR play_sound_on_channel_zero.)
             // The slot is now an EXPLOSION primary — let it run through
             // the normal update_explosion path on subsequent frames so
             // the duration counts down, particles fire, and the radius

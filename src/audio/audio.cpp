@@ -63,6 +63,12 @@ struct Channel {
     // distant world sounds quieter. Set by play_at; play() leaves it
     // at zero so player-anchored sounds stay full-volume.
     uint8_t  volume_reduction;
+    // Pointer to the packet currently playing on this channel. Used by
+    // the re-arm gate in play() so per-frame callers (engine fire, power
+    // pod pulse) don't reset their own envelope while still playing, but
+    // a different packet (e.g. hover-ball zap with initial vol = 0) can
+    // still trample. Compares pointer identity since packets are static.
+    const uint8_t* current_params;
     // SN76489 noise: g_channels[0] only. &11a4 starts with &e0
     // (latch noise reg) so ch0 IS the noise gen (CH_PRIORITY).
     uint16_t noise_lfsr;     // 15-bit LFSR; must never be zero.
@@ -427,12 +433,14 @@ void play(int channel_hint, const uint8_t params[4]) {
     const int ch_idx = pick_channel(channel_hint);
     Channel& ch = g_channels[ch_idx];
 
-    // Same channel-arbitration rule as &1426-&144f: don't trample an
-    // already-playing channel unless the new initial volume is at
-    // least as loud. Stops per-frame callers (engine fire, power pod)
-    // from re-arming forever.
-    const uint8_t vol_init = params[1] & 0xf0;     // 0x00..0xf0 in 0x10 steps
-    if (channel_busy(ch) && vol_init < ch.vol.value) {
+    // Stops per-frame callers (engine fire, power pod pulse) from
+    // re-arming their own envelope every tick — only drop if the SAME
+    // packet is already playing on this channel. Comparing packet
+    // pointer (not vol-init) lets a different sound trample regardless
+    // of its initial volume; the original 6502 percussive packets
+    // (hover-ball zap = 0x33 0x03 ..., bullet impact, etc.) start at
+    // vol=0 and rely on the envelope to ramp them up.
+    if (channel_busy(ch) && ch.current_params == params) {
         return;
     }
 
@@ -465,6 +473,7 @@ void play(int channel_hint, const uint8_t params[4]) {
 
     // play() (no source) -> no distance attenuation.
     ch.volume_reduction = 0;
+    ch.current_params   = params;
 
     ch.phase_inc = kPhaseIncTable.v[ch.freq.value];
 

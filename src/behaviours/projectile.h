@@ -30,7 +30,12 @@ void update_explosion(Object& obj, UpdateContext& ctx);
 // duration counts down and the slot is reaped. Used by step 12 of
 // update_objects (energy-zero explosion) and per-type updaters that
 // destroy themselves in-place (active grenade etc.).
-void explode_object_with_duration(Object& obj, uint8_t duration);
+// `play_sound = true` mirrors &40db (which JSRs play_sound_on_channel_
+// zero with bytes 17 03 11 04); `false` mirrors &40e2 explode_object_
+// with_duration_A_but_no_sound, used by the bullet-pop / red-drop paths
+// that already played a softer "ptack" pop on their own.
+void explode_object_with_duration(Object& obj, uint8_t duration,
+                                  bool play_sound = true);
 
 // Port of accelerate_all_objects (&343a-&34b0) — applies damage and a
 // directional push to every primary within blast range of `source`.

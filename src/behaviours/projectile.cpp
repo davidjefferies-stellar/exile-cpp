@@ -53,7 +53,14 @@ static uint8_t rotate_colour_from_A(Object& obj, uint8_t a) {
 //   &40ed RTS
 // Mutates ONLY type and tertiary_data_offset; sprite/palette/energy/pos
 // stay. update_explosion then takes over.
-void explode_object_with_duration(Object& obj, uint8_t duration) {
+void explode_object_with_duration(Object& obj, uint8_t duration,
+                                  bool play_sound) {
+    if (play_sound) {
+        // &40db-&40de JSR play_sound_on_channel_zero / 17 03 11 04.
+        static constexpr uint8_t kSoundExplosion[4] = { 0x17, 0x03, 0x11, 0x04 };
+        Audio::play_at(Audio::CH_PRIORITY, kSoundExplosion,
+                       obj.x.whole, obj.y.whole);
+    }
     obj.tertiary_data_offset = duration;
     obj.type = ObjectType::EXPLOSION;
     // &40e8 global explosion_timer (screen flash) not wired to renderer.
@@ -196,7 +203,7 @@ static void explode_bullet(Object& obj) {
     static constexpr uint8_t kSoundBulletPop[4] = { 0x17, 0x03, 0x1b, 0x02 };
     Audio::play_at(Audio::CH_PRIORITY, kSoundBulletPop,
                    obj.x.whole, obj.y.whole);
-    explode_object_with_duration(obj, 2);
+    explode_object_with_duration(obj, 2, /*play_sound=*/false);
 }
 
 // &441b / &46bf bullet main body. Explodes on damage-target touch,
@@ -868,7 +875,7 @@ void update_red_drop(Object& obj, UpdateContext& ctx) {
         static constexpr uint8_t kSoundHighBeep[4] = { 0x17, 0x82, 0x13, 0xf2 };
         Audio::play_at(Audio::CH_ANY, kSoundHighBeep,
                        obj.x.whole, obj.y.whole);
-        explode_object_with_duration(obj, 0);
+        explode_object_with_duration(obj, 0, /*play_sound=*/false);
         return;
     }
     if (obj.velocity_y < 0x40) obj.velocity_y++;
@@ -1029,6 +1036,20 @@ void update_explosion(Object& obj, UpdateContext& ctx) {
 // damages only when duration>=8. Per target: &344a check_for_obstruction_
 // between_objects_A gates on LOS (walls block damage and push); remaining
 // = power - (weight*2+8) - distance; skip if <0; weight==7 means no push.
+// Object centre in 16-bit (whole<<8 | fraction) coords. Mirrors 6502
+// &35e5: LDA this_object_width / LSR / ADC fraction — sprite_w atlas
+// pixels = w*16 fraction units in X, sprite_h*8 in Y. Used by the
+// explosion's LOS raycast so the start/end points stay inside the
+// sprite's AABB instead of overshooting into the next tile (which
+// would otherwise hit the floor below and block every push).
+static void object_centre_16(const Object& o, int fx, int fy,
+                             int& cx, int& cy) {
+    int w_frac = (o.sprite <= 0x80) ? sprite_atlas[o.sprite].w * 16 : 0x80;
+    int h_frac = (o.sprite <= 0x80) ? sprite_atlas[o.sprite].h * 8  : 0x80;
+    cx = fx + w_frac / 2;
+    cy = fy + h_frac / 2;
+}
+
 void apply_explosion_radius(ObjectManager& mgr, const Landscape& landscape,
                             const Object& source,
                             int source_slot, uint8_t duration,
@@ -1069,12 +1090,15 @@ void apply_explosion_radius(ObjectManager& mgr, const Landscape& landscape,
 
         // &344a check_for_obstruction_between_objects_A: walls block the
         // explosion's damage + accelerate path. Raycast 16-frac steps from
-        // source centre toward target; bail on any solid tile.
+        // source centre toward target; bail on any solid tile. Object
+        // centres are computed from the actual sprite width/height (6502
+        // &35e5 LSR A) — a fixed +0x80 overshoots small sprites (e.g. the
+        // 12x19 explosion at sprite 0x17) and places the "centre" in the
+        // floor tile below, which blocks every nearby push.
         {
-            int sx16 = src_fx + 0x80;  // approximate object centre
-            int sy16 = src_fy + 0x80;
-            int tx16 = other_fx + 0x80;
-            int ty16 = other_fy + 0x80;
+            int sx16, sy16, tx16, ty16;
+            object_centre_16(source, src_fx, src_fy, sx16, sy16);
+            object_centre_16(other,  other_fx, other_fy, tx16, ty16);
             int dx16 = tx16 - sx16;
             int dy16 = ty16 - sy16;
             int adx16 = std::abs(dx16);

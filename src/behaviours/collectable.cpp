@@ -382,9 +382,8 @@ static void coronium_common(Object& obj, UpdateContext& ctx) {
             // (which step 12 then mutated again) — two explosions at
             // one spot, and the second used step 12's default
             // (init_e>>5)+3 duration, losing the weight-based size.
-            static constexpr uint8_t kSoundExplosion[4] = { 0x17, 0x03, 0x11, 0x04 };
-            Audio::play_at(Audio::CH_PRIORITY, kSoundExplosion,
-                           obj.x.whole, obj.y.whole);
+            // Explosion sound now played inside explode_object_with_duration
+            // (6502 &40db JSR play_sound_on_channel_zero).
             Behaviors::explode_object_with_duration(obj, duration);
             return;
         }
@@ -435,9 +434,7 @@ void update_coronium_crystal(Object& obj, UpdateContext& ctx) {
         // &41c8 BMI &41e8 JMP &40db — in-place mutation with duration 10.
         // Same fix as the boulder chain: don't double-spawn via
         // create_object_centered + step 12.
-        static constexpr uint8_t kSoundExplosion[4] = { 0x17, 0x03, 0x11, 0x04 };
-        Audio::play_at(Audio::CH_PRIORITY, kSoundExplosion,
-                       obj.x.whole, obj.y.whole);
+        // Explosion sound now played inside explode_object_with_duration.
         Behaviors::explode_object_with_duration(obj, 10);
         return;
     }
