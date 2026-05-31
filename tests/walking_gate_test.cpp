@@ -19,15 +19,21 @@ constexpr uint8_t kCounterMask = 0x0f;
 }
 
 TEST(walking_gate_zero_when_supported) {
-    // Tick long enough for the default-spawn player to fall to the
-    // ground and SUPPORTED to latch. At 0x0f-cap the counter would
-    // otherwise climb during the fall; we want to confirm it clamps
-    // back to 0 once the player is grounded (the if-branch in
-    // player_motion.cpp:511). 60 frames ≈ 1.2 s in-game — plenty.
+    // Force the player onto a known flat surface tile so the result
+    // doesn't move with exile.ini's [start] tweaks. (0x9B, 0x3B) is the
+    // BBC ROM spawn — flat surface ground, satisfies the new gate's
+    // upright + y-collision + walkable_slope conditions (commit
+    // 2285e30). 60 frames ≈ 1.2 s gives the fall + landing damping time.
     Game game(std::make_unique<NullRenderer>());
     EXPECT_TRUE(game.init());
 
     TestHarness h(game);
+    Object& p = h.player();
+    p.x.whole = 0x9B; p.x.fraction = 0x00;
+    p.y.whole = 0x3B; p.y.fraction = 0x00;
+    p.velocity_x = 0;
+    p.velocity_y = 0;
+
     h.tick_n(60);
     EXPECT_TRUE(h.player().is_supported());
     EXPECT_EQ(static_cast<int>(h.player().state & kCounterMask), 0);
