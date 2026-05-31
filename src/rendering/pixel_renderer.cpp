@@ -580,6 +580,7 @@ void PixelRenderer::end_frame() {
     pr_debug::render_events_panel(*this);
     pr_debug::render_grid_panel(*this);
     pr_debug::render_saves_panel(*this);
+    pr_debug::render_menu_overlay(*this);
     // Present is owned by main.cpp's sokol frame_cb (tasks #6/#7 upload `buf`
     // as a texture and draw a full-screen quad). Nothing to do here.
 }

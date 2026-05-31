@@ -198,6 +198,11 @@ public:
     // Set overlay text drawn in the top-right corner.
     virtual void set_overlay_text(const char* /*text*/) {}
 
+    // Set centered modal text (e.g. Esc menu). Null/empty hides it.
+    // selection_index is highlighted with a '>' marker; -1 = no marker.
+    virtual void set_menu_overlay(const char* /*text*/,
+                                  int /*selection_index*/) {}
+
     // Optional FPS readout in the top-right corner, independent of the
     // debug-overlay toggle. Empty / null hides it.
     virtual void set_fps_text(const char* /*text*/) {}

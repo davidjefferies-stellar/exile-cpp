@@ -290,6 +290,8 @@ void Game::render() {
             ? "[Saved exile.map]\n"
             : "[Save FAILED]\n";
     }
+    // Issue-bundle banner routes through render_menu_overlay below so it
+    // shows even when the "Tiles" debug checkbox is off.
     // Editor mode indicator + current paint tile (so the user knows what
     // they're about to stamp). Only shown when Edit is on.
     if (renderer_->editor_enabled()) {
@@ -397,6 +399,8 @@ void Game::render() {
     }
     overlay += selected_tile_info_;
     renderer_->set_overlay_text(overlay.c_str());
+
+    render_menu_overlay();
 
     // FPS readout, independent of the debug overlay toggle. Empty when
     // [debug] show_fps is off so the renderer's box is suppressed.
@@ -1208,4 +1212,29 @@ void Game::refresh_selected_tile_info(uint8_t tx, uint8_t ty) {
         if (object_count >= 6) { text += "\n  ..."; break; }
     }
     selected_tile_info_ = text;
+}
+
+// Push the menu's current state to the renderer. The centered overlay
+// also doubles as the bundle-saved banner so the user sees confirmation
+// without needing the "Tiles" debug checkbox on (which gates the
+// top-right overlay path).
+void Game::render_menu_overlay() {
+    if (menu_open_) {
+        const char* kBody =
+            "Pause\n"
+            "\n"
+            "Create issue bundle\n"
+            "Save game\n"
+            "Load game\n"
+            "Resume\n";
+        int selection = (menu_selection_ >= 0) ? (menu_selection_ + 2) : -1;
+        renderer_->set_menu_overlay(kBody, selection);
+        return;
+    }
+    if (!bundle_msg_.empty() &&
+        std::chrono::steady_clock::now() < bundle_msg_until_) {
+        renderer_->set_menu_overlay(bundle_msg_.c_str(), -1);
+        return;
+    }
+    renderer_->set_menu_overlay("", -1);
 }

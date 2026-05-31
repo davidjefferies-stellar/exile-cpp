@@ -92,6 +92,7 @@ public:
     bool consume_left_click(int& tile_dx, int& tile_dy) override;
     bool consume_right_click(int& tile_dx, int& tile_dy) override;
     void set_overlay_text(const char* text) override;
+    void set_menu_overlay(const char* text, int selection_index) override;
     void set_fps_text(const char* text) override;
     void set_highlighted_tile(uint8_t world_x, uint8_t world_y) override;
     void render_debug_marker(uint8_t world_x, uint8_t world_y,
@@ -255,6 +256,8 @@ public:
     int  pending_right_click_x   = 0;
     int  pending_right_click_y   = 0;
     std::string overlay;
+    std::string menu_overlay_;
+    int         menu_selection_ = -1;
     std::string fps_text_;
     // Edit-palette state mirrored from Game so the panel can highlight
     // the selected paint tile.
@@ -362,6 +365,9 @@ namespace pr_debug {
 
     // Top-right text overlay drawn from end_frame.
     void render_overlay_text(PixelRenderer& r);
+
+    // Centered modal text (Esc menu). Hidden when r.menu_overlay_ is empty.
+    void render_menu_overlay(PixelRenderer& r);
 
     // Optional FPS readout drawn at the top-right, independent of the
     // debug overlay. Shifts render_overlay_text down by its box height

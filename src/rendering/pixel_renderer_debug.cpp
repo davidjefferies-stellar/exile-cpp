@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <cstring>
 #include <ostream>
+#include <string>
+#include <vector>
 
 // Debug HUD-strip checkboxes — geometry constants shared between
 // render_hud_panels and consume_left_click to keep hit-test in sync.
@@ -816,6 +818,56 @@ void render_overlay_text(PixelRenderer& r) {
                 0xFFFFFF, 0xFF000000);
 }
 
+void render_menu_overlay(PixelRenderer& r) {
+    if (r.menu_overlay_.empty()) return;
+
+    // Split into lines + measure.
+    std::vector<std::string> lines;
+    {
+        std::string cur;
+        for (char c : r.menu_overlay_) {
+            if (c == '\n') { lines.push_back(std::move(cur)); cur.clear(); }
+            else cur.push_back(c);
+        }
+        if (!cur.empty()) lines.push_back(std::move(cur));
+    }
+    if (lines.empty()) return;
+
+    const int char_w = 8, line_h = 9, pad = 8;
+    int max_chars = 0;
+    for (const auto& l : lines) {
+        int n = static_cast<int>(l.size());
+        if (n > max_chars) max_chars = n;
+    }
+    // Add room for a "> " selection marker prefix.
+    const int box_w = (max_chars + 2) * char_w + pad * 2;
+    const int box_h = static_cast<int>(lines.size()) * line_h + pad * 2;
+    // Anchored near the top of the window so the menu doesn't sit on
+    // top of the player sprite. Horizontally centred.
+    const int bx = (r.f.width  - box_w) / 2;
+    const int by = 16;
+
+    r.fill_rect(bx, by, box_w, box_h, 0x101010);
+    for (int x = bx; x < bx + box_w; ++x) {
+        r.put_pixel(x, by, 0xCCCCCC);
+        r.put_pixel(x, by + box_h - 1, 0xCCCCCC);
+    }
+    for (int y = by; y < by + box_h; ++y) {
+        r.put_pixel(bx, y, 0xCCCCCC);
+        r.put_pixel(bx + box_w - 1, y, 0xCCCCCC);
+    }
+
+    for (size_t i = 0; i < lines.size(); ++i) {
+        int ty = by + pad + static_cast<int>(i) * line_h;
+        bool selected = (static_cast<int>(i) == r.menu_selection_);
+        uint32_t fg = selected ? 0xFFFF00 : 0xFFFFFF;
+        const char* marker = selected ? "> " : "  ";
+        r.draw_text(bx + pad, ty, marker, fg, 0xFF000000);
+        r.draw_text(bx + pad + 2 * char_w, ty, lines[i].c_str(), fg,
+                    0xFF000000);
+    }
+}
+
 void render_fps_text(PixelRenderer& r) {
     if (r.fps_text_.empty()) return;
     const int text_w = static_cast<int>(r.fps_text_.size()) * 8;
@@ -1024,6 +1076,11 @@ bool render_hud_panels(PixelRenderer& r) {
 
 void PixelRenderer::set_overlay_text(const char* text) {
     overlay = text ? text : "";
+}
+
+void PixelRenderer::set_menu_overlay(const char* text, int selection_index) {
+    menu_overlay_   = text ? text : "";
+    menu_selection_ = selection_index;
 }
 
 void PixelRenderer::set_fps_text(const char* text) {

@@ -10,6 +10,7 @@
 #include "rendering/camera.h"
 #include "particles/particle_system.h"
 #include "core/profiler.h"
+#include <chrono>
 #include <fstream>
 #include <vector>
 #include <memory>
@@ -545,6 +546,33 @@ private:
     // pose, tertiary linkage, secondaries). Fired from process_input on
     // the J rising edge; after the snapshot jsbeeb runs free.
     void        push_jsbeeb_snapshot();
+
+    // Esc menu — opens a small centered overlay with bundle/save/load/
+    // resume options. Auto-pauses while open; Esc / Resume closes.
+    bool menu_open_       = false;
+    int  menu_selection_  = 0;
+    bool menu_up_prev_    = false;
+    bool menu_down_prev_  = false;
+    bool menu_enter_prev_ = false;
+
+    // Transient banner shown after the bundle action so the user can see
+    // where the zip was written. steady_clock keeps the 3-second window
+    // independent of the 8-bit frame_counter_ wrap.
+    std::string bundle_msg_;
+    std::chrono::steady_clock::time_point bundle_msg_until_{};
+    void tick_menu_input();
+    void render_menu_overlay();
+
+    // Create a timestamped exile-issue-YYYYMMDD-HHMMSS.zip with the
+    // current rewind ring (~10s), a single-frame snapshot, and the
+    // contents of exile-debug.log. Returns the chosen filename on
+    // success (empty on failure).
+    std::string create_issue_bundle();
+
+    // Append a startup banner to exile-debug.log with the wall-clock
+    // date/time + Windows version + machine name + processor count.
+    // Helps when users post bundles for issues.
+    void write_system_info_header();
 
     // Rising-edge state for save/load keys. Without these, holding down
     // ';' would overwrite the save every frame. Scrub keys deliberately

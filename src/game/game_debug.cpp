@@ -9,7 +9,15 @@
 #include "world/tile_data.h"
 #include "world/water.h"
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>   // std::abs(int) for tz offset minutes
+#include <ctime>
+#if defined(_WIN32)
+  #define WIN32_LEAN_AND_MEAN
+  #include <windows.h>
+  #include <intrin.h>      // __cpuid for CPU brand string
+#endif
 
 // game_debug.cpp — implementations of the debug-log helpers and the
 // port-only test rigs (event-panel triggers, smooth-flood subframe drain,
@@ -622,4 +630,218 @@ void Game::capture_rewind_snapshot() {
     if (snapshot_ring_count_ < snapshot_ring_.size()) {
         snapshot_ring_count_++;
     }
+}
+
+// ---------- Startup system-info banner ---------------------------------
+//
+// Written into exile-debug.log at init so issue bundles ship with date,
+// build, and host info. Best-effort: any field that fails its lookup is
+// just omitted.
+void Game::write_system_info_header() {
+    if (!debug_log_.is_open()) return;
+
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm lt{};
+#if defined(_WIN32)
+    localtime_s(&lt, &tt);
+#else
+    lt = *std::localtime(&tt);
+#endif
+    char ts[64];
+    std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &lt);
+
+    debug_log_ << "# exile-cpp startup " << ts << "\n";
+    debug_log_ << "# build " << __DATE__ << " " << __TIME__
+               << " "
+#if defined(_MSC_VER)
+               << "MSVC " << _MSC_VER
+#else
+               << "non-MSVC"
+#endif
+#if defined(_DEBUG)
+               << " (Debug)"
+#else
+               << " (Release)"
+#endif
+#if defined(_WIN64) || defined(__x86_64__)
+               << " x64"
+#else
+               << " x86"
+#endif
+               << "\n";
+
+#if defined(_WIN32)
+    // ---------- Host -----------------------------------------------------
+    char host[256] = {};
+    DWORD host_len = sizeof(host);
+    if (GetComputerNameA(host, &host_len)) {
+        debug_log_ << "# host " << host << "\n";
+    }
+    char user[256] = {};
+    DWORD user_len = sizeof(user);
+    if (GetUserNameA(user, &user_len)) {
+        debug_log_ << "# user " << user << "\n";
+    }
+
+    // ---------- OS -------------------------------------------------------
+    // GetVersionExA was deprecated and "version-lied" in Windows 8.1+:
+    // unmanifested apps see 6.2. RtlGetVersion in ntdll.dll bypasses the
+    // shim and returns the real OS version. Build >= 22000 means
+    // Windows 11 even though MajorVersion is still 10.
+    OSVERSIONINFOEXW ovw{};
+    ovw.dwOSVersionInfoSize = sizeof(ovw);
+    using RtlGetVersion_t = LONG (WINAPI*)(PRTL_OSVERSIONINFOW);
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    auto rtl_get_version = ntdll
+        ? reinterpret_cast<RtlGetVersion_t>(
+            GetProcAddress(ntdll, "RtlGetVersion"))
+        : nullptr;
+    if (rtl_get_version &&
+        rtl_get_version(reinterpret_cast<PRTL_OSVERSIONINFOW>(&ovw)) == 0) {
+        const char* product =
+            (ovw.dwMajorVersion == 10 && ovw.dwBuildNumber >= 22000) ? "Windows 11"
+          : (ovw.dwMajorVersion == 10)                               ? "Windows 10"
+          : (ovw.dwMajorVersion == 6 && ovw.dwMinorVersion == 3)     ? "Windows 8.1"
+          : (ovw.dwMajorVersion == 6 && ovw.dwMinorVersion == 2)     ? "Windows 8"
+          : (ovw.dwMajorVersion == 6 && ovw.dwMinorVersion == 1)     ? "Windows 7"
+          :                                                            "Windows";
+        debug_log_ << "# os " << product
+                   << " " << ovw.dwMajorVersion << "." << ovw.dwMinorVersion
+                   << " build " << ovw.dwBuildNumber
+                   << " (sp " << ovw.wServicePackMajor << "."
+                   << ovw.wServicePackMinor << ")\n";
+    }
+
+    // ---------- CPU ------------------------------------------------------
+    SYSTEM_INFO si{};
+    GetNativeSystemInfo(&si);
+    const char* arch = "unknown";
+    switch (si.wProcessorArchitecture) {
+        case PROCESSOR_ARCHITECTURE_AMD64: arch = "x64";   break;
+        case PROCESSOR_ARCHITECTURE_INTEL: arch = "x86";   break;
+        case PROCESSOR_ARCHITECTURE_ARM64: arch = "arm64"; break;
+        case PROCESSOR_ARCHITECTURE_ARM:   arch = "arm";   break;
+    }
+    debug_log_ << "# cpu arch=" << arch
+               << " cores=" << si.dwNumberOfProcessors
+               << " page_size=" << si.dwPageSize << "\n";
+#if defined(_M_X64) || defined(_M_IX86)
+    // CPUID 0x80000002..0x80000004 returns the 48-byte brand string.
+    int cpui[4] = {0};
+    char brand[64] = {};
+    __cpuid(cpui, 0x80000000);
+    if (static_cast<unsigned>(cpui[0]) >= 0x80000004u) {
+        __cpuid(reinterpret_cast<int*>(brand +  0), 0x80000002);
+        __cpuid(reinterpret_cast<int*>(brand + 16), 0x80000003);
+        __cpuid(reinterpret_cast<int*>(brand + 32), 0x80000004);
+        // Trim leading spaces some CPUs pad with.
+        const char* b = brand;
+        while (*b == ' ') ++b;
+        debug_log_ << "# cpu brand " << b << "\n";
+    }
+#endif
+
+    // ---------- Memory ---------------------------------------------------
+    MEMORYSTATUSEX ms{};
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) {
+        auto mb = [](DWORDLONG b){ return static_cast<unsigned long>(b / (1024ull * 1024ull)); };
+        debug_log_ << "# memory total=" << mb(ms.ullTotalPhys)
+                   << "MB avail=" << mb(ms.ullAvailPhys)
+                   << "MB load=" << ms.dwMemoryLoad << "%\n";
+        debug_log_ << "# pagefile total=" << mb(ms.ullTotalPageFile)
+                   << "MB avail=" << mb(ms.ullAvailPageFile) << "MB\n";
+    }
+
+    // ---------- Display --------------------------------------------------
+    // Primary monitor dimensions + refresh rate from the current
+    // display settings of \\.\DISPLAY1. Multi-monitor users see only
+    // the primary; rendering happens on whatever sokol picks anyway.
+    DEVMODEA dm{};
+    dm.dmSize = sizeof(dm);
+    if (EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &dm)) {
+        debug_log_ << "# display primary "
+                   << dm.dmPelsWidth << "x" << dm.dmPelsHeight
+                   << "@" << dm.dmDisplayFrequency << "Hz "
+                   << dm.dmBitsPerPel << "bpp\n";
+    }
+    // GPU adapter names. EnumDisplayDevices with NULL lpDevice enumerates
+    // logical adapter objects — Windows often registers one per monitor
+    // port so a single physical GPU appears 4-8 times. Dedupe by
+    // DeviceString and skip mirroring drivers (RDP / VNC virtual
+    // displays) and not-attached entries.
+    {
+        std::string seen;
+        int gpu_idx = 0;
+        for (DWORD i = 0; i < 16; ++i) {
+            DISPLAY_DEVICEA dd{};
+            dd.cb = sizeof(dd);
+            if (!EnumDisplayDevicesA(nullptr, i, &dd, 0)) break;
+            if (dd.StateFlags & DISPLAY_DEVICE_MIRRORING_DRIVER) continue;
+            if (!(dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) &&
+                !(dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE)) continue;
+            std::string name = dd.DeviceString;
+            // Tag each name with a sentinel so substring matches don't
+            // alias (e.g. "GPU A" matching "GPU A v2").
+            std::string tagged = "\x1f" + name + "\x1f";
+            if (seen.find(tagged) != std::string::npos) continue;
+            seen += tagged;
+            debug_log_ << "# gpu" << gpu_idx++ << " " << name;
+            if (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) {
+                debug_log_ << " (primary)";
+            }
+            debug_log_ << "\n";
+        }
+    }
+
+    // ---------- Process / environment ------------------------------------
+    char exe[MAX_PATH] = {};
+    if (GetModuleFileNameA(nullptr, exe, sizeof(exe))) {
+        debug_log_ << "# exe " << exe << "\n";
+    }
+    char cwd[MAX_PATH] = {};
+    if (GetCurrentDirectoryA(sizeof(cwd), cwd)) {
+        debug_log_ << "# cwd " << cwd << "\n";
+    }
+
+    // ---------- Disk free for cwd's drive --------------------------------
+    ULARGE_INTEGER free_caller{}, total_bytes{}, total_free{};
+    if (GetDiskFreeSpaceExA(nullptr, &free_caller, &total_bytes, &total_free)) {
+        auto gb = [](ULONGLONG b){ return static_cast<double>(b) / (1024.0*1024.0*1024.0); };
+        char dbuf[128];
+        std::snprintf(dbuf, sizeof(dbuf),
+                      "# disk total=%.1fGB free=%.1fGB\n",
+                      gb(total_bytes.QuadPart),
+                      gb(free_caller.QuadPart));
+        debug_log_ << dbuf;
+    }
+
+    // ---------- Locale / timezone ----------------------------------------
+    TIME_ZONE_INFORMATION tzi{};
+    DWORD tz_result = GetTimeZoneInformation(&tzi);
+    if (tz_result != TIME_ZONE_ID_INVALID) {
+        // tzi.Bias is UTC = local + Bias, so flip the sign for the
+        // conventional UTC offset display.
+        int offset_minutes = -tzi.Bias;
+        debug_log_ << "# timezone utc";
+        if (offset_minutes >= 0) debug_log_ << "+";
+        debug_log_ << (offset_minutes / 60)
+                   << ":" << std::abs(offset_minutes % 60) << "\n";
+    }
+
+    // ---------- Power ----------------------------------------------------
+    SYSTEM_POWER_STATUS sps{};
+    if (GetSystemPowerStatus(&sps)) {
+        const char* ac = (sps.ACLineStatus == 1) ? "ac"
+                       : (sps.ACLineStatus == 0) ? "battery" : "unknown";
+        debug_log_ << "# power " << ac;
+        if (sps.BatteryLifePercent != 255) {
+            debug_log_ << " battery=" << int(sps.BatteryLifePercent) << "%";
+        }
+        debug_log_ << "\n";
+    }
+#endif
+    debug_log_ << "#\n";
+    debug_log_.flush();
 }

@@ -14,10 +14,13 @@
 #include "emu/jsbeeb_bridge.h"
 #include "objects/object_tables.h"
 #include "world/water.h"
+#include "game/zip_writer.h"
 #include <algorithm>
 #include <chrono>
+#include <ctime>
 #include <thread>
 #include <fstream>
+#include <sstream>
 
 // Game — lifecycle, top-level loop orchestration, timers, input polling.
 // Big chunks live in siblings: tertiary_spawn / player_* / object_update /
@@ -220,6 +223,7 @@ bool Game::init() {
     if (cfg.logs_enabled) {
         debug_log_.open("exile-debug.log",
                         std::ios::out | std::ios::trunc);
+        write_system_info_header();
     }
     // Audio plays go through Audio::play / play_at — feed them the same
     // stream so each sfx emits a one-line trace alongside the lifecycle
@@ -311,17 +315,34 @@ void Game::tick() {
         // Activation-anchor mode is driven by the "Map mode"
         activation_from_camera_ = renderer_->map_mode_enabled();
 
-        // Esc: commit a scrubbed frame as the new live state if scrubbing,
-        // otherwise toggle pause. Scrubbing branch lives in game_debug.cpp.
+        // Esc: while scrubbing, commit the scrubbed frame; while the
+        // menu is open, navigate / close it; otherwise open the menu
+        // (which also pauses the sim). Menu nav keys handled in
+        // tick_menu_input below.
         {
             bool down = input_.state().toggle_pause;
             if (down && !pause_key_prev_) {
                 if (!commit_scrub_if_active()) {
-                    paused_ = !paused_;
+                    if (menu_open_) {
+                        menu_open_ = false;
+                        paused_    = false;
+                    } else {
+                        menu_open_      = true;
+                        menu_selection_ = 0;
+                        paused_         = true;
+                        // Latch nav keys to their current state so a held
+                        // W/P (move_up alias) doesn't cycle the selection
+                        // on frame 0.
+                        const InputState& s = input_.state();
+                        menu_up_prev_    = s.move_up;
+                        menu_down_prev_  = s.move_down;
+                        menu_enter_prev_ = s.pickup_drop || s.fire;
+                    }
                 }
             }
             pause_key_prev_ = down;
         }
+        tick_menu_input();
 
         // Numpad +/- scrubs through the rewind ring; body in game_debug.cpp.
         tick_scrub_keys();
@@ -1271,4 +1292,161 @@ void Game::push_jsbeeb_snapshot() {
     }
 
     JsbeebBridge::poke(writes);
+}
+
+// ---------- Esc menu ----------------------------------------------------
+
+namespace {
+const char* kMenuItems[] = {
+    "Create issue bundle",
+    "Save game",
+    "Load game",
+    "Resume",
+};
+constexpr int kMenuItemCount = sizeof(kMenuItems) / sizeof(kMenuItems[0]);
+
+// Slurp a whole file into a string. Returns empty on miss; callers treat
+// "no debug log yet" as a benign empty section in the bundle.
+std::string read_file_to_string(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return {};
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+std::string timestamp_for_filename() {
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm lt{};
+#if defined(_WIN32)
+    localtime_s(&lt, &tt);
+#else
+    lt = *std::localtime(&tt);
+#endif
+    char ts[32];
+    std::strftime(ts, sizeof(ts), "%Y%m%d-%H%M%S", &lt);
+    return ts;
+}
+} // namespace
+
+// Reads menu navigation keys while the menu is open. Up/Down cycle the
+// highlight; Enter / Space activates. We re-use the existing move_up /
+// move_down / fire / pickup_drop fields and swallow them here so the
+// player doesn't also fire / pickup on the same press.
+void Game::tick_menu_input() {
+    if (!menu_open_) {
+        menu_up_prev_ = menu_down_prev_ = menu_enter_prev_ = false;
+        return;
+    }
+    InputState s = input_.state();
+
+    bool up_down  = s.move_up;
+    bool dn_down  = s.move_down;
+    bool ent_down = s.pickup_drop || s.fire;
+
+    if (up_down && !menu_up_prev_) {
+        menu_selection_ = (menu_selection_ + kMenuItemCount - 1) % kMenuItemCount;
+    }
+    if (dn_down && !menu_down_prev_) {
+        menu_selection_ = (menu_selection_ + 1) % kMenuItemCount;
+    }
+    if (ent_down && !menu_enter_prev_) {
+        switch (menu_selection_) {
+            case 0: {
+                std::string fn = create_issue_bundle();
+                bundle_msg_ = fn.empty()
+                              ? std::string("Bundle save FAILED")
+                              : ("Saved " + fn);
+                bundle_msg_until_ = std::chrono::steady_clock::now() +
+                                    std::chrono::seconds(3);
+                menu_open_ = false;
+                paused_    = false;
+                break;
+            }
+            case 1:
+                save_game("exile.sav");
+                menu_open_ = false;
+                paused_    = false;
+                break;
+            case 2:
+                load_game("exile.sav");
+                menu_open_ = false;
+                paused_    = false;
+                break;
+            case 3:
+                menu_open_ = false;
+                paused_    = false;
+                break;
+        }
+    }
+    menu_up_prev_    = up_down;
+    menu_down_prev_  = dn_down;
+    menu_enter_prev_ = ent_down;
+
+    // Swallow the navigation keys so player code doesn't double-act on
+    // them this frame (would otherwise fire / pickup / jet-thrust while
+    // the user is just picking a menu item).
+    InputState swallowed = s;
+    swallowed.move_up    = false;
+    swallowed.move_down  = false;
+    swallowed.fire       = false;
+    swallowed.pickup_drop = false;
+    input_.set_state(swallowed);
+}
+
+std::string Game::create_issue_bundle() {
+    std::string ts = timestamp_for_filename();
+    std::string zip_name = "exile-issue-" + ts + ".zip";
+
+    std::vector<ZipWriter::Entry> entries;
+
+    // 1) Current single-frame snapshot.
+    {
+        std::ostringstream f;
+        write_state(f);
+        entries.push_back({"exile.sav", f.str()});
+    }
+
+    // 2) Rewind ring buffer as multi-frame trace. Compose the same
+    //    body dump_ring_buffer writes to disk, but in-memory.
+    {
+        std::ostringstream f;
+        f << "# exile-cpp multi-frame trace\n";
+        f << "# Frames written in chronological order, oldest first.\n";
+        f << "frame_count " << snapshot_ring_count_ << "\n\n";
+        size_t start = (snapshot_ring_count_ == snapshot_ring_.size())
+                      ? snapshot_ring_head_ : 0;
+        for (size_t i = 0; i < snapshot_ring_count_; ++i) {
+            size_t idx = (start + i) % snapshot_ring_.size();
+            f << "=== frame " << i << " ===\n";
+            f << snapshot_ring_[idx];
+            f << "\n";
+        }
+        entries.push_back({"exile-frames.txt", f.str()});
+    }
+
+    // 3) Debug log so far. MSVC's std::ifstream denies write share on
+    //    the file, so we have to close the writer, slurp, then reopen
+    //    in append mode. Audio reuses the same stream pointer via
+    //    Audio::set_debug_log so re-plumb after the reopen.
+    bool reopen_log = debug_log_.is_open();
+    if (reopen_log) {
+        debug_log_.flush();
+        debug_log_.close();
+    }
+    entries.push_back({"exile-debug.log", read_file_to_string("exile-debug.log")});
+    if (reopen_log) {
+        debug_log_.open("exile-debug.log",
+                        std::ios::out | std::ios::app);
+        Audio::set_debug_log(debug_log_.is_open() ? &debug_log_ : nullptr);
+    }
+
+    bool ok = ZipWriter::write(zip_name, entries);
+    if (debug_log_.is_open()) {
+        debug_log_ << (ok ? "issue_bundle " : "issue_bundle FAILED ")
+                   << zip_name << "\n";
+        debug_log_.flush();
+    }
+    return ok ? zip_name : std::string{};
 }

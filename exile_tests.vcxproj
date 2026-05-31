@@ -128,6 +128,7 @@
     <ClCompile Include="src\game\game_debug.cpp" />
     <ClCompile Include="src\game\config.cpp" />
     <ClCompile Include="src\game\save_load.cpp" />
+    <ClCompile Include="src\game\zip_writer.cpp" />
     <ClCompile Include="src\game\tertiary_spawn.cpp" />
     <ClCompile Include="src\player\player_actions.cpp" />
     <ClCompile Include="src\player\player_motion.cpp" />
