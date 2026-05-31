@@ -2,6 +2,8 @@
 
 [![tests](https://github.com/davidjefferies-stellar/exile-cpp/actions/workflows/tests.yml/badge.svg)](https://github.com/davidjefferies-stellar/exile-cpp/actions/workflows/tests.yml)
 
+![exile-cpp screenshot](docs/images/exile-cpp.png)
+
 A C++ port of the BBC Micro masterpiece **Exile** (Peter Irvin & Jeremy Smith, 1988),
 working from the original 6502 disassembly. 
 

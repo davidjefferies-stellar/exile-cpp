@@ -297,9 +297,8 @@ bool consume_left_click(PixelRenderer& r) {
     // Main bottom-strip checkboxes. Map mode, Object lbl, Switches,
     // Transports, Rings, Tertiary and Placed Tiles all live in the
     // Tiles submenu (see render_grid_panel) — keep them out of here.
-    DebugCheckbox boxes[11] = {
+    DebugCheckbox boxes[10] = {
         { "Tiles",      &r.tile_outline_on   },
-        { "Debug",      &r.debug_text_on     },
         { "Collision",  &r.collision_on      },
         { "Edit",       &r.editor_on         },
         { "Algo only",  &r.algo_only_on      },
@@ -311,7 +310,7 @@ bool consume_left_click(PixelRenderer& r) {
         { "Saves",      &r.saves_panel_on    },
     };
     int hud_y = r.hud_y_px();
-    for (int i = 0; i < 11; i++) {
+    for (int i = 0; i < 10; i++) {
         int cx = checkbox_slot_x(i);
         // Generous hit-area: the whole label's slot width so users
         // can click the text too.
@@ -785,7 +784,7 @@ void render_overlay_text(PixelRenderer& r) {
     // on. Grid alone draws the cell outlines + tile-tier swatches, and
     // having the tile-info banner alongside is almost always what you
     // want for "what is this tile?" inspection.
-    if ((!r.debug_text_on && !r.tile_outline_on) || r.overlay.empty()) return;
+    if (!r.tile_outline_on || r.overlay.empty()) return;
 
     int line_count = 1;
     int max_line_w = 0;
@@ -890,9 +889,8 @@ bool render_hud_panels(PixelRenderer& r) {
     // Tiles submenu (render_grid_panel) — keep this in sync with the
     // hit-test array in consume_left_click.
     r.fill_rect(0, hud_y, r.f.width, 16, 0x151515);
-    DebugCheckbox boxes[11] = {
+    DebugCheckbox boxes[10] = {
         { "Tiles",      &r.tile_outline_on   },
-        { "Debug",      &r.debug_text_on     },
         { "Collision",  &r.collision_on      },
         { "Edit",       &r.editor_on         },
         { "Algo only",  &r.algo_only_on      },
@@ -904,7 +902,7 @@ bool render_hud_panels(PixelRenderer& r) {
         { "Saves",      &r.saves_panel_on    },
     };
     int cy = checkbox_slot_y(hud_y);
-    for (int i = 0; i < 11; i++) {
+    for (int i = 0; i < 10; i++) {
         int cx = checkbox_slot_x(i);
         uint32_t border = *boxes[i].state ? 0xffffff : 0x666666;
         r.stroke_rect(cx, cy, CHECKBOX_SIZE, CHECKBOX_SIZE, border);

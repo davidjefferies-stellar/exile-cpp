@@ -8,8 +8,9 @@
 #include <string>
 
 // Tiny INI parser. One section header per `[name]`, one key=value per
-// line, `;` or `#` starts a comment. We don't bother with fancy features
-// (quoted strings, multi-line, include) — the config surface is small.
+// line, `;` or `#` starts a comment. Common cases (bool flags, uint8_t
+// fields) dispatch through declarative tables; section-specific logic
+// (weapon names, key bitmasks, startup_spawns CSV) is inlined below.
 namespace {
 
 std::string trim(const std::string& s) {
@@ -24,9 +25,7 @@ std::string to_lower(std::string s) {
     return s;
 }
 
-// Parse an integer value — accept decimal (42), hex (0x2a / 0X2A), or
-// named weapons / object types (see parse_object_type / parse_weapon).
-// Returns true and writes *out on success.
+// Parse decimal (42) or hex (0x2a / 0X2A) into an unsigned long.
 bool parse_uint(const std::string& s, unsigned long& out) {
     if (s.empty()) return false;
     try {
@@ -43,8 +42,21 @@ bool parse_uint(const std::string& s, unsigned long& out) {
     }
 }
 
-// Named weapon -> slot index (0..5). Keep this list tight; numeric
-// fallback covers anything we haven't bothered to name.
+// Parse + clamp into any integral T. Saves the repeated
+// "parse_uint, clamp, static_cast" boilerplate at numeric call sites.
+template <typename T>
+bool parse_uint_clamped(const std::string& s, T& out,
+                        unsigned long lo, unsigned long hi) {
+    unsigned long v;
+    if (!parse_uint(s, v)) return false;
+    if (v < lo) v = lo;
+    if (v > hi) v = hi;
+    out = static_cast<T>(v);
+    return true;
+}
+
+// Named weapon -> slot index (0..5). Numeric fallback handles slots we
+// haven't bothered to name.
 int parse_weapon(const std::string& raw) {
     std::string s = to_lower(raw);
     if (s == "jetpack") return 0;
@@ -58,9 +70,6 @@ int parse_weapon(const std::string& raw) {
     return -1;
 }
 
-// Accepts common boolean spellings used in INI files: "true"/"false",
-// "yes"/"no", "on"/"off", and numeric 0/1. Anything else leaves *out
-// untouched and returns false so the caller can warn.
 bool parse_bool(const std::string& raw, bool& out) {
     std::string s = to_lower(raw);
     if (s == "true" || s == "yes" || s == "on"  || s == "1") { out = true;  return true; }
@@ -68,45 +77,91 @@ bool parse_bool(const std::string& raw, bool& out) {
     return false;
 }
 
-// Named object type -> uint8_t. We reuse object_type_name's spelling
-// (uppercase with underscores) but match case-insensitively. Unknown
-// strings fall through to a short alias table (longer/friendlier names
-// for a few types with terse debug spellings — notably the keys, which
-// show up as CYG_KEY etc. in the debug UI but deserve
-// cyan_yellow_green_key in a config file), then to parse_uint so a
-// config author can specify by number, e.g. `slot0 = 0x5b` for ICER.
+// Named object type -> uint8_t. Matches object_type_name's spelling
+// case-insensitively, plus a short alias table for friendlier long
+// names (used by [pockets] / [startup_spawns] / [keys]). Numeric
+// fallback lets configs reference types by raw id.
 int parse_object_type(const std::string& raw) {
     std::string want = to_lower(raw);
     for (int i = 0; i < static_cast<int>(ObjectType::COUNT); i++) {
-        std::string name = to_lower(object_type_name(static_cast<ObjectType>(i)));
-        if (name == want) return i;
+        if (to_lower(object_type_name(static_cast<ObjectType>(i))) == want) return i;
     }
-    // Friendlier long-name aliases. Keys use the colour triple because
-    // that's how the original packaging refers to them.
     struct Alias { const char* name; int id; };
     static constexpr Alias aliases[] = {
-        { "cyan_yellow_green_key",
-          static_cast<int>(ObjectType::CYAN_YELLOW_GREEN_KEY) },
-        { "red_yellow_green_key",
-          static_cast<int>(ObjectType::RED_YELLOW_GREEN_KEY) },
-        { "green_yellow_red_key",
-          static_cast<int>(ObjectType::GREEN_YELLOW_RED_KEY) },
-        { "yellow_white_red_key",
-          static_cast<int>(ObjectType::YELLOW_WHITE_RED_KEY) },
-        { "red_magenta_red_key",
-          static_cast<int>(ObjectType::RED_MAGENTA_RED_KEY) },
-        { "blue_cyan_green_key",
-          static_cast<int>(ObjectType::BLUE_CYAN_GREEN_KEY) },
+        { "cyan_yellow_green_key", static_cast<int>(ObjectType::CYAN_YELLOW_GREEN_KEY) },
+        { "red_yellow_green_key",  static_cast<int>(ObjectType::RED_YELLOW_GREEN_KEY)  },
+        { "green_yellow_red_key",  static_cast<int>(ObjectType::GREEN_YELLOW_RED_KEY)  },
+        { "yellow_white_red_key",  static_cast<int>(ObjectType::YELLOW_WHITE_RED_KEY)  },
+        { "red_magenta_red_key",   static_cast<int>(ObjectType::RED_MAGENTA_RED_KEY)   },
+        { "blue_cyan_green_key",   static_cast<int>(ObjectType::BLUE_CYAN_GREEN_KEY)   },
     };
-    for (const auto& a : aliases) {
-        if (want == a.name) return a.id;
-    }
+    for (const auto& a : aliases) if (want == a.name) return a.id;
     unsigned long v;
-    if (parse_uint(raw, v) &&
-        v < static_cast<unsigned long>(ObjectType::COUNT)) {
+    if (parse_uint(raw, v) && v < static_cast<unsigned long>(ObjectType::COUNT))
         return static_cast<int>(v);
-    }
     return -1;
+}
+
+// ----------------------------------------------------------------------
+// Declarative dispatch tables. Each row maps (section, key) to a member
+// pointer; the main loop walks these before falling through to section-
+// specific handlers, so adding a new bool / uint8_t flag is a one-line
+// edit rather than another if/else branch.
+// ----------------------------------------------------------------------
+
+struct BoolEntry { const char* sec; const char* key; bool StartupConfig::* f; };
+constexpr BoolEntry kBools[] = {
+    {"player",    "give_protection_suit",        &StartupConfig::give_protection_suit},
+    {"player",    "invincible",                  &StartupConfig::invincible},
+    {"creatures", "pipe_198_190_crab",           &StartupConfig::pipe_198_190_crab},
+    {"creatures", "spawn_initial_triax",         &StartupConfig::spawn_initial_triax},
+    {"creatures", "sucking_nest_damages_player", &StartupConfig::sucking_nest_damages_player},
+    {"audio",     "enabled",                     &StartupConfig::audio_enabled},
+    {"logs",      "enabled",                     &StartupConfig::logs_enabled},
+    {"debug",     "stress_test",                 &StartupConfig::stress_test},
+    {"debug",     "grenade_chain",               &StartupConfig::grenade_chain},
+    {"debug",     "icer_drop",                   &StartupConfig::icer_drop},
+    {"debug",     "jetpack_boost_tint",          &StartupConfig::jetpack_boost_tint},
+    {"debug",     "profile",                     &StartupConfig::profile},
+    {"debug",     "show_fps",                    &StartupConfig::show_fps},
+    {"debug",     "npc_firing_enabled",          &StartupConfig::npc_firing_enabled},
+    {"landscape", "use_cpp_impl",                &StartupConfig::use_cpp_landscape},
+    {"whistles",  "whistle_one_collected",       &StartupConfig::whistle_one_collected},
+    {"whistles",  "whistle_two_collected",       &StartupConfig::whistle_two_collected},
+};
+
+struct U8Entry { const char* sec; const char* key; uint8_t StartupConfig::* f; };
+constexpr U8Entry kU8s[] = {
+    {"player", "start_x", &StartupConfig::start_x},
+    {"player", "start_y", &StartupConfig::start_y},
+    {"player", "energy",  &StartupConfig::energy},
+};
+
+struct SubpixelEntry { const char* name; StartupConfig::SubpixelMode mode; };
+constexpr SubpixelEntry kSubpixelModes[] = {
+    {"off",      StartupConfig::SubpixelMode::Off},
+    {"false",    StartupConfig::SubpixelMode::Off},
+    {"no",       StartupConfig::SubpixelMode::Off},
+    {"0",        StartupConfig::SubpixelMode::Off},
+    {"on",       StartupConfig::SubpixelMode::On},
+    {"true",     StartupConfig::SubpixelMode::On},
+    {"yes",      StartupConfig::SubpixelMode::On},
+    {"1",        StartupConfig::SubpixelMode::On},
+    {"adaptive", StartupConfig::SubpixelMode::Adaptive},
+    {"auto",     StartupConfig::SubpixelMode::Adaptive},
+};
+
+// Split "a, b, c" -> {"a","b","c"} with whitespace trimmed off each token.
+// Used by [startup_spawns]; the rest of the file is one-value-per-line.
+std::vector<std::string> split_csv(const std::string& s) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char c : s) {
+        if (c == ',') { out.push_back(trim(cur)); cur.clear(); }
+        else            cur.push_back(c);
+    }
+    if (!cur.empty()) out.push_back(trim(cur));
+    return out;
 }
 
 } // namespace
@@ -114,44 +169,31 @@ int parse_object_type(const std::string& raw) {
 StartupConfig load_startup_config(const std::string& path) {
     StartupConfig cfg;
 
-    // Try a couple of locations so the same exe works whether VS launches
-    // it from the project root (default $(ProjectDir)) or it's run
-    // directly from build/Debug/. First match wins; missing file is
-    // silent — we just use defaults.
-    const std::string candidates[] = {
-        path,
-        "../../" + path,    // project root from build/Debug/
-        "../" + path,       // project root from build/
-    };
+    // Search a couple of locations so the same exe works from project
+    // root or from a build subdir. First match wins; missing file is
+    // silent and we just use defaults.
+    const std::string candidates[] = { path, "../../" + path, "../" + path };
     std::ifstream in;
-    for (const auto& p : candidates) {
-        in.open(p);
-        if (in) break;
-    }
-    if (!in) {
-        return cfg;
-    }
+    for (const auto& p : candidates) { in.open(p); if (in) break; }
+    if (!in) return cfg;
 
     std::string line, section;
     int line_no = 0;
     while (std::getline(in, line)) {
         line_no++;
 
-        // Strip trailing comment. `;` and `#` both count, and we look
-        // for them anywhere on the line (simple — no escaping).
+        // Strip trailing comment (`;` or `#`), trim, skip blanks.
         for (size_t i = 0; i < line.size(); i++) {
             if (line[i] == ';' || line[i] == '#') { line.resize(i); break; }
         }
         std::string t = trim(line);
         if (t.empty()) continue;
 
-        // Section header.
         if (t.front() == '[' && t.back() == ']') {
             section = to_lower(trim(t.substr(1, t.size() - 2)));
             continue;
         }
 
-        // key = value
         auto eq = t.find('=');
         if (eq == std::string::npos) {
             std::fprintf(stderr, "exile.ini:%d: expected 'key = value'\n", line_no);
@@ -160,23 +202,34 @@ StartupConfig load_startup_config(const std::string& path) {
         std::string key   = to_lower(trim(t.substr(0, eq)));
         std::string value = trim(t.substr(eq + 1));
 
+        // 1. Generic bool dispatch.
+        bool handled = false;
+        for (const auto& e : kBools) {
+            if (section == e.sec && key == e.key) {
+                bool b; if (parse_bool(value, b)) cfg.*(e.f) = b;
+                handled = true; break;
+            }
+        }
+        if (handled) continue;
+
+        // 2. Generic uint8_t dispatch.
+        for (const auto& e : kU8s) {
+            if (section == e.sec && key == e.key) {
+                parse_uint_clamped(value, cfg.*(e.f),
+                                   0ul, 0xfful);
+                handled = true; break;
+            }
+        }
+        if (handled) continue;
+
+        // 3. Section-specific handlers for everything that doesn't fit
+        //    the generic (section, key) -> field mapping.
         if (section == "player") {
-            unsigned long v;
-            if (key == "start_x" && parse_uint(value, v))      cfg.start_x = static_cast<uint8_t>(v);
-            else if (key == "start_y" && parse_uint(value, v)) cfg.start_y = static_cast<uint8_t>(v);
-            else if (key == "energy"  && parse_uint(value, v)) cfg.energy  = static_cast<uint8_t>(v);
-            else if (key == "weapon") {
+            if (key == "weapon") {
                 int w = parse_weapon(value);
                 if (w >= 0) cfg.weapon = static_cast<uint8_t>(w);
             } else if (key == "bbc_save") {
                 cfg.bbc_save_path = value;
-            } else {
-                bool b = false;
-                if (key == "give_protection_suit" && parse_bool(value, b)) {
-                    cfg.give_protection_suit = b;
-                } else if (key == "invincible" && parse_bool(value, b)) {
-                    cfg.invincible = b;
-                }
             }
         } else if (section == "weapon_energy") {
             int slot = parse_weapon(key);
@@ -186,168 +239,68 @@ StartupConfig load_startup_config(const std::string& path) {
                     static_cast<uint16_t>(v);
             }
         } else if (section == "caches") {
-            unsigned long v;
-            if (parse_uint(value, v)) {
-                // Clamp to [1, compile-time max]; the ObjectManager
-                // setters re-clamp too so an over-large ini value is
-                // harmless.
-                int n = static_cast<int>(v);
-                if (n < 1) n = 1;
-                if (key == "primary_slots") {
-                    if (n > GameConstants::PRIMARY_OBJECT_SLOTS)
-                        n = GameConstants::PRIMARY_OBJECT_SLOTS;
-                    cfg.primary_slots = n;
-                } else if (key == "secondary_slots") {
-                    if (n > GameConstants::SECONDARY_OBJECT_SLOTS)
-                        n = GameConstants::SECONDARY_OBJECT_SLOTS;
-                    cfg.secondary_slots = n;
-                }
+            if (key == "primary_slots") {
+                parse_uint_clamped(value, cfg.primary_slots,
+                                   1ul, static_cast<unsigned long>(
+                                       GameConstants::PRIMARY_OBJECT_SLOTS));
+            } else if (key == "secondary_slots") {
+                parse_uint_clamped(value, cfg.secondary_slots,
+                                   1ul, static_cast<unsigned long>(
+                                       GameConstants::SECONDARY_OBJECT_SLOTS));
             }
         } else if (section == "distances") {
-            // Two collapsed keys: radius_static fans out to all four
-            // static/settled distances, radius_moving stays independent.
-            // Keeping the four internal fields tied prevents the
-            // spawn / demote oscillation the wider port-viewport
-            // introduced (see exile.ini comment).
-            unsigned long v;
-            if (parse_uint(value, v) && v <= 0xff) {
-                uint8_t u = static_cast<uint8_t>(v);
-                if (key == "radius_static") {
-                    cfg.demote_tertiary   = u;
-                    cfg.demote_settled    = u;
-                    cfg.promote_secondary = u;
-                    cfg.spawn_tertiary    = u;
-                } else if (key == "radius_moving") {
-                    cfg.demote_moving = u;
-                }
-            }
-        } else if (section == "whistles") {
-            bool b;
-            if (key == "whistle_one_collected" && parse_bool(value, b)) {
-                cfg.whistle_one_collected = b;
-            } else if (key == "whistle_two_collected" && parse_bool(value, b)) {
-                cfg.whistle_two_collected = b;
+            // radius_static fans out to all four static-related rings.
+            // Keeping them tied avoids the spawn/demote oscillation the
+            // port's wider viewport causes when they diverge.
+            uint8_t u;
+            if (!parse_uint_clamped(value, u, 0ul, 0xfful)) continue;
+            if (key == "radius_static") {
+                cfg.demote_tertiary = u;
+                cfg.demote_settled  = u;
+                cfg.promote_secondary = u;
+                cfg.spawn_tertiary  = u;
+            } else if (key == "radius_moving") {
+                cfg.demote_moving = u;
             }
         } else if (section == "keys") {
-            // Each key-name sets a byte in cfg.keys_collected (0x80 =
-            // collected, 0 = not). Index mapping matches the 6502's
-            // &0806 array and consider_toggling_lock at &31bb — index
-            // 0..5 are the six visible key object types; indices 6..7
-            // are the transporter-beam slots the original game shares
-            // with the higher door colours.
-            bool b = false;
-            if (!parse_bool(value, b)) continue;
-            uint8_t byte_value = b ? 0x80 : 0x00;
-            struct KeyAlias { const char* name; int idx; };
-            static constexpr KeyAlias key_aliases[] = {
-                { "cyan_yellow_green_key", 0 },
-                { "cyg_key",               0 },
-                { "red_yellow_green_key",  1 },
-                { "ryg_key",               1 },
-                { "green_yellow_red_key",  2 },
-                { "gyr_key",               2 },
-                { "yellow_white_red_key",  3 },
-                { "ywr_key",               3 },
-                { "red_magenta_red_key",   4 },
-                { "rmr_key",               4 },
-                { "blue_cyan_green_key",   5 },
-                { "bcg_key",               5 },
-            };
-            for (const auto& a : key_aliases) {
-                if (key == a.name) {
-                    cfg.keys_collected[static_cast<size_t>(a.idx)] = byte_value;
-                    break;
-                }
-            }
-        } else if (section == "landscape") {
-            bool b = false;
-            if (key == "use_cpp_impl" && parse_bool(value, b)) {
-                cfg.use_cpp_landscape = b;
-            }
-        } else if (section == "creatures") {
-            bool b = false;
-            if (key == "pipe_198_190_crab" && parse_bool(value, b)) {
-                cfg.pipe_198_190_crab = b;
-            } else if (key == "spawn_initial_triax" && parse_bool(value, b)) {
-                cfg.spawn_initial_triax = b;
-            } else if (key == "sucking_nest_damages_player" && parse_bool(value, b)) {
-                cfg.sucking_nest_damages_player = b;
-            }
-        } else if (section == "audio") {
-            bool b = false;
-            if (key == "enabled" && parse_bool(value, b)) {
-                cfg.audio_enabled = b;
-            }
+            // Key names route through parse_object_type (handles long
+            // names like cyan_yellow_green_key and short aliases like
+            // cyg_key). Map the resolved type back to its bitmask slot.
+            int t = parse_object_type(key);
+            constexpr int base = static_cast<int>(ObjectType::CYAN_YELLOW_GREEN_KEY);
+            constexpr int top  = static_cast<int>(ObjectType::BLUE_CYAN_GREEN_KEY);
+            if (t < base || t > top) continue;
+            bool b;
+            if (parse_bool(value, b))
+                cfg.keys_collected[static_cast<size_t>(t - base)] = b ? 0x80 : 0;
         } else if (section == "render") {
             if (key == "subpixel_rendering") {
-                if (value == "off" || value == "false" || value == "no" ||
-                    value == "0") {
-                    cfg.subpixel_mode = StartupConfig::SubpixelMode::Off;
-                } else if (value == "on" || value == "true" ||
-                           value == "yes" || value == "1") {
-                    cfg.subpixel_mode = StartupConfig::SubpixelMode::On;
-                } else if (value == "adaptive" || value == "auto") {
-                    cfg.subpixel_mode = StartupConfig::SubpixelMode::Adaptive;
-                } else {
+                std::string v = to_lower(value);
+                bool found = false;
+                for (const auto& sp : kSubpixelModes) {
+                    if (v == sp.name) {
+                        cfg.subpixel_mode = sp.mode;
+                        found = true; break;
+                    }
+                }
+                if (!found) {
                     std::fprintf(stderr,
                         "exile.ini:%d: unknown subpixel_rendering value '%s'"
                         " (expected off / on / adaptive)\n",
                         line_no, value.c_str());
                 }
             } else if (key == "zoom_den") {
-                unsigned long v;
-                if (parse_uint(value, v) && v >= 1) {
-                    cfg.zoom_den = static_cast<int>(v);
-                }
-            }
-        } else if (section == "logs") {
-            bool b = false;
-            if (key == "enabled" && parse_bool(value, b)) {
-                cfg.logs_enabled = b;
+                parse_uint_clamped(value, cfg.zoom_den, 1ul, 0xfful);
             }
         } else if (section == "debug") {
-            bool b = false;
-            if (key == "stress_test" && parse_bool(value, b)) {
-                cfg.stress_test = b;
-            } else if (key == "grenade_chain" && parse_bool(value, b)) {
-                cfg.grenade_chain = b;
-            } else if (key == "icer_drop" && parse_bool(value, b)) {
-                cfg.icer_drop = b;
-            } else if (key == "jetpack_boost_tint" && parse_bool(value, b)) {
-                cfg.jetpack_boost_tint = b;
-            } else if (key == "profile" && parse_bool(value, b)) {
-                cfg.profile = b;
-            } else if (key == "show_fps" && parse_bool(value, b)) {
-                cfg.show_fps = b;
-            } else if (key == "target_fps") {
-                // Any integer between TARGET_FPS_MIN and TARGET_FPS_MAX.
-                // 25 = BBC original; higher fast-forwards the whole game.
-                // Audio re-aligns via Audio::set_logic_rate in Game::init.
-                int n = std::atoi(value.c_str());
-                if (n < GameConstants::TARGET_FPS_MIN)
-                    n = GameConstants::TARGET_FPS_MIN;
-                if (n > GameConstants::TARGET_FPS_MAX)
-                    n = GameConstants::TARGET_FPS_MAX;
-                cfg.target_fps = n;
+            if (key == "target_fps") {
+                parse_uint_clamped(value, cfg.target_fps,
+                                   static_cast<unsigned long>(GameConstants::TARGET_FPS_MIN),
+                                   static_cast<unsigned long>(GameConstants::TARGET_FPS_MAX));
             }
         } else if (section == "startup_spawns") {
             // Format: <key> = <type>, <tile_x>, <tile_y>[, <x_frac>][, <y_frac>]
-            // Key is just a uniqueness handle — slot0..slotN, names,
-            // anything that doesn't collide. Type accepts ObjectType
-            // names (case-insensitive) or numeric ids; coordinates can
-            // be decimal or 0xNN hex. Fractions default to 0x80 (tile
-            // centre) when omitted.
-            std::vector<std::string> tokens;
-            std::string current;
-            for (char c : value) {
-                if (c == ',') {
-                    tokens.push_back(trim(current));
-                    current.clear();
-                } else {
-                    current.push_back(c);
-                }
-            }
-            if (!current.empty()) tokens.push_back(trim(current));
+            auto tokens = split_csv(value);
             if (tokens.size() < 3 || tokens.size() > 5) {
                 std::fprintf(stderr,
                     "exile.ini:%d: [startup_spawns] expected "
@@ -359,10 +312,8 @@ StartupConfig load_startup_config(const std::string& path) {
             bool ok = (t_id >= 0)
                    && parse_uint(tokens[1], tx) && tx <= 0xff
                    && parse_uint(tokens[2], ty) && ty <= 0xff;
-            if (ok && tokens.size() >= 4)
-                ok = parse_uint(tokens[3], xf) && xf <= 0xff;
-            if (ok && tokens.size() >= 5)
-                ok = parse_uint(tokens[4], yf) && yf <= 0xff;
+            if (ok && tokens.size() >= 4) ok = parse_uint(tokens[3], xf) && xf <= 0xff;
+            if (ok && tokens.size() >= 5) ok = parse_uint(tokens[4], yf) && yf <= 0xff;
             if (!ok) {
                 std::fprintf(stderr,
                     "exile.ini:%d: [startup_spawns] could not parse '%s'\n",
@@ -371,10 +322,8 @@ StartupConfig load_startup_config(const std::string& path) {
             }
             cfg.startup_spawns.push_back({
                 static_cast<uint8_t>(t_id),
-                static_cast<uint8_t>(tx),
-                static_cast<uint8_t>(ty),
-                static_cast<uint8_t>(xf),
-                static_cast<uint8_t>(yf),
+                static_cast<uint8_t>(tx), static_cast<uint8_t>(ty),
+                static_cast<uint8_t>(xf), static_cast<uint8_t>(yf),
             });
         } else if (section == "pockets") {
             // Keys are slot0..slot4. slot0 = top of stack.
@@ -382,17 +331,14 @@ StartupConfig load_startup_config(const std::string& path) {
                 key[4] >= '0' && key[4] <= '4') {
                 int slot = key[4] - '0';
                 int t_id = parse_object_type(value);
-                if (t_id >= 0) {
-                    cfg.pockets[static_cast<size_t>(slot)] =
-                        static_cast<uint8_t>(t_id);
-                }
+                if (t_id >= 0)
+                    cfg.pockets[static_cast<size_t>(slot)] = static_cast<uint8_t>(t_id);
             }
         }
     }
 
-    // Compact pockets_used from filled-slot count (lowest contiguous
-    // run of non-0xff from slot 0 upwards matches the 6502's convention
-    // where the stack grows upward).
+    // Compact pockets_used: count the contiguous run of filled slots
+    // from slot 0 upward (matches the 6502's stack-grows-upward convention).
     cfg.pockets_used = 0;
     for (size_t i = 0; i < cfg.pockets.size(); i++) {
         if (cfg.pockets[i] != 0xff) cfg.pockets_used++;

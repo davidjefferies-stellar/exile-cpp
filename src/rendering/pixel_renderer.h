@@ -166,10 +166,9 @@ public:
     // Debug-overlay toggles, exposed through IRenderer::*_enabled() so
     // the game layer reads them each frame. Driven by the checkbox
     // strip at the bottom of the window.
-    bool tile_outline_on = false;    // "Grid" checkbox
+    bool tile_outline_on = false;    // "Tiles" checkbox (also drives the text overlay that used to live behind "Debug")
     bool object_tiers_on = false;    // "Object tiers" checkbox
     bool map_mode_on     = false;    // "Map mode" checkbox
-    bool debug_text_on   = false;    // "Debug" checkbox
     bool switches_on     = false;    // "Switches" — green switch->door wires
     bool transports_on   = false;    // "Transports" — cyan transporter wires
     bool collision_on    = false;    // "Collision" — solid-region shading
@@ -230,9 +229,7 @@ public:
 
     // [render] subpixel_rendering ini setting. Off snaps fractions to
     // the BBC pixel grid; On honours every frac unit; Adaptive snaps
-    // only when the object (or camera) is near-stationary. See
-    // set_subpixel_mode() / set_camera_motion() and the velocity test
-    // inside world_to_screen.
+    // only when the object (or camera) is exactly stationary.
     SubpixelMode subpixel_mode = SubpixelMode::Off;
     int8_t cam_vx = 0;
     int8_t cam_vy = 0;
@@ -331,10 +328,10 @@ public:
     void draw_glyph(int x, int y, char ch, uint32_t fg, uint32_t bg);
     int draw_text(int x, int y, const char* s, uint32_t fg, uint32_t bg);
 
-    // vx / vy are the object's velocity, used by Adaptive subpixel mode
-    // to decide whether to snap this draw to the BBC pixel grid. Tiles
-    // and other stationary draws can omit them (default 0 → always snap
-    // in Adaptive mode, which is what stationary things want).
+    // vx / vy are the object's velocity. Adaptive subpixel mode snaps
+    // the rendered position to the BBC pixel grid only when both axes
+    // are exactly 0; any motion stays at full frac precision. Tiles
+    // and other stationary draws can omit the velocity (default 0).
     bool world_to_screen(uint8_t wx, uint8_t wy, int& sx, int& sy,
                          uint8_t wx_frac = 0, uint8_t wy_frac = 0,
                          int8_t vx = 0, int8_t vy = 0) const;

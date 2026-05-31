@@ -85,17 +85,6 @@ private:
     // 7/8 every 4 frames when |rv| >= 4. Added to player_angle each
     // spin tick — that's what makes the player tumble.
     uint8_t player_immobility_rotation_velocity_ = 0;
-    // State-change snapshots for the walk-vs-fly debug log. We log only
-    // when one of these flips, plus a one-shot "walk-blocked" line on
-    // each frame the player presses left/right but the walking gate
-    // refuses. Avoids spamming exile-debug.log every frame.
-    bool    walk_log_supported_prev_ = false;
-    uint8_t walk_log_counter_prev_   = 0xff;
-    bool    walk_log_walking_prev_   = false;
-    bool    walk_log_flying_prev_    = false;
-    bool    inp_log_supported_prev_  = false;
-    bool    inp_log_walking_prev_    = false;
-    bool    inp_log_motion_prev_     = false;
     // &1c tile_collision_angle: angle of the surface the player is standing
     // on, in 8-bit units (0x00 = flat ground, 0xe0 = 45° rising right,
     // 0x20 = 45° falling right). Refreshed each frame in
@@ -154,6 +143,12 @@ private:
     // slot. Default false to avoid frame-by-frame chip damage while the
     // suck/push tuning is in flight. Plumbed via UpdateContext.
     bool sucking_nest_damages_player_ = false;
+
+    // [debug] npc_firing_enabled — when false, NPC::fire_projectile
+    // returns -1 immediately so no NPC bullets/projectiles spawn.
+    // Default true; useful only for isolating player-bullet behaviour
+    // during testing. Plumbed via UpdateContext.
+    bool npc_firing_enabled_ = true;
 
     // [debug] show_fps — top-right FPS readout. Measured in Game::run
     // over a 30-frame rolling window (actual wall-clock cadence,
@@ -353,8 +348,7 @@ private:
     // The implementation of these debug-only helpers lives in
     // game_debug.cpp so the main game.cpp stays focused on the per-frame
     // chain. dump_init_diagnostics writes the one-shot landscape /
-    // switch / tertiary census at startup; log_walking_diagnosis is the
-    // state-change-only walking trace emitted from update_player.
+    // switch / tertiary census at startup.
     std::ofstream debug_log_;
     void flush_debug_log();
     void dump_init_diagnostics();
@@ -364,10 +358,6 @@ private:
     // debug_log_ and resets. Body in game_debug.cpp.
     Profile::Profiler profiler_;
     void emit_profile_report();
-    void log_walking_diagnosis(const Object& player, const InputState& inp,
-                               int8_t pre_vx, int8_t pre_vy,
-                               uint8_t pre_xf, uint8_t pre_yf,
-                               int8_t accel_x, int8_t accel_y);
 
     // Port-only test rigs (event panel buttons, chained-grenade demo,
     // smooth-flood subframe drain). All bodies live in game_debug.cpp so

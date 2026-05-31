@@ -112,6 +112,11 @@ struct UpdateContext {
     // damage-on-touch path skips slot 0 so the player can be sucked
     // in without taking 2 hp per frame.
     bool sucking_nest_damages_player;
+    // [debug] npc_firing_enabled. When false, NPC::fire_projectile
+    // returns -1 unconditionally — every NPC bullet/projectile spawn
+    // is suppressed. Useful for isolating player-bullet behaviour
+    // during diagnostics. Default true.
+    bool npc_firing_enabled;
 };
 
 // Common NPC movement helpers

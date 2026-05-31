@@ -6,6 +6,7 @@
 #include "objects/object_data.h"
 #include "objects/object_tables.h"
 #include "objects/object_manager.h"
+#include "rendering/sprite_atlas.h"
 #include "world/landscape.h"
 #include "world/tertiary.h"
 #include "particles/particle_system.h"
@@ -47,23 +48,56 @@ static bool hit_by_aim_cone(const Object& target, UpdateContext& ctx,
     const Object& fired = ctx.mgr.object(ctx.player_object_fired);
     if (!fired.is_active() || fired.type != control_type) return false;
 
-    // Port-only deviation from &0bd2: 6502 calls &359c which raycasts
-    // and returns the actual ray distance in &20-fractions (&83). We
-    // use Chebyshev*8 which over-quantises diagonal hits — a target
-    // 2.5 tiles diagonal reads as 16 (2*8), the 6502 would read ~20.
-    // Net effect: aim cone widens slightly on diagonals. Accepted as
-    // the LOS raycast helper here doesn't surface a distance.
-    int8_t fdx = static_cast<int8_t>(fired.x.whole - target.x.whole);
-    int8_t fdy = static_cast<int8_t>(fired.y.whole - target.y.whole);
-    int adx = fdx < 0 ? -fdx : fdx;
-    int ady = fdy < 0 ? -fdy : fdy;
-    int tiles = std::max(adx, ady);
+    // &22a0 calculate_angle_of_object_X_to_this_object: 6502 builds the
+    // target→fired vector from sprite CENTRES (each object's x + w/2,
+    // y + h/2 in &20-fractions). Reading raw obj.x.whole as the angle
+    // basis misaligns 2-tile-tall doors: a vertical door anchored at
+    // y=127 has its centre at ~128 (height/2 = 1 tile), but the RCD
+    // fired horizontally at y=128 reads fdy = +1 and the aim cone
+    // rejects with a 90° "down" angle. Use centres so the door reads
+    // as level with the RCD.
+    int target_cx_frac = (target.sprite <= 0x80)
+        ? (sprite_atlas[target.sprite].w > 0
+            ? (sprite_atlas[target.sprite].w - 1) * 16 / 2 : 0)
+        : 0;
+    int target_cy_frac = (target.sprite <= 0x80)
+        ? (sprite_atlas[target.sprite].h > 0
+            ? (sprite_atlas[target.sprite].h - 1) * 8 / 2 : 0)
+        : 0;
+    int fired_cx_frac = (fired.sprite <= 0x80)
+        ? (sprite_atlas[fired.sprite].w > 0
+            ? (sprite_atlas[fired.sprite].w - 1) * 16 / 2 : 0)
+        : 0;
+    int fired_cy_frac = (fired.sprite <= 0x80)
+        ? (sprite_atlas[fired.sprite].h > 0
+            ? (sprite_atlas[fired.sprite].h - 1) * 8 / 2 : 0)
+        : 0;
+    int tcx = int(target.x.whole) * 256 + int(target.x.fraction) + target_cx_frac;
+    int tcy = int(target.y.whole) * 256 + int(target.y.fraction) + target_cy_frac;
+    int fcx = int(fired.x.whole)  * 256 + int(fired.x.fraction)  + fired_cx_frac;
+    int fcy = int(fired.y.whole)  * 256 + int(fired.y.fraction)  + fired_cy_frac;
+    int dx_frac = fcx - tcx;  // signed full 16-bit difference (frac units)
+    int dy_frac = fcy - tcy;
+    // Range gate: 6502 uses raycast distance in &20-fractions; we use
+    // Chebyshev of the centre-to-centre frac diff, rounded up to whole
+    // tiles for the 3-tile-or-closer test. 1 tile = 256 frac.
+    int max_abs_frac = std::max(std::abs(dx_frac), std::abs(dy_frac));
+    int tiles = (max_abs_frac + 255) / 256;
     if (tiles > 3) return false;
     int distance_units = tiles * 8;     // 1 tile = 8 &20-fracs
 
-    // Direction TARGET → FIRED (see the &2305 SBC trace above). dx/dy
-    // are the same as the Chebyshev fdx/fdy above; pass them straight
-    // to angle_from_deltas.
+    // &22fe normalises the relative position so the magnitudes fit in a
+    // byte (divides both by 2*largest-tile-distance). Equivalent here:
+    // shift both diffs right until max fits in int8_t. Truncating with
+    // >> 8 lost sub-tile direction entirely — sub-tile diagonals read
+    // as fdx=fdy=0 and the angle came back as garbage.
+    int divisor = 1;
+    while (max_abs_frac / divisor > 127) divisor *= 2;
+    int8_t fdx = static_cast<int8_t>(dx_frac / divisor);
+    int8_t fdy = static_cast<int8_t>(dy_frac / divisor);
+
+    // Direction TARGET → FIRED. Pass to angle_from_deltas (ratio-based,
+    // magnitude only affects precision).
     uint8_t angle = NPC::angle_from_deltas(fdx, fdy);
 
     // &0bdc-&0be0: abs(angle - player_aim - 0x80).
@@ -140,6 +174,62 @@ void update_door(Object& obj, UpdateContext& ctx) {
 
     // &4cab-&4cad: always re-set MOVING while the door is being ticked.
     uint8_t data = obj.tertiary_data_offset | DoorFlag::MOVING;
+
+    // Diag: log every door tick when an RCD is in flight, with the
+    // door's actual position, the sprite-centre fdx/fdy, the computed
+    // angle, and the aim-cone verdict. Restore the line and rebuild to
+    // diagnose left-facing RCD failures.
+    if (ctx.player_object_fired < GameConstants::PRIMARY_OBJECT_SLOTS) {
+        const Object& fired = ctx.mgr.object(ctx.player_object_fired);
+        if (fired.is_active() &&
+            fired.type == ObjectType::REMOTE_CONTROL_DEVICE) {
+            uint8_t door_colour = (obj.tertiary_data_offset >> 4) & 0x07;
+            int target_cx_frac = (obj.sprite <= 0x80 && sprite_atlas[obj.sprite].w > 0)
+                ? (sprite_atlas[obj.sprite].w - 1) * 16 / 2 : 0;
+            int target_cy_frac = (obj.sprite <= 0x80 && sprite_atlas[obj.sprite].h > 0)
+                ? (sprite_atlas[obj.sprite].h - 1) * 8 / 2 : 0;
+            int fired_cx_frac = (fired.sprite <= 0x80 && sprite_atlas[fired.sprite].w > 0)
+                ? (sprite_atlas[fired.sprite].w - 1) * 16 / 2 : 0;
+            int fired_cy_frac = (fired.sprite <= 0x80 && sprite_atlas[fired.sprite].h > 0)
+                ? (sprite_atlas[fired.sprite].h - 1) * 8 / 2 : 0;
+            int tcx = int(obj.x.whole) * 256 + int(obj.x.fraction) + target_cx_frac;
+            int tcy = int(obj.y.whole) * 256 + int(obj.y.fraction) + target_cy_frac;
+            int fcx = int(fired.x.whole) * 256 + int(fired.x.fraction) + fired_cx_frac;
+            int fcy = int(fired.y.whole) * 256 + int(fired.y.fraction) + fired_cy_frac;
+            int dx_frac = fcx - tcx;
+            int dy_frac = fcy - tcy;
+            int max_abs_frac = std::max(std::abs(dx_frac), std::abs(dy_frac));
+            int tiles = (max_abs_frac + 255) / 256;
+            int divisor = 1;
+            while (max_abs_frac / divisor > 127) divisor *= 2;
+            int8_t fdx = static_cast<int8_t>(dx_frac / divisor);
+            int8_t fdy = static_cast<int8_t>(dy_frac / divisor);
+            uint8_t angle = NPC::angle_from_deltas(fdx, fdy);
+            int raw_diff = static_cast<int8_t>(
+                angle - ctx.player_aim_angle - 0x80);
+            int abs_diff = raw_diff < 0 ? -raw_diff : raw_diff;
+            ctx.mgr.log_diag(
+                "door type=0x%02x @%u.%02x,%u.%02x spr=0x%02x w=%u h=%u "
+                "colour=%u locked=%d aim=0x%02x "
+                "RCD@%u.%02x,%u.%02x spr=0x%02x "
+                "fdx=%d fdy=%d tiles=%d angle=0x%02x raw_diff=%d "
+                "abs+dist=%d pass=%d",
+                static_cast<unsigned>(obj.type),
+                obj.x.whole, obj.x.fraction, obj.y.whole, obj.y.fraction,
+                obj.sprite,
+                obj.sprite <= 0x80 ? sprite_atlas[obj.sprite].w : 0,
+                obj.sprite <= 0x80 ? sprite_atlas[obj.sprite].h : 0,
+                door_colour,
+                (obj.tertiary_data_offset & DoorFlag::LOCKED) ? 1 : 0,
+                ctx.player_aim_angle,
+                fired.x.whole, fired.x.fraction,
+                fired.y.whole, fired.y.fraction,
+                fired.sprite,
+                (int)fdx, (int)fdy, tiles, angle, raw_diff,
+                abs_diff + tiles * 8,
+                ((abs_diff + tiles * 8) < 0x18) ? 1 : 0);
+        }
+    }
 
     // &4c9e/&31ac RCD door-unlock: the door reacts iff the player just
     // fired an RCD that's inside the aim-cone test at &0bc5 AND the

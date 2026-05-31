@@ -41,7 +41,11 @@ bool is_underwater(const Landscape& landscape, uint8_t x, uint8_t y);
 // &2f41-&2f8a water effects. Four-iteration apply_buoyancy_loop at &2f57
 // (DEC count depends on weight + depth), then 7/8 velocity damping every
 // four frames (&2f85 -> &3222). `every_four_frames` is the &2f85 BIT &c5.
-void apply_water_effects(const Landscape& landscape, Object& obj,
+// Returns true if the buoyancy loop broke early (object partially in
+// water) AND velocity_y >= 0 after the iteration's decrements — the
+// caller should emit one PARTICLE_WATER at the object's waterline this
+// frame. Mirrors the 6502's &2f69 finished_applying_buoyancy branch.
+bool apply_water_effects(const Landscape& landscape, Object& obj,
                          uint8_t weight, bool every_four_frames);
 
 } // namespace Water

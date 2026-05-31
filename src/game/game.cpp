@@ -90,6 +90,7 @@ bool Game::init() {
     }
     invincible_   = cfg.invincible;
     sucking_nest_damages_player_ = cfg.sucking_nest_damages_player;
+    npc_firing_enabled_ = cfg.npc_firing_enabled;
     show_fps_     = cfg.show_fps;
     jetpack_boost_tint_ = cfg.jetpack_boost_tint;
     profiler_.set_enabled(cfg.profile);
@@ -958,21 +959,10 @@ void Game::update_player() {
     int8_t accel_x = 0;
     int8_t accel_y = 0;
 
-    // Snapshot pre-input state so the log shows what apply_player_input was
-    // looking at, and the post-integrate values can be compared.
-    int8_t pre_vx = player.velocity_x;
-    int8_t pre_vy = player.velocity_y;
-    uint8_t pre_xf = player.x.fraction;
-    uint8_t pre_yf = player.y.fraction;
-
     apply_player_input(player, inp, accel_x, accel_y);
     integrate_player_motion(player, accel_x, accel_y);
     update_player_sprite(accel_x, accel_y);
     tick_blaster();
-
-    // State-change-only walking trace — body in game_debug.cpp.
-    log_walking_diagnosis(player, inp, pre_vx, pre_vy, pre_xf, pre_yf,
-                          accel_x, accel_y);
 }
 
 // Port of &32c8 handle_dropping_object:

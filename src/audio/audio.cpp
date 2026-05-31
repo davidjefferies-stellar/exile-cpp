@@ -538,28 +538,33 @@ void set_logic_rate(int hz) {
 void tick() {
     if (!g_open) return;
 
-    // &1320-&1397 update_sound_channel_loop. After vol envelope ends,
-    // fade to silence: 6502 &1328-&132f is -2/frame, doubled to -4
-    // because SN76489's 4-bit volume cuts off twice as fast.
-    for (auto& ch : g_channels) {
-        if (!channel_audible(ch) && !channel_busy(ch)) continue;
-        if (!update_envelope(ch.vol)) {
-            ch.vol.value = (ch.vol.value > 4)
-                ? static_cast<uint8_t>(ch.vol.value - 4)
-                : 0;
-        }
-        if (update_envelope(ch.freq)) {
-            ch.phase_inc = kPhaseIncTable.v[ch.freq.value];
-        }
-    }
-
-    // Render g_samples_per_tick float samples and push. Buffer sized
-    // for the slowest supported tick rate (kSamplesPerTickMax = 1764).
-    // Each channel contributes (square × volume/0xf0) × headroom; four
-    // channels at full volume sum to ±1.0.
+    // &1320-&1397 update_sound_channel_loop. 6502 hangs this off the
+    // 50 Hz VSYNC IRQ (&1310), so envelopes advance twice per game
+    // tick (game logic runs at half-VSYNC = 25 Hz on the BBC).
+    // Audio::tick fires once per game tick: tick envelopes, render
+    // first half of samples, tick envelopes again, render second half.
+    // Running both passes up-front would skip the first half's
+    // envelope state — kills the RCD's pitch sweep. After vol envelope
+    // ends, fade to silence: 6502 &1328-&132f is -2/frame, doubled to
+    // -4 because SN76489's 4-bit volume cuts off twice as fast.
     float buf[kSamplesPerTickMax];
     const int n = g_samples_per_tick;
-    for (int i = 0; i < n; i++) {
+    const int half_points[2] = { n / 2, n };
+    int sample_i = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (auto& ch : g_channels) {
+            if (!channel_audible(ch) && !channel_busy(ch)) continue;
+            if (!update_envelope(ch.vol)) {
+                ch.vol.value = (ch.vol.value > 4)
+                    ? static_cast<uint8_t>(ch.vol.value - 4)
+                    : 0;
+            }
+            if (update_envelope(ch.freq)) {
+                ch.phase_inc = kPhaseIncTable.v[ch.freq.value];
+            }
+        }
+        const int upto = half_points[pass];
+        for (; sample_i < upto; sample_i++) {
         float mix = 0.0f;
         if (g_debug_tone) {
             // Constant 440 Hz square wave at half scale. Bypasses the
@@ -610,7 +615,8 @@ void tick() {
             const float amp = (out >> 4) / 15.0f;
             mix += wave * amp * 0.25f;
         }
-        buf[i] = std::clamp(mix, -1.0f, 1.0f);
+        buf[sample_i] = std::clamp(mix, -1.0f, 1.0f);
+    }
     }
 
     int wrote_to_slot = -1;

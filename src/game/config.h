@@ -109,6 +109,11 @@ struct StartupConfig {
     // chipped to death frame-by-frame while sucking/pushing is tuned.
     bool sucking_nest_damages_player = false;
 
+    // [debug] npc_firing_enabled — set false to suppress every NPC
+    // bullet/projectile spawn (NPC::fire_projectile returns -1).
+    // Useful when isolating player-bullet behaviour for diagnostics.
+    bool npc_firing_enabled = true;
+
     // [debug] stress_test — when true, scatter one of every animated
     // creature type in a grid around the player's spawn at startup. The
     // grid covers a ~24×15 tile area NW of the player and stresses the
@@ -156,17 +161,14 @@ struct StartupConfig {
     // [render] subpixel_rendering — three modes:
     //   off      : always snap fractions to the BBC pixel grid (16
     //              frac per X-pixel, 8 frac per Y-row). No judder,
-    //              chunky motion. Matches the original BBC display.
+    //              chunky motion. Matches the BBC's display.
     //   on       : never snap; every frac unit advances the screen
-    //              position. Smooth motion but surfaces the 6502's
-    //              gravity-vs-tile-collision oscillation as 1-2 px
-    //              judder on grounded objects.
-    //   adaptive : per-object — snap when velocity is small (near-
-    //              stationary objects don't judder) and don't snap
-    //              when velocity is large (walking / falling renders
-    //              smoothly). Default.
-    // Stored as the renderer's enum so the parser can fail loudly on
-    // unknown spellings.
+    //              position. Smooth, but surfaces the 6502's grounded-
+    //              object gravity/collision oscillation as 1-2 px judder.
+    //   adaptive : per-object — snap only when the object is fully
+    //              stationary (|vx| < 1 && |vy| < 1). Any motion renders
+    //              at sub-pixel precision. Camera follows the same rule
+    //              against the player's velocity. Default.
     enum class SubpixelMode {
         Off       = 0,
         On        = 1,

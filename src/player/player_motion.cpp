@@ -293,35 +293,6 @@ void Game::integrate_player_motion(Object& player,
         landscape_, object_mgr_, static_cast<int>(held_object_slot_));
     player.tile_collision = tcr.top_or_bottom_collision;
 
-    // State-change physics trace — only logs when TileCollision::resolve's
-    // outcome flips (landed-on-bottom, collided, or surrounded). The
-    // landed-on-bottom transition feeds the SUPPORTED flag and the
-    // walking gate, so it's the most useful signal for walk debugging.
-    {
-        static thread_local uint8_t last_summary = 0xff;
-        uint8_t summary = (tcr.landed_on_bottom ? 1 : 0) |
-                          (tcr.collided         ? 2 : 0) |
-                          (tcr.surrounded       ? 4 : 0);
-        if (debug_log_.is_open() && summary != last_summary) {
-            char line[200];
-            std::snprintf(line, sizeof(line),
-                "plr-tcr %u land=%d col=%d sur=%d pos=(%02x.%02x,%02x.%02x) "
-                "v=(%+d,%+d) sprite=%02x\n",
-                static_cast<unsigned>(frame_counter_),
-                tcr.landed_on_bottom ? 1 : 0,
-                tcr.collided ? 1 : 0,
-                tcr.surrounded ? 1 : 0,
-                player.x.whole, player.x.fraction,
-                player.y.whole, player.y.fraction,
-                static_cast<int>(player.velocity_x),
-                static_cast<int>(player.velocity_y),
-                player.sprite);
-            debug_log_ << line;
-            debug_log_.flush();
-            last_summary = summary;
-        }
-    }
-
     bool object_supported = false;
 
     // Object-object — &2a64 check_for_collisions + &2bb6 mass-ratio
@@ -605,9 +576,15 @@ void Game::integrate_player_motion(Object& player,
         }
     }
 
-    // Apply water effects
-    Water::apply_water_effects(landscape_, player, player.weight(),
-                                every_four_frames_);
+    // Apply water effects. Return value is the 6502's &2f69
+    // finished_applying_buoyancy emit-particle decision: true when the
+    // object is partially submerged AND moving downward / stationary,
+    // i.e. swimming at the surface. Emit one PARTICLE_WATER upward.
+    if (Water::apply_water_effects(landscape_, player, player.weight(),
+                                    every_four_frames_)) {
+        particles_.emit_directed(ParticleType::WATER, 0xc0, player,
+                                 cosmetic_rng_);
+    }
 
     // Tile-based wind / water-current — same dispatch as the per-object
     // loop. Without this the player feels surface wind but not the local

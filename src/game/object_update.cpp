@@ -307,7 +307,8 @@ void Game::update_objects() {
                               &explosion_timer_,
                               &flooding_state_,
                               &floating_labels_,
-                              sucking_nest_damages_player_};
+                              sucking_nest_damages_player_,
+                              npc_firing_enabled_};
             update_fn(obj, uctx);
         }
 
@@ -565,9 +566,15 @@ void Game::update_objects() {
                                                  0xc0, obj, cosmetic_rng_);
                     }
                 }
-                // Apply water effects (buoyancy + damping)
-                Water::apply_water_effects(landscape_, obj, obj.weight(),
-                                            every_four_frames_);
+                // Apply water effects (buoyancy + damping). Return is
+                // the 6502 &2f69 emit-particle decision — emit one
+                // upward PARTICLE_WATER per frame for partially-
+                // submerged objects moving downward / stationary.
+                if (Water::apply_water_effects(landscape_, obj, obj.weight(),
+                                                every_four_frames_)) {
+                    particles_.emit_directed(ParticleType::WATER, 0xc0,
+                                             obj, cosmetic_rng_);
+                }
 
                 // Tile-based wind / water-current (port of &3f18 / &3f41 /
                 // &3fa3). Pushes the object toward the tile's wind/flow

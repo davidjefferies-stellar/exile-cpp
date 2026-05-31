@@ -21,6 +21,8 @@ CLAUDE.md
 # docs/* (not docs/) so negations below can re-include specific files.
 docs/*
 !docs/save_game_format.md
+!docs/images/
+!docs/images/**
 behaviour_todos.md
 
 # Per-developer Claude Code session state.

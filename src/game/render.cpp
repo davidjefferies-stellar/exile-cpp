@@ -131,10 +131,8 @@ void Game::render() {
         debug_log_.flush();
     }
 
-    // Camera fraction tracks the player directly. Judder absorption
-    // happens inside the renderer (per [render] subpixel_rendering).
-    // The camera-motion hint lets Adaptive mode snap the viewport when
-    // the player is near-stationary.
+    // Camera-motion hint for Adaptive subpixel: snap viewport when the
+    // player is stationary, track at full frac precision when moving.
     renderer_->set_camera_motion(player_obj.velocity_x,
                                  player_obj.velocity_y);
     uint8_t vp_fx = player_obj.x.fraction;

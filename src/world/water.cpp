@@ -118,7 +118,7 @@ static int8_t seven_eighths(int8_t v) {
 // Port of &2f01-&2f8a apply_buoyancy_loop + the &2f85 four-frame damping.
 // Total velocity_y DECs when fully submerged: weight 0/1->5, 2->4, 3->3,
 // 4->2, 5+->0.
-void apply_water_effects(const Landscape& landscape, Object& obj,
+bool apply_water_effects(const Landscape& landscape, Object& obj,
                          uint8_t weight, bool every_four_frames) {
     int sprite_h_units = (obj.sprite <= 0x80)
         ? (sprite_atlas[obj.sprite].h > 0
@@ -141,17 +141,23 @@ void apply_water_effects(const Landscape& landscape, Object& obj,
     // Upper-world ponds (TILE_WATER above the global waterline) — 6502
     // OR's the water_tile flag at &01 into the buoyancy calc.
     bool in_tile_water = is_underwater(landscape, obj.x.whole, obj.y.whole);
-    if (amount_under == 0 && !in_tile_water) return;
+    if (amount_under == 0 && !in_tile_water) return false;
     if (amount_under == 0 && in_tile_water) amount_under = 0xff;
 
     int Y = (weight == 0) ? 1 : weight;  // &2f43 INY treats 0 as 1
     int h4 = sprite_h_units >> 2;
     if (h4 == 0) h4 = 1;  // guarantee progress on tiny sprites
 
+    // Track whether the buoyancy loop terminated via the &2f59 BCC
+    // (object's height/4 exceeded the remaining water column) vs the
+    // &2f67 BEQ at X=0 (loop ran all 4 iterations -> fully submerged).
+    // The 6502 emits PARTICLE_WATER only on the BCC path; we mirror by
+    // returning true here and letting the caller emit.
+    bool broke_early = false;
     int amt = static_cast<int>(amount_under);
     for (int x = 0; x < 4; x++) {
         amt -= h4;
-        if (amt < 0) break;
+        if (amt < 0) { broke_early = true; break; }
         Y--;
         if (Y < 0) {
             obj.velocity_y--;
@@ -160,11 +166,24 @@ void apply_water_effects(const Landscape& landscape, Object& obj,
         }
     }
 
+    // 6502 &2f6b BMI runs the vy sign test BEFORE the &2f85 damping
+    // step — so capture the decision here, then apply damping below.
+    // Port-only deviation: in upper-world water tiles we short-circuit
+    // the buoyancy depth math to amount_under = 0xff (the BBC's
+    // &2f27-&2f2b "OR water_tile" path), which keeps buoyancy strong
+    // but skips the BCC early-break -> no particle. Bubble per-frame
+    // whenever the object is in tile water and not rising; otherwise
+    // use the BCC path the BBC takes for the global waterline.
+    const bool emit_particle = (broke_early || in_tile_water) &&
+                                obj.velocity_y >= 0;
+
     // &2f85-&2f8a: 7/8 damping every four frames.
     if (every_four_frames) {
         obj.velocity_x = seven_eighths(obj.velocity_x);
         obj.velocity_y = seven_eighths(obj.velocity_y);
     }
+
+    return emit_particle;
 }
 
 } // namespace Water

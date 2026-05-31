@@ -49,9 +49,9 @@ struct SpriteRenderInfo {
     // 6502 &0cfe reduce_sprite_if_teleporting. When non-zero, render shrinks
     // the sprite based on (timer & 7) — zero means no teleport effect.
     uint8_t teleport_timer = 0;
-    // Object's current velocity. Used in adaptive subpixel mode to decide
-    // whether to snap the rendered position to the BBC pixel grid:
-    // near-stationary objects snap (no judder), fast ones don't (smooth).
+    // Object's current velocity. Adaptive subpixel mode snaps the
+    // rendered position to the BBC pixel grid only when this is exactly
+    // (0, 0); any motion renders at sub-pixel precision.
     int8_t  velocity_x = 0;
     int8_t  velocity_y = 0;
 };
@@ -152,11 +152,12 @@ public:
     virtual int viewport_width_tiles() const = 0;
     virtual int viewport_height_tiles() const = 0;
 
-    // Sub-pixel rendering mode. Off (default): always snap each frac
-    // to the BBC pixel grid (16 frac/px in X, 8 frac/row in Y). On:
-    // never snap — every frac unit advances the screen position.
-    // Adaptive: snap when the object is near-stationary, smooth when
-    // moving fast enough that the judder would be invisible anyway.
+    // Sub-pixel rendering mode. Off: always snap each frac to the BBC
+    // pixel grid (16 frac/X-pixel, 8 frac/Y-row); chunky but matches
+    // the BBC's effective behaviour. On: never snap; smooth motion at
+    // the cost of surfacing the 6502's grounded-object oscillation as
+    // judder. Adaptive: snap only when the object is fully stationary;
+    // any motion (including the 1-frame gravity tick) renders smoothly.
     enum class SubpixelMode {
         Off       = 0,
         On        = 1,
@@ -167,8 +168,7 @@ public:
     // [render] zoom_den at startup; runtime wheel zoom adjusts it further.
     virtual void set_zoom_den(int /*den*/) {}
     // Per-frame camera-motion hint used by Adaptive mode to decide
-    // whether to snap the viewport fraction (i.e. follow the player at
-    // sub-pixel precision or at BBC-pixel precision).
+    // whether to snap the viewport fraction.
     virtual void set_camera_motion(int8_t /*vx*/, int8_t /*vy*/) {}
 
     // Input: get last key press (non-blocking)

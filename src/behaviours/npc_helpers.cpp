@@ -211,7 +211,10 @@ void consider_face_movement_direction(Object& obj, Random& rng) {
 
 // Reduced port of &33b8 create_child_object / &33ab create_projectile.
 // Just spawns at the parent's position — callers compute velocities.
+// [debug] npc_firing_enabled = false suppresses every NPC projectile
+// (isolates player-bullet behaviour for diagnostics).
 int fire_projectile(Object& obj, ObjectType bullet_type, UpdateContext& ctx) {
+    if (!ctx.npc_firing_enabled) return -1;
     return ctx.mgr.create_object_at(bullet_type, 4, obj);
 }
 

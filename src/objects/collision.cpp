@@ -218,13 +218,19 @@ ObjectCollisionResult check_object_collision(
         int other_w = sprite_width_units(other.sprite);
         int other_h = sprite_height_units(other.sprite);
 
-        // No overlap if either object is entirely left of / above the other.
-        // The 6502 treats "exactly touching" as no overlap (&2ae9 BEQ skip),
-        // hence the strict < comparisons.
-        if (other_x + other_w <= this_x)  continue;
-        if (this_x  + this_w  <= other_x) continue;
-        if (other_y + other_h <= this_y)  continue;
-        if (this_y  + this_h  <= other_y) continue;
+        // Port-only deviation from &2ae9 BEQ-skip: treat "exactly touching"
+        // as overlap. The 6502 worked on pixel-rounded coordinates (16
+        // frac per X-pixel, 8 frac per Y-row via &29df), so frac-level
+        // edge contact rounded into a same-pixel comparison and was
+        // visible as overlap. We compare at frac resolution; without the
+        // < instead of <= here, bullets whose 8-frac-tall sprite grazes
+        // the top of a creature standing on a solid tile (bullet.bottom
+        // == creature.top exactly) never set touching and just bounce
+        // off the tile behind.
+        if (other_x + other_w < this_x)  continue;
+        if (this_x  + this_w  < other_x) continue;
+        if (other_y + other_h < this_y)  continue;
+        if (this_y  + this_h  < other_y) continue;
 
         result.collided = true;
         result.other_slot = i;
