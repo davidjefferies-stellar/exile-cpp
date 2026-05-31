@@ -9,6 +9,8 @@
 #include "rendering/font8x8.h"
 #include "world/tile_data.h"
 #include "objects/object_data.h"
+#include "sokol_app.h"
+#include <unordered_map>
 
 // Pre-decoded sprite sheet: logical colour 0..3 per pixel, flat
 // BBC_SHEET_W x BBC_SHEET_H. TU-local (NOT a PixelRenderer member) so it
@@ -30,6 +32,57 @@ static inline uint8_t sprite_idx(int x, int y) {
     return g_sprite_index[static_cast<size_t>(y) * BBC_SHEET_W + x];
 }
 
+// ---------------------------------------------------------------------------
+// Tile cache (phase 2): per-tile pre-rasterized RGBA + fg_mask buffers,
+// keyed on (tile_type, palette, flip_h, flip_v). First draw of a variant
+// runs blit_sprite once to fill the entry; every subsequent draw becomes
+// memcpy per row from the entry into the main framebuffer. Cleared on zoom
+// change so the cached pixel size always matches the current tile_px_x/y.
+//
+// Key layout (16 bits):
+//   bits  0..5  tile_type (0..63)
+//   bits  6..13 palette   (full uint8_t)
+//   bit   14    flip_h
+//   bit   15    flip_v
+// 64 K possible keys; in practice ~100-300 unique combos appear.
+// unordered_map fits the actual working set without the 4 MB header
+// overhead of a flat array indexed by key.
+struct TileCacheEntry {
+    std::vector<uint32_t> rgba;  // tile_px_x * tile_px_y BGRA pixels
+    std::vector<uint8_t>  fg;    // matching foreground-mask bytes
+    int w = 0;
+    int h = 0;
+};
+
+static std::unordered_map<uint16_t, TileCacheEntry> g_tile_cache;
+
+static inline uint16_t tile_cache_key(uint8_t tile_type, uint8_t palette,
+                                      bool flip_h, bool flip_v) {
+    return static_cast<uint16_t>(
+        (tile_type & 0x3f) |
+        (static_cast<uint16_t>(palette) << 6) |
+        (flip_h ? 0x4000 : 0) |
+        (flip_v ? 0x8000 : 0));
+}
+
+static void tile_cache_clear() {
+    g_tile_cache.clear();
+}
+
+// Cache entries are pre-rasterized at the current tile_px_x x tile_px_y.
+// Wheel zoom changes scale/zoom_den, which changes tile pixel size, so the
+// cache must be flushed. Called at the top of begin_frame; first call's
+// sentinel (-1, -1) just primes prev_* without clearing anything real.
+static void check_tile_cache_invalidation(int scale, int zoom_den) {
+    static int prev_scale = -1;
+    static int prev_zoom_den = -1;
+    if (scale != prev_scale || zoom_den != prev_zoom_den) {
+        tile_cache_clear();
+        prev_scale    = scale;
+        prev_zoom_den = zoom_den;
+    }
+}
+
 void PixelRenderer::apply_pending_resize() {
     if (f.pending_w > 0 && f.pending_h > 0 &&
         (f.pending_w != f.width || f.pending_h != f.height)) {
@@ -37,7 +90,6 @@ void PixelRenderer::apply_pending_resize() {
         f.height = f.pending_h;
         buf.assign((size_t)f.width * f.height, 0);
         fg_mask.assign((size_t)f.width * f.height, 0);
-        f.buf = buf.data();
     }
     f.pending_w = 0;
     f.pending_h = 0;
@@ -107,15 +159,21 @@ void PixelRenderer::blit_sprite_at_native(int cell_x, int cell_y,
 // Box-filtered sprite blit — averages atlas pixels under each screen
 // pixel for zoom-out. fg[] marks BBC logical colours 8..15: tiles set
 // fg_mask, objects skip pixels where fg_mask is set (&1066 BMI).
-void PixelRenderer::blit_sprite(int dst_x, int dst_y, uint8_t sprite_id,
-                                bool flip_h, bool flip_v,
-                                const uint32_t lut[4],
-                                const uint8_t fg[4], bool is_tile,
-                                uint8_t shrink_shift_x,
-                                uint8_t shrink_shift_y) {
+// Destination-agnostic blit: writes to (dst_rgba, dst_fg) with row stride
+// dst_stride and a clip box (dst_x..dst_x+w_screen) x (dst_y..dst_max_y).
+// Used both by the live framebuffer path (PixelRenderer::blit_sprite below
+// passes buf/fg_mask/f.width/hud_y_px) and the tile-cache fill path (passes
+// a per-tile-cell scratch buffer of size tile_px_x x tile_px_y).
+static void blit_sprite_impl(uint32_t* dst_rgba, uint8_t* dst_fg,
+                             int dst_stride, int dst_max_y,
+                             int dst_x, int dst_y,
+                             uint8_t sprite_id, bool flip_h, bool flip_v,
+                             const uint32_t lut[4], const uint8_t fg[4],
+                             bool is_tile,
+                             uint8_t shrink_shift_x, uint8_t shrink_shift_y,
+                             int scale, int zoom_den) {
     if (sprite_id > 0x80) return;
     const SpriteAtlasEntry& e = sprite_atlas[sprite_id];
-    const int hud_y = hud_y_px();
 
     flip_h ^= (e.intrinsic_flip & 1) != 0;
     flip_v ^= (e.intrinsic_flip & 2) != 0;
@@ -163,17 +221,17 @@ void PixelRenderer::blit_sprite(int dst_x, int dst_y, uint8_t sprite_id,
 
     for (int py = 0; py < h_screen; ++py) {
         int ppy = dst_y + py;
-        if (ppy < 0 || ppy >= hud_y) continue;
+        if (ppy < 0 || ppy >= dst_max_y) continue;
         int ay0 = py * sy_num / sy_den + src_off_y;
         int ay1 = (py + 1) * sy_num / sy_den + src_off_y;
         if (ay1 <= ay0) ay1 = ay0 + 1;
         if (ay1 > e.h) ay1 = e.h;
         if (ay0 >= e.h) ay0 = e.h - 1;
-        uint32_t* row      = &buf[(size_t)ppy * f.width];
-        uint8_t*  fg_row   = &fg_mask[(size_t)ppy * f.width];
+        uint32_t* row    = dst_rgba + (size_t)ppy * dst_stride;
+        uint8_t*  fg_row = dst_fg   + (size_t)ppy * dst_stride;
         for (int px = 0; px < w_screen; ++px) {
             int ppx = dst_x + px;
-            if (ppx < 0 || ppx >= f.width) continue;
+            if (ppx < 0 || ppx >= dst_stride) continue;
 
             // Object-plot skip: 6502 BMI past pre-existing foreground
             // at &1066. Only applies for object blits with an fg lookup.
@@ -233,6 +291,17 @@ void PixelRenderer::blit_sprite(int dst_x, int dst_y, uint8_t sprite_id,
             if (is_tile && any_fg) fg_row[ppx] = 1;
         }
     }
+}
+
+void PixelRenderer::blit_sprite(int dst_x, int dst_y, uint8_t sprite_id,
+                                bool flip_h, bool flip_v,
+                                const uint32_t lut[4],
+                                const uint8_t fg[4], bool is_tile,
+                                uint8_t shrink_shift_x,
+                                uint8_t shrink_shift_y) {
+    blit_sprite_impl(buf.data(), fg_mask.data(), f.width, hud_y_px(),
+                     dst_x, dst_y, sprite_id, flip_h, flip_v, lut, fg, is_tile,
+                     shrink_shift_x, shrink_shift_y, scale, zoom_den);
 }
 
 void PixelRenderer::draw_glyph(int x, int y, char ch,
@@ -419,41 +488,27 @@ const uint8_t TILE_SPRITE_ID[64] = {
 
 PixelRenderer::PixelRenderer()
     : buf(INITIAL_W * INITIAL_H, 0),
-      fg_mask(INITIAL_W * INITIAL_H, 0),
-      f{.title = "Exile",
-        .width = INITIAL_W,
-        .height = INITIAL_H,
-        .buf = nullptr} {
-    f.buf = buf.data();
-    std::memset(f.keys, 0, sizeof(f.keys));
-    f.mod = 0; f.x = 0; f.y = 0; f.mouse = 0;
-    f.wheel = 0; f.pending_w = 0; f.pending_h = 0;
+      fg_mask(INITIAL_W * INITIAL_H, 0) {
+    f.width  = INITIAL_W;
+    f.height = INITIAL_H;
 }
 PixelRenderer::~PixelRenderer() { shutdown(); }
 
+// Window creation/destruction now owned by sokol_app (sapp_run in main.cpp).
+// PixelRenderer just tracks initialised state for shutdown ordering.
 bool PixelRenderer::init() {
     if (initialized) return true;
-    if (fenster_open(&f) != 0) return false;
-    // fenster.h's WNDCLASSEX leaves hCursor = NULL, which makes Windows
-    // fall back to the "busy" cursor whenever the OS decides this is a
-    // fresh app. Force the arrow on our window class so the pointer is
-    // normal from the first frame.
-    SetClassLongPtrA(f.hwnd, GCLP_HCURSOR,
-                     reinterpret_cast<LONG_PTR>(LoadCursorA(NULL, IDC_ARROW)));
     initialized = true;
     return true;
 }
 
 void PixelRenderer::shutdown() {
-    if (initialized) {
-        fenster_close(&f);
-        initialized = false;
-    }
+    initialized = false;
 }
 
 void PixelRenderer::begin_frame() {
-    // Pump pending Windows messages first so mouse / size state is current.
-    if (fenster_loop(&f) != 0) should_close = true;
+    // sokol_app drives the window/event pump; event_cb populates `f`
+    // before frame_cb invokes this. Just reset per-frame scan state.
     events_processed = true;
     key_scan_idx = 0;
 
@@ -462,17 +517,6 @@ void PixelRenderer::begin_frame() {
     // "curr" so this frame's sweep can record which keys are still held.
     saves_keys_held_prev_ = saves_keys_held_curr_;
     saves_keys_held_curr_ = 0;
-
-#if defined(_WIN32)
-    // Numpad '*'/'-' deliver the same ASCII char as the regular keys.
-    // Suppress the char path when VK_MULTIPLY / VK_SUBTRACT are held so
-    // the synthetic KEYPAD_STAR / KEYPAD_MINUS slots are the only
-    // signal — otherwise the same press would also trigger the editor's
-    // tert_data_dec binding on '-' (regular '*' is unbound but cleared
-    // for symmetry).
-    if (GetAsyncKeyState(VK_MULTIPLY) & 0x8000) f.keys['*'] = 0;
-    if (GetAsyncKeyState(VK_SUBTRACT) & 0x8000) f.keys['-'] = 0;
-#endif
 
     apply_pending_resize();
 
@@ -522,6 +566,10 @@ void PixelRenderer::begin_frame() {
 
     process_mouse();
 
+    // Cache invalidation runs AFTER the wheel-zoom block above so a same-
+    // frame zoom flushes immediately and render_tile sees fresh tc.w/tc.h.
+    check_tile_cache_invalidation(scale, zoom_den);
+
     std::fill(buf.begin(), buf.end(), clear_colour_);
     std::fill(fg_mask.begin(), fg_mask.end(), 0u);
 }
@@ -532,8 +580,101 @@ void PixelRenderer::end_frame() {
     pr_debug::render_events_panel(*this);
     pr_debug::render_grid_panel(*this);
     pr_debug::render_saves_panel(*this);
-    InvalidateRect(f.hwnd, NULL, FALSE);
-    UpdateWindow(f.hwnd);
+    // Present is owned by main.cpp's sokol frame_cb (tasks #6/#7 upload `buf`
+    // as a texture and draw a full-screen quad). Nothing to do here.
+}
+
+// Translate a sokol_app keycode to PixelRenderer's f.keys[] index. ASCII for
+// letters/digits/symbols; fenster-compat slots for TAB/ENTER/ESC/arrows
+// (9/10/27/17-20); synthetic >256 slots for L/R-distinct modifiers and
+// Numpad keys that need to be distinguishable from their ASCII twins.
+// Returns -1 for keys we don't track (function keys, NumLock, etc.).
+static int sokol_keycode_to_index(sapp_keycode code) {
+    if (code >= SAPP_KEYCODE_A && code <= SAPP_KEYCODE_Z) {
+        return 'A' + (code - SAPP_KEYCODE_A);
+    }
+    if (code >= SAPP_KEYCODE_0 && code <= SAPP_KEYCODE_9) {
+        return '0' + (code - SAPP_KEYCODE_0);
+    }
+    switch (code) {
+        case SAPP_KEYCODE_SPACE:         return ' ';
+        case SAPP_KEYCODE_TAB:           return 9;
+        case SAPP_KEYCODE_ENTER:         return 10;
+        case SAPP_KEYCODE_ESCAPE:        return 27;
+        case SAPP_KEYCODE_BACKSPACE:     return 8;
+        case SAPP_KEYCODE_UP:            return 17;
+        case SAPP_KEYCODE_DOWN:          return 18;
+        case SAPP_KEYCODE_RIGHT:         return 19;
+        case SAPP_KEYCODE_LEFT:          return 20;
+        case SAPP_KEYCODE_COMMA:         return ',';
+        case SAPP_KEYCODE_PERIOD:        return '.';
+        case SAPP_KEYCODE_SEMICOLON:     return ';';
+        case SAPP_KEYCODE_APOSTROPHE:    return '\'';
+        case SAPP_KEYCODE_BACKSLASH:     return '\\';
+        case SAPP_KEYCODE_LEFT_BRACKET:  return '[';
+        case SAPP_KEYCODE_RIGHT_BRACKET: return ']';
+        case SAPP_KEYCODE_MINUS:         return '-';
+        case SAPP_KEYCODE_EQUAL:         return '=';
+        case SAPP_KEYCODE_SLASH:         return '/';
+        case SAPP_KEYCODE_GRAVE_ACCENT:  return '`';
+        case SAPP_KEYCODE_LEFT_CONTROL:  return 256;
+        case SAPP_KEYCODE_RIGHT_CONTROL: return 257;
+        case SAPP_KEYCODE_LEFT_SHIFT:    return 262;
+        case SAPP_KEYCODE_KP_MULTIPLY:   return 263;
+        case SAPP_KEYCODE_KP_SUBTRACT:   return 264;
+        default:                         return -1;
+    }
+}
+
+void PixelRenderer::handle_event(const sapp_event* ev) {
+    // Update fenster-compat modifier byte on every event.
+    f.mod = 0;
+    if (ev->modifiers & SAPP_MODIFIER_CTRL)  f.mod |= 1;
+    if (ev->modifiers & SAPP_MODIFIER_SHIFT) f.mod |= 2;
+    if (ev->modifiers & SAPP_MODIFIER_ALT)   f.mod |= 4;
+    if (ev->modifiers & SAPP_MODIFIER_SUPER) f.mod |= 8;
+
+    switch (ev->type) {
+        case SAPP_EVENTTYPE_KEY_DOWN:
+        case SAPP_EVENTTYPE_KEY_UP: {
+            int idx = sokol_keycode_to_index(ev->key_code);
+            if (idx >= 0 && idx < (int)sizeof(f.keys)) {
+                f.keys[idx] = (ev->type == SAPP_EVENTTYPE_KEY_DOWN) ? 1 : 0;
+            }
+            break;
+        }
+        case SAPP_EVENTTYPE_MOUSE_DOWN:
+        case SAPP_EVENTTYPE_MOUSE_UP: {
+            int bit = 0;
+            if (ev->mouse_button == SAPP_MOUSEBUTTON_LEFT)   bit = 1;
+            else if (ev->mouse_button == SAPP_MOUSEBUTTON_RIGHT)  bit = 2;
+            else if (ev->mouse_button == SAPP_MOUSEBUTTON_MIDDLE) bit = 4;
+            if (ev->type == SAPP_EVENTTYPE_MOUSE_DOWN) f.mouse |=  bit;
+            else                                       f.mouse &= ~bit;
+            f.x = (int)ev->mouse_x;
+            f.y = (int)ev->mouse_y;
+            break;
+        }
+        case SAPP_EVENTTYPE_MOUSE_MOVE:
+            f.x = (int)ev->mouse_x;
+            f.y = (int)ev->mouse_y;
+            break;
+        case SAPP_EVENTTYPE_MOUSE_SCROLL:
+            // Accumulator drained by begin_frame's wheel zoom path. sokol
+            // reports float deltas; collapse to signed integer notches.
+            if (ev->scroll_y >  0.0f) f.wheel += 1;
+            else if (ev->scroll_y <  0.0f) f.wheel -= 1;
+            break;
+        case SAPP_EVENTTYPE_RESIZED:
+            f.pending_w = ev->window_width;
+            f.pending_h = ev->window_height;
+            break;
+        case SAPP_EVENTTYPE_QUIT_REQUESTED:
+            should_close = true;
+            break;
+        default:
+            break;
+    }
 }
 
 void PixelRenderer::set_viewport(uint8_t center_x, uint8_t center_y,
@@ -554,28 +695,80 @@ void PixelRenderer::render_tile(uint8_t world_x, uint8_t world_y,
     // Bit 7 = &04ab obstruction-at-bottom flag (collision only, not
     // rendering). Rendering flip = landscape tile_flip XOR sprite flip.
     if (entry != 0xff && sid <= 0x80) {
-        // Compute sub-tile offset so the sprite aligns to the correct
-        // half of the cell when flipped — matches &2420-&243f.
-        const SpriteAtlasEntry& e = sprite_atlas[sid];
-        int base_y_atlas = (tiles_y_offset_and_pattern[info.tile_type & 0x3f] >> 4) * 2;
+        // Cache key — (tile_type, palette, flip_h, flip_v). All other
+        // per-tile parameters (sprite_id, atlas offsets) are derived from
+        // tile_type via TILE_SPRITE_ID + tiles_y_offset_and_pattern, so
+        // the same key produces identical pixels. Cache cleared on zoom
+        // change (see begin_frame's wheel-zoom path).
+        const uint16_t key = tile_cache_key(info.tile_type, info.palette,
+                                            info.flip_h, info.flip_v);
+        auto& tc = g_tile_cache[key];
+        if (tc.h == 0) {
+            // Miss: render the variant once into a tile-cell-sized scratch.
+            // Compute sub-tile offset so the sprite aligns to the correct
+            // half of the cell when flipped — matches &2420-&243f.
+            const SpriteAtlasEntry& e = sprite_atlas[sid];
+            int base_y_atlas =
+                (tiles_y_offset_and_pattern[info.tile_type & 0x3f] >> 4) * 2;
+            int y_off_atlas = info.flip_v ? (32 - base_y_atlas - e.h)
+                                          : base_y_atlas;
+            int x_off_atlas = info.flip_h ? (16 - e.w) : 0;
+            int x_off_px = x_off_atlas * PX_SCALE_X * scale / zoom_den;
+            int y_off_px = y_off_atlas * PX_SCALE_Y * scale / zoom_den;
 
-        int y_off_atlas = info.flip_v
-            ? (32 - base_y_atlas - e.h)
-            : base_y_atlas;
-        int x_off_atlas = info.flip_h ? (16 - e.w) : 0;
+            int tw = tile_px_x();
+            int th = tile_px_y();
+            tc.w = tw;
+            tc.h = th;
+            tc.rgba.assign((size_t)tw * th, 0u);
+            tc.fg.assign((size_t)tw * th, 0);
 
-        int x_off_px = x_off_atlas * PX_SCALE_X * scale / zoom_den;
-        int y_off_px = y_off_atlas * PX_SCALE_Y * scale / zoom_den;
+            // Tile fg per-slot — full 16-colour range; cf above blit path.
+            uint32_t lut[4];
+            uint8_t  fg[4];
+            resolve_palette_with_fg(info.palette, /*is_tile=*/true, lut, fg);
+            blit_sprite_impl(tc.rgba.data(), tc.fg.data(), tw, th,
+                             x_off_px, y_off_px,
+                             sid, info.flip_h, info.flip_v, lut, fg,
+                             /*is_tile=*/true, 0, 0, scale, zoom_den);
+        }
 
-        // Tiles draw with the foreground mask (&ff) — full 16-colour
-        // range. `fg` per-slot tells blit_sprite which pixels should
-        // mark the foreground buffer (colours 8..15).
-        uint32_t lut[4];
-        uint8_t  fg[4];
-        resolve_palette_with_fg(info.palette, /*is_tile=*/true, lut, fg);
-        blit_sprite(sx + x_off_px, sy + y_off_px, sid,
-                    info.flip_h, info.flip_v, lut, fg,
-                    /*is_tile=*/true);
+        // Copy the cached tile bitmap into the main framebuffer at (sx, sy).
+        // RGBA: per-pixel skip-if-zero so cached transparent pixels don't
+        // erase the waterline raster underneath. fg_mask: per-pixel OR so we
+        // match the original blit's ADD-ONLY semantics (the original only
+        // ever WRITES fg=1, never resets to 0). Bulk memcpy was tried and
+        // empirically loses fg=1s elsewhere in the frame — bullets were
+        // hidden because the object-pass's fg_mask read returned non-zero
+        // at positions where OR keeps it set.
+        const int tw = tc.w;
+        const int th = tc.h;
+        const int fw = f.width;
+        const int hud_y = hud_y_px();
+        for (int r = 0; r < th; ++r) {
+            int dy = sy + r;
+            if (dy < 0 || dy >= hud_y) continue;
+            int dx_start = sx < 0 ? 0 : sx;
+            int dx_end   = sx + tw;
+            if (dx_end > fw) dx_end = fw;
+            if (dx_end <= dx_start) continue;
+            int sx_start = dx_start - sx;
+            int span = dx_end - dx_start;
+
+            uint32_t* dst_row =
+                buf.data() + (size_t)dy * fw + dx_start;
+            const uint32_t* src_row =
+                tc.rgba.data() + (size_t)r * tw + sx_start;
+            uint8_t* dst_fg_row =
+                fg_mask.data() + (size_t)dy * fw + dx_start;
+            const uint8_t* src_fg_row =
+                tc.fg.data() + (size_t)r * tw + sx_start;
+
+            for (int i = 0; i < span; ++i) {
+                if (src_row[i]) dst_row[i] = src_row[i];
+                dst_fg_row[i] |= src_fg_row[i];
+            }
+        }
     }
 
     pr_debug::render_tile_overlay(*this, sx, sy, world_x, world_y, info);
@@ -874,22 +1067,25 @@ static bool handle_saves_key(PixelRenderer& r, int key) {
 }
 
 int PixelRenderer::get_key() {
-    if (should_close) return InputKey::CLOSE_REQUESTED;
+    // One-shot: must clear before returning, or the while-loop in
+    // Game::step that drains get_key() spins forever and starves the
+    // sokol_app message pump that would otherwise process the quit.
+    if (should_close) {
+        should_close = false;
+        return InputKey::CLOSE_REQUESTED;
+    }
 
-    // Fenster keys 0..256; f.mod bit 0 = ctrl (no L/R distinction, so
-    // we probe OS). Indices 256..262 are synthetic for ctrl + arrows on
-    // Windows — fenster's scancode table overruns 0x14X extended codes
-    // so arrow f.keys[] never get set; macOS/Linux work via 19/20/17/18.
+    // f.keys[0..255]:  ASCII for letter/symbol keys, plus 9=TAB, 10=ENTER,
+    //                  17..20 = UP/DOWN/RIGHT/LEFT, 27=ESCAPE.
+    // f.keys[256..264]: synthetic slots for modifier/arrow/numpad keys that
+    //                  the event handler (sokol_app) populates with the
+    //                  L/R-distinct keycodes — see PixelRenderer::handle_event.
     while (key_scan_idx < 265) {
         int i = key_scan_idx++;
+        if (!f.keys[i]) continue;
 
-        // Decode this scancode to an InputKey, then offer it to the saves
-        // panel before returning it to Game. Eaten keys fall through to
-        // `continue` so the panel can absorb arrows without the game
-        // also seeing them (e.g. arrow keys would otherwise jet-thrust).
         int decoded = InputKey::NONE;
         if (i < 256) {
-            if (!f.keys[i]) continue;
             switch (i) {
                 case 9:  decoded = InputKey::TAB; break;
                 case 17: decoded = InputKey::UP; break;
@@ -903,57 +1099,20 @@ int PixelRenderer::get_key() {
                     else if (i >= 0x20 && i <= 0x80) decoded = i;
                     break;
             }
-            if (decoded == InputKey::NONE) continue;
-            if (handle_saves_key(*this, decoded)) continue;
-            return decoded;
+        } else {
+            switch (i) {
+                case 256: decoded = InputKey::CTRL_LEFT; break;
+                case 257: decoded = InputKey::CTRL_RIGHT; break;
+                case 258: decoded = InputKey::LEFT; break;
+                case 259: decoded = InputKey::RIGHT; break;
+                case 260: decoded = InputKey::UP; break;
+                case 261: decoded = InputKey::DOWN; break;
+                case 262: decoded = InputKey::SHIFT_LEFT; break;
+                case 263: decoded = InputKey::KEYPAD_STAR; break;
+                case 264: decoded = InputKey::KEYPAD_MINUS; break;
+                default: break;
+            }
         }
-
-        // Synthetic slots — poll OS for keys fenster's table misses on Windows.
-#if defined(_WIN32)
-        switch (i) {
-            case 256:
-                if (GetAsyncKeyState(VK_LCONTROL) & 0x8000)
-                    decoded = InputKey::CTRL_LEFT;
-                break;
-            case 257:
-                if (GetAsyncKeyState(VK_RCONTROL) & 0x8000)
-                    decoded = InputKey::CTRL_RIGHT;
-                break;
-            case 258:
-                if (GetAsyncKeyState(VK_LEFT)  & 0x8000)
-                    decoded = InputKey::LEFT;
-                break;
-            case 259:
-                if (GetAsyncKeyState(VK_RIGHT) & 0x8000)
-                    decoded = InputKey::RIGHT;
-                break;
-            case 260:
-                if (GetAsyncKeyState(VK_UP)    & 0x8000)
-                    decoded = InputKey::UP;
-                break;
-            case 261:
-                if (GetAsyncKeyState(VK_DOWN)  & 0x8000)
-                    decoded = InputKey::DOWN;
-                break;
-            case 262:
-                // Left Shift surfaces only via the OS poll — fenster's
-                // scancode table doesn't separate LSHIFT from RSHIFT.
-                if (GetAsyncKeyState(VK_LSHIFT) & 0x8000)
-                    decoded = InputKey::SHIFT_LEFT;
-                break;
-            case 263:
-                if (GetAsyncKeyState(VK_MULTIPLY) & 0x8000)
-                    decoded = InputKey::KEYPAD_STAR;
-                break;
-            case 264:
-                if (GetAsyncKeyState(VK_SUBTRACT) & 0x8000)
-                    decoded = InputKey::KEYPAD_MINUS;
-                break;
-            default: break;
-        }
-#else
-        if (i == 256 && (f.mod & 1)) decoded = InputKey::CTRL_LEFT;
-#endif
         if (decoded == InputKey::NONE) continue;
         if (handle_saves_key(*this, decoded)) continue;
         return decoded;

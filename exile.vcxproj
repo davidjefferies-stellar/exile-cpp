@@ -20,13 +20,13 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>ClangCL</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>ClangCL</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
@@ -116,7 +116,7 @@
     <ClCompile Include="src\rendering\camera.cpp" />
     <ClCompile Include="src\rendering\pixel_renderer.cpp" />
     <ClCompile Include="src\rendering\pixel_renderer_debug.cpp" />
-    <ClCompile Include="src\rendering\fenster_impl.cpp" />
+    <ClCompile Include="src\rendering\sokol_impl.cpp" />
     <ClCompile Include="src\rendering\sprite_atlas.cpp" />
     <ClCompile Include="src\rendering\sprite_data.cpp" />
     <ClCompile Include="src\rendering\palette.cpp" />

@@ -120,7 +120,6 @@
     <ClCompile Include="src\rendering\camera.cpp" />
     <ClCompile Include="src\rendering\pixel_renderer.cpp" />
     <ClCompile Include="src\rendering\pixel_renderer_debug.cpp" />
-    <ClCompile Include="src\rendering\fenster_impl.cpp" />
     <ClCompile Include="src\rendering\sprite_atlas.cpp" />
     <ClCompile Include="src\rendering\sprite_data.cpp" />
     <ClCompile Include="src\rendering\palette.cpp" />

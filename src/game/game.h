@@ -20,10 +20,14 @@ public:
     Game(std::unique_ptr<IRenderer> renderer);
 
     bool init();
-    void run();
+    // One frame plus frame-rate throttle. Called from sokol_app's frame_cb
+    // in main.cpp. Was the body of the old Game::run() while-loop; now a
+    // single iteration so the outer event loop is owned by sokol_app.
+    void step();
+    bool is_running() const { return running_; }
 
-    // One frame of the main loop, no frame-timing sleep. run() is just a
-    // while-loop around tick() with a 50fps budget; tests drive tick()
+    // One frame of the main loop, no frame-timing sleep. step() is just a
+    // wrapper around tick() with the sleep-to-target_fps. Tests drive tick()
     // directly so they can advance N frames without real time elapsing.
     void tick();
 

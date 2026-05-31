@@ -1,29 +1,14 @@
 #pragma once
 
-// Fenster (and the Win32 headers it pulls in) lives in this file
-// because the renderer's data members are stored directly on the
-// class — there's only ever one instance, so the pimpl indirection
-// added more friction than abstraction. Set the leanest Win32 macros
-// before fenster.h is included.
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#ifdef UNICODE
-#undef UNICODE
-#endif
-#ifdef _UNICODE
-#undef _UNICODE
-#endif
-
 #include "rendering/renderer.h"
-
-// fenster.h is header-only and emits its implementation by default.
-// pixel_renderer.h is included from main.cpp, pixel_renderer.cpp, and
-// pixel_renderer_debug.cpp; we need only ONE TU to compile the impl
-// or the linker reports duplicates. Suppress the body on every include
-// of this header — the matching definitions live in fenster_impl.cpp.
-#define FENSTER_HEADER
-#include "fenster.h"
+#include "rendering/window_state.h"
 #include <cstdint>
+
+// sokol_app event type, declared via forward struct to avoid pulling
+// sokol_app.h's win32 surface into every TU that includes this header.
+// The full definition is included by pixel_renderer.cpp where handle_event
+// is implemented, and by main.cpp where the callbacks live.
+struct sapp_event;
 #include <cstring>
 #include <string>
 #include <vector>
@@ -70,6 +55,11 @@ public:
     void shutdown() override;
     void begin_frame() override;
     void end_frame() override;
+    // sokol_app event dispatch: populates `f` (key state, mouse pos/buttons,
+    // wheel, modifiers, pending resize). Called from the event_cb registered
+    // in main.cpp's sapp_desc. Definition is in pixel_renderer.cpp where
+    // sokol_app.h is included.
+    void handle_event(const sapp_event* ev);
     void set_clear_colour(uint32_t rgb) override { clear_colour_ = rgb; }
     void set_viewport(uint8_t center_x, uint8_t center_y,
                       uint8_t frac_x = 0, uint8_t frac_y = 0) override;
@@ -167,7 +157,7 @@ public:
     // Background-flash colour for begin_frame's clear pass. Driven by
     // Game::update_background_flash (port of &1f97). Default 0 = black.
     uint32_t clear_colour_ = 0;
-    struct fenster f;
+    WinState f;
     bool initialized = false;
     uint8_t vp_center_x = 0;
     uint8_t vp_center_y = 0;
@@ -283,6 +273,10 @@ public:
     // Inline accessors used hot-path enough to be worth the header.
     int win_w() const { return f.width; }
     int win_h() const { return f.height; }
+    // Public read-only access to the CPU framebuffer so the sokol_gfx
+    // textured-quad present (in main.cpp's frame_cb) can upload it. Stride
+    // is `win_w()` uint32_t pixels.
+    const uint32_t* framebuffer() const { return buf.data(); }
     int tile_px_x() const { return (TILE_PX_BASE_X * scale) / zoom_den; }
     int tile_px_y() const { return (TILE_PX_BASE_Y * scale) / zoom_den; }
     int vp_w_tiles() const { return win_w() / tile_px_x() + 2; }
