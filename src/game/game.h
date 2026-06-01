@@ -502,6 +502,12 @@ private:
     // sub-tile fraction by a random ±0x40 in x/y.
     uint8_t test_shake_frames_ = 0;
 
+    // Port-only: 16-bit camera Y target (whole<<8 | fraction). The
+    // viewport tracks this with a dead-zone instead of following the
+    // raw player y, so walking's ~15-frac gravity-vs-bounce oscillation
+    // doesn't make the camera bob a BBC row each step. -1 = uninit.
+    int camera_y_target_ = -1;
+
     // Port-only smooth flood — runs alongside the 6502 integrator so
     // the visible waterline moves at 1 tile / second. The 6502's
     // integrator advances g_y[1] by ~1 tile every 128 frames; we use

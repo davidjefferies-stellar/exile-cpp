@@ -137,6 +137,31 @@ void Game::render() {
                                  player_obj.velocity_y);
     uint8_t vp_fx = player_obj.x.fraction;
     uint8_t vp_fy = player_obj.y.fraction;
+
+    // Port-only Y dead-zone. Walking on flat ground oscillates pl.y by
+    // ~15 frac (gravity vs floor bounce); without a dead-zone the
+    // camera bobs 1 BBC row each step. Hold a 16-bit "camera_y_target"
+    // and only update it when the player moves >kDeadZone frac from it,
+    // then carry the player along at the band's edge.
+    {
+        constexpr int kDeadZone = 0x10; // 16 frac = 2 BBC rows
+        int player_y_16 = int(player_obj.y.whole) * 256
+                        + int(player_obj.y.fraction);
+        if (camera_y_target_ < 0) camera_y_target_ = player_y_16;
+        int delta = player_y_16 - camera_y_target_;
+        if (delta >  kDeadZone) camera_y_target_ = player_y_16 - kDeadZone;
+        if (delta < -kDeadZone) camera_y_target_ = player_y_16 + kDeadZone;
+        // Override the just-set camera centre with the dead-zone target.
+        // Map-extent clamp here so the dead-zone can't reveal wrap rows.
+        int min_y = vp_h_half;
+        int max_y = 0xff00 - vp_h_half * 256 + 0xff;
+        if (camera_y_target_ < min_y * 256) camera_y_target_ = min_y * 256;
+        if (camera_y_target_ > max_y)        camera_y_target_ = max_y;
+        camera_.center_y =
+            static_cast<uint8_t>((camera_y_target_ >> 8) & 0xff);
+        vp_fy = static_cast<uint8_t>(camera_y_target_ & 0xff);
+    }
+
     // Earthquake test-event shake (port-only). Perturb the fractional
     // viewport centre with each call; when test_shake_frames_ hits 0
     // the perturbation stops and the camera returns to player.

@@ -376,8 +376,6 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
         // (&3201) uses a SEPARATE weight from npc_walking_types_weight_
         // table &3970[X], not &38. For player X=0 -> weight 0, i.e. no
         // pre-cap division (the LSR+DEY/BPL+ROL collapses to a no-op).
-        // Earlier port erroneously used &38's weight=3 here, dividing the
-        // raw accel magnitude by 8 and stretching the run-up to top speed.
         constexpr int walking_speed = 0x1f;
         constexpr int max_accel     = 0x09;
         int target_vx = 0;
@@ -418,6 +416,13 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
         NPC::vector_from_magnitude_and_angle(magnitude, angle, out_vx, out_vy);
         accel_x = out_vx;
         accel_y = out_vy;
+        // Port-only: on flat ground the &3b25 0x10/0x6f angle bakes in a
+        // +y "push into the floor" that's sub-pixel on the BBC but bobs
+        // the camera by 1 BBC row in our finer viewport. Drop the +y
+        // component when the supporting tile is level — gravity alone is
+        // enough to keep the player flush. Slopes still need it for the
+        // tangent component, so only clear when tcA == 0.
+        if (player_tile_collision_angle_ == 0) accel_y = 0;
 
         // &3b55/&3b58 dampen_velocity_y twice — vy *= 7/8 squared. Keeps
         // slope transitions / post-jump walks from carrying stray vy.
