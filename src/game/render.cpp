@@ -112,14 +112,18 @@ void Game::render() {
     if (panned) {
         camera_.apply_pan(pan_dx, pan_dy);
     }
-    // Re-derive view center (player pos + pan). Clamp to map extents so
-    // map-mode panning can't scroll past the 256×256 world and show
-    // wrapped-around territory at the edges.
+    // Re-derive view centre (player pos + pan) WITHOUT clamping — the
+    // uint8_t cast lets center_x/y wrap at the map edges so right-drag
+    // panning is never blocked. Accepts the trade-off that you can see
+    // wrapped territory if you scroll far past the bounds.
     const Object& player_obj = object_mgr_.player();
     int vp_w_half = renderer_->viewport_width_tiles() / 2;
     int vp_h_half = renderer_->viewport_height_tiles() / 2;
-    camera_.follow_player(player_obj.x.whole, player_obj.y.whole,
-                          vp_w_half, vp_h_half);
+    camera_.center_x = static_cast<uint8_t>(
+        int(player_obj.x.whole) + camera_.pan_x);
+    camera_.center_y = static_cast<uint8_t>(
+        int(player_obj.y.whole) + camera_.pan_y);
+    (void)vp_w_half;
 
     // Log the panned-to map centre so it can be reused as a [player]
     // start_x/start_y. Only on actual pan steps (not every frame); the
@@ -142,8 +146,10 @@ void Game::render() {
     // ~15 frac (gravity vs floor bounce); without a dead-zone the
     // camera bobs 1 BBC row each step. Hold a 16-bit "camera_y_target"
     // and only update it when the player moves >kDeadZone frac from it,
-    // then carry the player along at the band's edge.
-    {
+    // then carry the player along at the band's edge. Skipped while the
+    // user is right-drag-panning — the pan position drives the camera
+    // directly and the dead-zone would otherwise yank it back.
+    if (camera_.pan_x == 0 && camera_.pan_y == 0) {
         constexpr int kDeadZone = 0x10; // 16 frac = 2 BBC rows
         int player_y_16 = int(player_obj.y.whole) * 256
                         + int(player_obj.y.fraction);
@@ -151,16 +157,16 @@ void Game::render() {
         int delta = player_y_16 - camera_y_target_;
         if (delta >  kDeadZone) camera_y_target_ = player_y_16 - kDeadZone;
         if (delta < -kDeadZone) camera_y_target_ = player_y_16 + kDeadZone;
-        // Override the just-set camera centre with the dead-zone target.
-        // Map-extent clamp here so the dead-zone can't reveal wrap rows.
-        int min_y = vp_h_half;
-        int max_y = 0xff00 - vp_h_half * 256 + 0xff;
-        if (camera_y_target_ < min_y * 256) camera_y_target_ = min_y * 256;
-        if (camera_y_target_ > max_y)        camera_y_target_ = max_y;
         camera_.center_y =
             static_cast<uint8_t>((camera_y_target_ >> 8) & 0xff);
         vp_fy = static_cast<uint8_t>(camera_y_target_ & 0xff);
+    } else {
+        // Re-sync the dead-zone target so it doesn't yank the camera
+        // back when panning stops.
+        camera_y_target_ = int(player_obj.y.whole) * 256
+                         + int(player_obj.y.fraction);
     }
+    (void)vp_h_half;
 
     // Earthquake test-event shake (port-only). Perturb the fractional
     // viewport centre with each call; when test_shake_frames_ hits 0

@@ -63,6 +63,13 @@ void explode_object_with_duration(Object& obj, uint8_t duration,
     }
     obj.tertiary_data_offset = duration;
     obj.type = ObjectType::EXPLOSION;
+    // Port-only: zero velocity so the explosion stays at the impact
+    // point. The shared object-loop physics would otherwise advance the
+    // freshly-mutated EXPLOSION by the projectile's inherited velocity
+    // BEFORE update_explosion's radial push runs — flipping dfx and
+    // pulling the player back toward the projectile's firer.
+    obj.velocity_x = 0;
+    obj.velocity_y = 0;
     // &40e8 global explosion_timer (screen flash) not wired to renderer.
 }
 

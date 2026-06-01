@@ -139,6 +139,13 @@ struct StartupConfig {
     // glance whether the 2x acceleration path is engaged. Default false.
     bool jetpack_boost_tint = false;
 
+    // [debug] jsbeeb_position_only — when true, J pushes ONLY the
+    // player's position (x.whole / x.fraction / y.whole / y.fraction)
+    // to jsbeeb instead of the full world-state snapshot. Useful while
+    // tracking down per-object state divergences between the port and
+    // the BBC. Default false (full snapshot).
+    bool jsbeeb_position_only = false;
+
     // [debug] profile — when true, time each tick phase (input, player,
     // objects, events, particles, render + render sub-phases) and write a
     // per-second summary to exile-debug.log. Needs [logs] enabled = true

@@ -122,6 +122,7 @@ constexpr BoolEntry kBools[] = {
     {"debug",     "grenade_chain",               &StartupConfig::grenade_chain},
     {"debug",     "icer_drop",                   &StartupConfig::icer_drop},
     {"debug",     "jetpack_boost_tint",          &StartupConfig::jetpack_boost_tint},
+    {"debug",     "jsbeeb_position_only",        &StartupConfig::jsbeeb_position_only},
     {"debug",     "profile",                     &StartupConfig::profile},
     {"debug",     "show_fps",                    &StartupConfig::show_fps},
     {"debug",     "npc_firing_enabled",          &StartupConfig::npc_firing_enabled},

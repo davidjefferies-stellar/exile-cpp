@@ -96,6 +96,7 @@ bool Game::init() {
     npc_firing_enabled_ = cfg.npc_firing_enabled;
     show_fps_     = cfg.show_fps;
     jetpack_boost_tint_ = cfg.jetpack_boost_tint;
+    jsbeeb_position_only_ = cfg.jsbeeb_position_only;
     profiler_.set_enabled(cfg.profile);
     target_fps_   = cfg.target_fps;
     Audio::set_logic_rate(target_fps_);
@@ -1202,6 +1203,18 @@ void Game::handle_remembering_position(Object& player) {
 // fires jsbeeb runs free — we don't read keys back.
 void Game::push_jsbeeb_snapshot() {
     std::vector<JsbeebBridge::Write> writes;
+
+    // [debug] jsbeeb_position_only — push only the four player-position
+    // bytes and skip the rest of the world-state mirror below.
+    if (jsbeeb_position_only_) {
+        const Object& player = object_mgr_.object(0);
+        writes.push_back({ 0x0880, player.x.fraction });
+        writes.push_back({ 0x0891, player.x.whole });
+        writes.push_back({ 0x08a3, player.y.fraction });
+        writes.push_back({ 0x08b4, player.y.whole });
+        JsbeebBridge::poke(writes);
+        return;
+    }
 
     // 16 primary slots × 14 fields. Loop hard-capped at 16: our primary_
     // is 64 wide but the BBC has only 16 slots' worth of RAM tables.

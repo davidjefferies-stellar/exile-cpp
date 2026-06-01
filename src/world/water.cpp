@@ -1,5 +1,6 @@
 #include "world/water.h"
 #include "world/tile_data.h"
+#include "world/tertiary.h"
 #include "objects/object_data.h"
 #include "rendering/sprite_atlas.h"
 #include "core/types.h"
@@ -96,9 +97,14 @@ uint8_t get_waterline_y_fraction(uint8_t x) {
 
 bool is_underwater(const Landscape& landscape, uint8_t x, uint8_t y) {
     // 6502 at &2f03-&2f39 checks the tile (TileType::WATER) first for
-    // upper-world ponds, then falls back to the global waterline.
-    uint8_t tile = landscape.get_tile(x, y);
-    if ((tile & TileFlip::TYPE_MASK) == static_cast<uint8_t>(TileType::WATER)) {
+    // upper-world ponds, then falls back to the global waterline. The
+    // 6502's tile_update_routine resolves tertiary entries before the
+    // water-tile check, so we go through resolve_tile_with_tertiary too —
+    // a raw SPACE_WITH_OBJECT_FROM_TYPE cell can resolve to WATER via its
+    // tertiary entry (wind.cpp does the same).
+    ResolvedTile r = resolve_tile_with_tertiary(landscape, x, y);
+    if ((r.tile_and_flip & TileFlip::TYPE_MASK) ==
+            static_cast<uint8_t>(TileType::WATER)) {
         return true;
     }
     return y >= get_waterline_y(x);

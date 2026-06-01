@@ -163,6 +163,11 @@ private:
     // particle emit at player_actions.cpp's add_jetpack_thrust_particles.
     bool   jetpack_boost_tint_ = false;
 
+    // [debug] jsbeeb_position_only — when true, the J key only mirrors
+    // the player's (x.whole, x.fraction, y.whole, y.fraction) to jsbeeb,
+    // skipping the rest of the per-object / inventory / RNG snapshot.
+    bool   jsbeeb_position_only_ = false;
+
     // [debug] target_fps — locked logic + render tick rate. 25 = BBC
     // original speed; 50/75/100 fast-forward. Audio sample count is
     // realigned via Audio::set_logic_rate in Game::init.
