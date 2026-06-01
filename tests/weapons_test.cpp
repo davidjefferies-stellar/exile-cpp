@@ -24,14 +24,22 @@
 namespace {
 
 // Stand the player on the upper-world surface and face them right.
-// Tick a generous 60 frames after init so the spawn fall + landing
-// resolve before we start poking velocities. Without this the very
-// first bullet inherits whatever residual velocity the player still
-// has from falling toward the ground.
+// Pin position to the BBC default spawn (&9b, &3b) so the test is
+// independent of exile.ini's debug start_x/start_y — CI ships an ini
+// with start in the lower-world water area, which lands the bullet
+// next to tile geometry it touches/blocks before we can assert.
+// Tick a generous 60 frames after pin so the spawn fall + landing
+// resolve before we start poking velocities.
 void prepare_grounded_player(Game& game) {
     TestHarness h(game);
-    h.tick_n(60);
     Object& p = h.player();
+    p.x.whole = 0x9b;
+    p.x.fraction = 0;
+    p.y.whole = 0x3b;
+    p.y.fraction = 0;
+    p.velocity_x = 0;
+    p.velocity_y = 0;
+    h.tick_n(60);
     p.velocity_x = 0;
     p.velocity_y = 0;
     p.flags &= ~ObjectFlags::FLIP_HORIZONTAL;  // facing right
