@@ -1060,9 +1060,12 @@ static void object_centre_16(const Object& o, int fx, int fy,
 void apply_explosion_radius(ObjectManager& mgr, const Landscape& landscape,
                             const Object& source,
                             int source_slot, uint8_t duration,
-                            std::vector<DamageVisual>* damage_events) {
+                            std::vector<DamageVisual>* damage_events,
+                            uint8_t centre_angle,
+                            uint8_t angle_range,
+                            bool force_damage) {
     uint8_t power   = static_cast<uint8_t>(duration << 2);
-    bool    damages = duration >= 8;
+    bool    damages = force_damage || duration >= 8;
     // Effective tile reach: max distance where remaining > 0 against a
     // weight-0 target = power - 8 sub-tile units (weight_factor floor).
     // Clamp at 0 if the explosion is too small to reach anything.
@@ -1094,6 +1097,19 @@ void apply_explosion_radius(ObjectManager& mgr, const Landscape& landscape,
 
         int remaining = int(power) - weight_factor - dist_units;
         if (remaining <= 0) continue;
+
+        // &344f-&345f angle-cone gate. With angle_range == 0xff the
+        // |delta| comparison can never exceed it, so the full radial
+        // behaviour falls out without an explicit branch.
+        if (angle_range < 0xff) {
+            uint8_t target_angle = NPC::angle_from_deltas(
+                static_cast<int8_t>(dfx / 256),
+                static_cast<int8_t>(dfy / 256));
+            uint8_t delta = static_cast<uint8_t>(target_angle - centre_angle);
+            // Normalise to absolute angular delta in 0..0x80.
+            uint8_t abs_delta = (delta & 0x80) ? static_cast<uint8_t>(0 - delta) : delta;
+            if (abs_delta > angle_range) continue;
+        }
 
         // &344a check_for_obstruction_between_objects_A: walls block the
         // explosion's damage + accelerate path. Raycast 16-frac steps from

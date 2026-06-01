@@ -37,16 +37,29 @@ void update_explosion(Object& obj, UpdateContext& ctx);
 void explode_object_with_duration(Object& obj, uint8_t duration,
                                   bool play_sound = true);
 
-// Port of accelerate_all_objects (&343a-&34b0) — applies damage and a
+// Port of accelerate_all_objects (&343a-&34b0) and
+// accelerate_all_objects_within_angle (&343c) — applies damage and a
 // directional push to every primary within blast range of `source`.
-// Used by update_explosion for EXPLOSION primaries and directly by the
-// blaster discharge tick (&4a76-&4a83). Skips slot `source_slot` so the
-// source itself isn't damaged or pushed. When damage_events is non-null
-// every hit and the source's effective tile radius are pushed for the
-// "Damage" debug overlay.
+// Used by update_explosion for EXPLOSION primaries, the blaster
+// discharge tick (&4a76-&4a83), and the engine-fire push (&4c5e).
+//
+// Skips slot `source_slot` so the source itself isn't damaged or pushed.
+// When damage_events is non-null every hit and the source's effective
+// tile radius are pushed for the "Damage" debug overlay.
+//
+// `centre_angle` / `angle_range` gate the affected targets to a cone
+// (centre ± range, both 8-bit angle units where 0x40 = 90°). Default
+// 0/0xff = no angle restriction (full radial).
+//
+// `force_damage = true` mirrors the engine-fire path which sets
+// &28 acceleration_damages_targets unconditionally; otherwise damage is
+// applied when `duration >= 8` (the explosion's &4fdc ROR gate).
 void apply_explosion_radius(ObjectManager& mgr, const Landscape& landscape,
                             const Object& source,
                             int source_slot, uint8_t duration,
-                            std::vector<DamageVisual>* damage_events = nullptr);
+                            std::vector<DamageVisual>* damage_events = nullptr,
+                            uint8_t centre_angle = 0,
+                            uint8_t angle_range  = 0xff,
+                            bool force_damage    = false);
 
 } // namespace Behaviors
