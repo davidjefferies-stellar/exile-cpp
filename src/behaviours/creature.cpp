@@ -304,8 +304,7 @@ void update_fluffy(Object& obj, UpdateContext& ctx) {
     bool is_squealing = false;
 
     // &4295-&4298 check_if_object_was_damaged. WAS_DAMAGED is bit 3 of
-    // FLAGS, not state — earlier port read &state & 0x08 (always 0 for
-    // fluffy), so a hit fluffy never squealed for the damage stimulus.
+    // flags (NOT state).
     if (was_damaged) {
         is_squealing = true;
     }
@@ -401,8 +400,7 @@ void update_fluffy(Object& obj, UpdateContext& ctx) {
         // &42f0-&42f4 JMP update_walking_npc_and_check_for_obstacles_with_
         // speed_A with X=2 (walking type), A=&28 (speed 40). Walking type
         // 2 is shared with imps: max_accel 0x10, weight 1, turn_prob 0xc8,
-        // jump_prob 0x08 (~3% per frame). Earlier port used seek_player
-        // at speed 0x10, which made fluffy crawl and never jump.
+        // jump_prob 0x08 (~3% per frame).
         uint8_t target_slot = obj.target_and_flags & TargetFlags::OBJECT_MASK;
         bool avoid = (obj.target_and_flags & TargetFlags::AVOID) != 0;
         const Object& target =

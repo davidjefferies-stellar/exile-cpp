@@ -377,13 +377,9 @@ static void coronium_common(Object& obj, UpdateContext& ctx) {
 
             // &41e8 JMP &40db explode_object_with_duration_A — in-place
             // mutation of THIS slot to OBJECT_EXPLOSION with the
-            // computed duration. Old port spawned a separate EXPLOSION
-            // primary via create_object_centered AND set obj.energy=0
-            // (which step 12 then mutated again) — two explosions at
-            // one spot, and the second used step 12's default
-            // (init_e>>5)+3 duration, losing the weight-based size.
-            // Explosion sound now played inside explode_object_with_duration
-            // (6502 &40db JSR play_sound_on_channel_zero).
+            // weight-derived duration. Sound played inside
+            // explode_object_with_duration (6502 &40db JSR
+            // play_sound_on_channel_zero).
             Behaviors::explode_object_with_duration(obj, duration);
             return;
         }
@@ -432,9 +428,7 @@ void update_coronium_crystal(Object& obj, UpdateContext& ctx) {
     obj.timer += 2;
     if (obj.timer & 0x80) {
         // &41c8 BMI &41e8 JMP &40db — in-place mutation with duration 10.
-        // Same fix as the boulder chain: don't double-spawn via
-        // create_object_centered + step 12.
-        // Explosion sound now played inside explode_object_with_duration.
+        // Sound played inside explode_object_with_duration.
         Behaviors::explode_object_with_duration(obj, 10);
         return;
     }

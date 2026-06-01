@@ -797,7 +797,7 @@ Landscape::SlopeResult Landscape::calculate_slope_function(uint8_t tile_x, uint8
         }
         s.and_(0x5f);
         uint8_t val = s.a;
-        if (val == 0) val = 0x100; // handle DEX wrapping
+        // uint8_t underflow at 0 -> 0xff, matching DEX wrap on the 6502.
         val--;
 
         if (val < 0x0c) return {true, 0}; // middle of sloping cavern

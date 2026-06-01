@@ -409,12 +409,7 @@ static int clamp_s8(int v) {
 // to_object_velocity. The 6502 call convention is A = other_v, X = this_v
 // — the disassembly's &a0/&a1 labels ("this/other_initial_velocity") are
 // misleading because those bytes hold the OPPOSITE-side velocity until
-// the apply step overwrites them. Bugs from the previous port: (a)
-// half_diff used (this - other) instead of (other - this), so signs were
-// flipped throughout; (b) the lighter-side path swapped recipients
-// instead of routing through invert_if_positive at &2bd8, so a light
-// object hitting a heavy one transferred ALL its momentum into the
-// heavy object (player pushed cannon, bullet pushed robot tiles).
+// the apply step overwrites them.
 VelocityTransfer apply_mass_ratio_velocity(
         int8_t this_v_in, int8_t other_v_in,
         uint8_t this_weight, uint8_t other_weight,
@@ -445,12 +440,10 @@ VelocityTransfer apply_mass_ratio_velocity(
     // &2bc6 apply_collision_to_object_velocity per side. Halve (ROR
     // signed); the &2bcd BCS skip_doubling fires when LSR &9f shifted
     // out a 1 — i.e. when this IS the smallest-overlap axis — so the
-    // &2bcf ADC doubling actually happens on the OPPOSITE axis (the
-    // larger overlap one), NOT the push-out axis. Earlier port had
-    // this inverted, tripling the transfer on the push direction —
-    // pushing Chatter horizontally launched it across the screen.
-    // Then PHA/JSR/PLA/fall-through adds processed to the recipient
-    // TWICE, each pass clamped by &327f prevent_overflow.
+    // &2bcf ADC doubling lands on the OPPOSITE axis (the larger
+    // overlap one), NOT the push-out axis. Then PHA/JSR/PLA/fall-
+    // through adds processed to the recipient TWICE, each pass clamped
+    // by &327f prevent_overflow.
     auto apply_one = [&](int transfer, int& target_v) {
         int processed = asr1_floor(transfer);
         if (!smallest_overlap_in_this_axis) {
