@@ -114,6 +114,14 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
             // BUSH primary on a NEST/PIPE cell with bit-7-armed tertiary.
             obj_type = static_cast<uint8_t>(ObjectType::BUSH);
             break;
+        case TileType::ENGINE:
+            // 6502 dispatches &4c15 update_engine_fire from the ENGINE
+            // tile's update routine each frame; we spawn a dedicated
+            // ENGINE_FIRE primary so the per-frame animation, data-byte
+            // gate, and switch toggling all run through the standard
+            // object loop.
+            obj_type = static_cast<uint8_t>(ObjectType::ENGINE_FIRE);
+            break;
         default:
             return;  // Not an object-spawning tile type
     }

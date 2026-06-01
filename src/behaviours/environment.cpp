@@ -1,6 +1,7 @@
 #include "behaviours/environment.h"
 #include "behaviours/path.h"
 #include "behaviours/npc_helpers.h"
+#include "behaviours/projectile.h"   // for apply_explosion_radius
 #include "audio/audio.h"
 #include "core/types.h"
 #include "objects/object_data.h"
@@ -1198,19 +1199,24 @@ void update_engine_fire(Object& obj, UpdateContext& ctx) {
     // &4c15: if engine is off, go straight to reset-and-hide.
     bool inactive = (obj.tertiary_data_offset & 0x03) != 0;
     if (!inactive) {
-        // &4c19: advance timer. When it flips to 0x80, mark the engine off.
+        // &4c19-&4c1f: advance timer. When state flips to 0x80, write 2
+        // to the data byte (STX &bc, not |=, so any upper bits are
+        // cleared — matches the 6502 byte-for-byte).
         obj.state++;
         if (obj.state & 0x80) {
-            obj.tertiary_data_offset |= 0x02;
+            obj.tertiary_data_offset = 0x02;
             inactive = true;
         }
     }
 
     if (inactive) {
-        // reset_and_hide_fire (&4c78) / hide_fire (&4c7a)
-        obj.state = 0;
-        obj.palette = 0x00;        // kyK
-        obj.x.fraction = 0x40;     // hide behind foreground
+        // &4c78 STA &11: state = (data & 3). Holds 2 while inactive, so
+        // the next on-cycle starts mid-burn at frame ~2 rather than 0.
+        obj.state      = static_cast<uint8_t>(obj.tertiary_data_offset & 0x03);
+        // &4c7a / &4c7e: kyK palette, x_fraction 0x40 hides the fire
+        // behind the engine's foreground sprite.
+        obj.palette    = 0x00;
+        obj.x.fraction = 0x40;
         return;
     }
 
@@ -1238,26 +1244,35 @@ void update_engine_fire(Object& obj, UpdateContext& ctx) {
         ctx.mgr.object(obj.touching).velocity_x++;
     }
 
-    // &4c34-&4c49: emit a single engine-fire particle.
-    if (ctx.particles) ctx.particles->emit(ParticleType::ENGINE, 1, obj, ctx.cosmetic_rng);
+    // &4c34-&4c49: emit a single engine-fire particle blowing right.
+    // 6502 sets new_particles_x_fraction=0xff (right edge),
+    // new_particles_y_fraction=&db (random across tile height),
+    // angle=0. Temporarily mutate obj fractions so emit() uses them as
+    // the base, then restore — the engine sprite's drawn position is
+    // recomputed at the end of this function anyway.
+    if (ctx.particles) {
+        uint8_t saved_xf = obj.x.fraction;
+        uint8_t saved_yf = obj.y.fraction;
+        obj.x.fraction = 0xff;
+        obj.y.fraction = ctx.cosmetic_rng.next();
+        ctx.particles->emit(ParticleType::ENGINE, 1, obj,
+                            ctx.cosmetic_rng, /*angle=*/0x00);
+        obj.x.fraction = saved_xf;
+        obj.y.fraction = saved_yf;
+    }
 
-    // &4c4c-&4c64: 1-in-4 frames, accelerate nearby objects with damage.
+    // &4c4c-&4c64: 1-in-4 frames, accelerate + damage objects in the
+    // fire's exhaust cone. power=0x50 (10 tiles), angle=0 (right),
+    // range=±0x14 (±28°), damages_targets forced on by &4c56 ROR.
     if (((ctx.frame_counter + obj.y.whole) & 0x03) == 0) {
-        // accelerate_all_objects_within_angle power=0x50, range=+/-28° (0x14),
-        // damage_targets=true. Approximation: knock back any object within
-        // Chebyshev distance 10 on the fire's right/left.
-        for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
-            Object& o = ctx.mgr.object(i);
-            if (!o.is_active()) continue;
-            int8_t dx = static_cast<int8_t>(o.x.whole - obj.x.whole);
-            int8_t dy = static_cast<int8_t>(o.y.whole - obj.y.whole);
-            if (std::abs(dx) > 10 || std::abs(dy) > 4) continue;
-            int push = (dx >= 0) ? +4 : -4;
-            int nv = int(o.velocity_x) + push;
-            if (nv >  127) nv =  127;
-            if (nv < -128) nv = -128;
-            o.velocity_x = static_cast<int8_t>(nv);
-        }
+        // duration<<2 == power per apply_explosion_radius, so duration
+        // = 0x14 gives the 6502's 0x50 power.
+        Behaviors::apply_explosion_radius(ctx.mgr, ctx.landscape, obj,
+                                          ctx.this_slot, /*duration=*/0x14,
+                                          /*damage_events=*/nullptr,
+                                          /*centre_angle=*/0x00,
+                                          /*angle_range=*/0x14,
+                                          /*force_damage=*/true);
         // &4c61-&4c64 play_sound_on_channel_zero (priority): engine
         // fire roar. Channel 0 is the SEC entry point so this always
         // plays even if the regular pool is busy.
