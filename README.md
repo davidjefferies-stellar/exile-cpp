@@ -7,11 +7,11 @@
 A C++ port of the BBC Micro masterpiece **Exile** (Peter Irvin & Jeremy Smith, 1988),
 working from the original 6502 disassembly. 
 
-The goal of the project is purely educational -
-to re-author the 6502 in C++ for easier study and to preserve its groundbreaking 
-concepts and techniques for a future where people no longer know 6502.
+The goal of the project is purely **educational** -
+to re-author the **6502** in **C++** for easier study and to preserve its **groundbreaking** 
+**concepts** and **techniques** for a future where people no longer know 6502.
 
-This project is **not** a **remake** or **remaster** or beginnings of a **sequel** to **Exile**. Its is only intended to be playable in-so-far as is necessary to achieve the educational goals of the project. If you wish to play **Exile** from start to finish (and it is very much recommended that you do) then that is best achieved using an original copy of the game running on original hardware or under emulation.
+This project is not a remake or remaster or beginnings of a sequel to **Exile**. Its is only intended to be playable in-so-far as is necessary to achieve the educational goals of the project. If you wish to play **Exile** from start to finish (and it is very much recommended that you do) then that is best achieved using an original copy of the game running on original hardware or under emulation.
 
 The disassembly used as the spec is the superbly annotated version by Level7 and lives at 
 `exile-standard-disassembly.txt`in the project root. All veriable and function names have been retained from this version for easier cross-reference. Each function in C++ is annotated with the original address of the function from this disassembly.
@@ -65,9 +65,8 @@ flags, key bindings, and the landscape-generator A/B toggle.
 
 | Key            | Action                                    |
 |----------------|-------------------------------------------|
-| arrows         | move (with jetpack: thrust)               |
-| `Q` `W` `P` `L`| jetpack left / right / up / down (arrow-key aliases) |
-| `Z`            | toggle jetpack                            |
+| arrows         | scroll the map view one tile per press    |
+| `Q` `W` `P` `L`| move / jetpack-thrust left / right / up / down |
 | Space          | fire selected weapon                      |
 | Tab            | turn around                               |
 | Left Ctrl / Left Shift | lie down                          |
