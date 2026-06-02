@@ -331,6 +331,26 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
     bool boost_active = inp.boost && (player_weapons_collected_[0] & 0x80);
     const int accel_scale = boost_active ? 2 : 1;
 
+    // Port of &3b93 handle_jumping — P press-edge (6502 action &24,
+    // no-autorepeat). Only fires when state low nibble < 5 (player was
+    // standing on a walkable surface within the last 5 frames). Impulse
+    // = ((base + weight) * 2) + asl_carry, where base is 0xf6 (no boost)
+    // or 0xf0 (boost held). The +1 from ASL's carry is included because
+    // the pre-shift byte always has bit 7 set for the player's weight.
+    {
+        bool jump_edge = inp.move_up && !move_up_prev_;
+        if (jump_edge && ((player.state & 0x0f) < 0x05)) {
+            uint8_t base = inp.boost ? 0xf0 : 0xf6;
+            uint8_t sum  = static_cast<uint8_t>(base + player.weight());
+            uint8_t shifted = static_cast<uint8_t>(sum << 1);
+            uint8_t asl_c   = (sum & 0x80) ? 1 : 0;
+            uint8_t vy_new  = static_cast<uint8_t>(player.velocity_y)
+                            + shifted + asl_c;
+            player.velocity_y = static_cast<int8_t>(vy_new);
+        }
+        move_up_prev_ = inp.move_up;
+    }
+
     // &2c7a set_object_jumping_or_flying triggers on up-thrust or
     // booster+horizontal, setting state low nibble to 0x0f so &3b0b sees
     // "not walking" and skips the walk branch. Down-input also skips
@@ -670,13 +690,30 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
         handle_player_teleporting(player);
     }
 
-    // Weapon select — port of &2ce8 change_weapon. Slot 0 (jetpack) is
-    // always present per &2ce9 skip; slots 1..5 read player_weapons_
-    // collected[X] at &2cef and refuse the switch if the bit isn't set.
+    // Weapon select / energy transfer — port of &2ce2 handle_changing_
+    // weapon_or_transferring_energy. SHIFT held at &2ce3 routes to
+    // &2d02 transfer_energy: drain 0x800 from selected source weapon
+    // (&2d27 consider_reducing_weapon_energy) and add 0x800 to the
+    // currently-equipped weapon (&2d16). Without SHIFT, &2ce8 change_
+    // weapon swaps to the requested slot.
     if (inp.weapon_select < 6) {
         uint8_t w = inp.weapon_select;
-        if (w == 0 || (player_weapons_collected_[w] & 0x80)) {
-            player_weapon_ = w;
+        bool collected = (w == 0) || (player_weapons_collected_[w] & 0x80);
+        if (collected) {
+            if (inp.shift_held) {
+                // &2d27 fails if weapon_energy_high < 0x08 (less than
+                // 0x800). &2d16 caps at 0xff00 (carry from +0x08 to high).
+                if (weapon_energy_[w] >= 0x0800) {
+                    weapon_energy_[w] -= 0x0800;
+                    uint16_t cur = weapon_energy_[player_weapon_];
+                    uint16_t hi  = static_cast<uint16_t>(cur >> 8);
+                    if (hi + 0x08 <= 0xff) {
+                        weapon_energy_[player_weapon_] = cur + 0x0800;
+                    }
+                }
+            } else {
+                player_weapon_ = w;
+            }
         }
     }
 

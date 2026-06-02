@@ -69,16 +69,16 @@ flags, key bindings, and the landscape-generator A/B toggle.
 | `Q` `W` `P` `L`| move / jetpack-thrust left / right / up / down |
 | Space          | fire selected weapon                      |
 | Tab            | turn around                               |
-| Left Ctrl / Left Shift | lie down                          |
+| Left Ctrl     | lie down                                   |
 | Right Ctrl / `[`       | jetpack booster (held = 2× thrust) |
 | `,` `M` `.`    | pick up / drop / throw held object        |
 | `S` / `G`      | store in pocket / retrieve from pocket    |
 | `R` / `T`      | remember position / teleport to it        |
 | `I` `K` `O`    | aim centre / down / up                    |
 | `1`–`5`        | select weapon slot                        |
+| Shift + `1`–`5`| transfer energy from that slot into current weapon |
 | `Y` / `U`      | whistle one / two                         |
-| Esc            | pause                                     |
-| `;` / `'`      | save game state / load game state         |
+| Esc            | pause menu (save / load game state via menu items) |
 | `\`            | save current landscape to `exile.map`     |
 | mouse wheel    | zoom                                      |
 | right-drag     | pan camera (map mode)                     |

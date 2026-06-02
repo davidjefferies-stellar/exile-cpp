@@ -21,8 +21,10 @@ void InputHandler::process_key(int key) {
         case InputKey::DOWN:  state_.pan_down  = true; break;
         case ' ':           state_.fire         = true; break;
         case InputKey::TAB:        state_.turn_around = true; break;
-        case InputKey::CTRL_LEFT:
-        case InputKey::SHIFT_LEFT:  state_.lie_down  = true; break;
+        case InputKey::CTRL_LEFT:   state_.lie_down  = true; break;
+        // 6502 &26 SHIFT — modifier key for f-key energy transfer
+        // (handle_changing_weapon_or_transferring_energy &2ce3).
+        case InputKey::SHIFT_LEFT:  state_.shift_held = true; break;
         case InputKey::CTRL_RIGHT:
         case '[': case '{':         state_.boost     = true; break;
         case '\n': case '\r': case InputKey::ENTER:
@@ -49,9 +51,8 @@ void InputHandler::process_key(int key) {
         case 'y': case 'Y': state_.whistle_two   = true; break;
         case 'u': case 'U': state_.whistle_one   = true; break;
         case 'j': case 'J': state_.bridge_push   = true; break;  // jsbeeb sync
-        case ';': state_.save_game        = true; break;
+        // ';' / '\'' (save / load game) live on the Esc pause menu now.
         case ':': state_.dump_all_frames  = true; break;  // Shift+;
-        case '\'': case '"': state_.load_game = true; break;
         case InputKey::KEYPAD_STAR:  state_.scrub_forward = true; break;
         case InputKey::KEYPAD_MINUS: state_.scrub_back    = true; break;
         case '\\': case '|': state_.save_map     = true; break;

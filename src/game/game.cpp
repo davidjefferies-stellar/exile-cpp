@@ -569,22 +569,6 @@ void Game::process_input() {
         running_ = false;
     }
 
-    // Save / load edge detection. Holding ';' would otherwise overwrite the
-    // save every frame and thrash the disk; only fire on the 0->1 transition.
-    // While scrubbing, save_game serialises the currently-restored frame —
-    // the rewind path already mutated the live state to match it.
-    bool save_down = input_.state().save_game;
-    if (save_down && !save_key_prev_) {
-        save_game("exile.sav");
-    }
-    save_key_prev_ = save_down;
-
-    bool load_down = input_.state().load_game;
-    if (load_down && !load_key_prev_) {
-        load_game("exile.sav");
-    }
-    load_key_prev_ = load_down;
-
     // Shift+';' (== ':') dumps the entire rewind ring buffer as a
     // multi-frame trace. Useful when bisecting a bug across many frames
     // — open the file and search for the misbehaving entity by slot.

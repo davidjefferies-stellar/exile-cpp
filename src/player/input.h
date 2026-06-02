@@ -33,17 +33,17 @@ struct InputState {
     bool aim_up       = false;   // O key: raise weapon aim
     bool aim_down     = false;   // K key: lower weapon aim
     bool aim_centre   = false;   // I key: centre aim
-    bool toggle_map_activation = false; // \ key: switch activation anchor
-                                        // between player and camera centre
     bool toggle_pause = false;          // Esc key: freeze world updates
                                         // (rendering and input still run)
+    // 6502 &26 SHIFT modifier — null routine on its own (&149c), used by
+    // handle_changing_weapon_or_transferring_energy at &2ce3 to switch
+    // from "select weapon" to "transfer energy". Held-while-down semantics.
+    bool shift_held   = false;
     bool whistle_one  = false;   // U key: play whistle one (activates Chatter)
     bool whistle_two  = false;   // Y key: play whistle two (Chatter produces power pod)
     bool quit         = false;   // Set when the window's close button was
                                   // clicked — no key binding. Game::process_input
                                   // sees this and breaks the run loop.
-    bool save_game    = false;   // ';' key: write game-state save file
-    bool load_game    = false;   // "'" key: read game-state save file
     bool save_map     = false;   // '\\' key: write current landscape grid to
                                   // exile.map (used by the in-game editor).
     bool tert_data_dec = false;   // '[' key: editor — decrement the data byte

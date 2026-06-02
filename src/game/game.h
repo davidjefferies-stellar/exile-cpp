@@ -296,6 +296,11 @@ private:
     bool store_key_prev_       = false;
     bool turn_around_key_prev_ = false;
     bool lie_down_prev_        = false;
+    // P-press edge gate for &3b93 handle_jumping. 6502 maps P to two
+    // actions: &23 thrust_up (autorepeat) and &24 jumping (no autorepeat,
+    // i.e. press-edge only). We share `inp.move_up` for both and detect
+    // the rising edge here.
+    bool move_up_prev_         = false;
     // SPACE (fire) is `repeat = no` in the 6502 action table (&0d at
     // line 3572 of the disassembly), i.e. one press = one bullet. Without
     // the edge gate, holding space empties the weapon in a few frames.
@@ -600,12 +605,10 @@ private:
     // Helps when users post bundles for issues.
     void write_system_info_header();
 
-    // Rising-edge state for save/load keys. Without these, holding down
-    // ';' would overwrite the save every frame. Scrub keys deliberately
-    // do NOT use edge detection — holding them auto-repeats one frame
-    // per tick so the user can sweep through the rewind buffer.
-    bool save_key_prev_     = false;
-    bool load_key_prev_     = false;
+    // Rising-edge state for the rewind-trace dump key (Shift+;). Scrub
+    // keys deliberately do NOT use edge detection — holding them auto-
+    // repeats one frame per tick so the user can sweep through the
+    // rewind buffer.
     bool dump_key_prev_     = false;
     // 'J' is a one-shot — edge-detect only, no mirror-mode flag.
     bool bridge_key_prev_   = false;
