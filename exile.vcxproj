@@ -157,6 +157,7 @@
     <ClInclude Include="src\rendering\renderer.h" />
     <ClInclude Include="src\rendering\camera.h" />
     <ClInclude Include="src\rendering\pixel_renderer.h" />
+    <ClInclude Include="src\rendering\embedded_icon.h" />
     <ClInclude Include="src\rendering\sprite_atlas.h" />
     <ClInclude Include="src\rendering\sprite_data.h" />
     <ClInclude Include="src\rendering\palette.h" />

@@ -1,6 +1,7 @@
 #include "game/game.h"
 #include "audio/audio.h"
 #include "rendering/pixel_renderer.h"
+#include "rendering/embedded_icon.h"
 #include "emu/jsbeeb_bridge.h"
 #include "sokol_app.h"
 #include "sokol_gfx.h"
@@ -246,6 +247,11 @@ int main() {
     d.width       = INITIAL_W;
     d.height      = INITIAL_H;
     d.window_title = "Exile";
+    d.icon.sokol_default = false;
+    d.icon.images[0].width  = kAppIconWidth;
+    d.icon.images[0].height = kAppIconHeight;
+    d.icon.images[0].pixels.ptr  = kAppIconRGBA;
+    d.icon.images[0].pixels.size = sizeof(kAppIconRGBA);
     d.logger.func = slog_func;
     sapp_run(&d);
 
