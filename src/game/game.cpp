@@ -1439,6 +1439,16 @@ std::string Game::create_issue_bundle() {
         Audio::set_debug_log(debug_log_.is_open() ? &debug_log_ : nullptr);
     }
 
+    // 4) Screenshot of the current framebuffer. BMP is the simplest
+    //    widely-supported image format — no PNG / zlib in our deps —
+    //    and GitHub Issues renders it inline like PNG.
+    if (renderer_) {
+        std::string bmp;
+        if (renderer_->capture_bmp(bmp)) {
+            entries.push_back({"exile-screenshot.bmp", std::move(bmp)});
+        }
+    }
+
     bool ok = ZipWriter::write(zip_name, entries);
     if (debug_log_.is_open()) {
         debug_log_ << (ok ? "issue_bundle " : "issue_bundle FAILED ")

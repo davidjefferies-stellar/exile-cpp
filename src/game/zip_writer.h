@@ -1,10 +1,10 @@
 #pragma once
-#include <cstdint>
 #include <string>
 #include <vector>
 
-// Minimal STORE-method (no compression) zip writer. Enough to bundle the
-// debug log + a few save snapshots for a GitHub issue attachment.
+// Builds a zip by staging each entry to a temp directory and shelling out
+// to PowerShell's Compress-Archive. Avoids hand-rolling PKZIP. Windows-
+// only; the rest of the project is Windows-only too.
 namespace ZipWriter {
 
 struct Entry {
@@ -12,9 +12,8 @@ struct Entry {
     std::string data;     // raw file contents
 };
 
-// Builds a self-contained .zip blob from the given entries. Returns false
-// only if a file write actually fails — the in-memory build always
-// succeeds.
+// Writes `entries` to `out_path` as a .zip. Returns false on staging /
+// PowerShell / IO failure.
 bool write(const std::string& out_path, const std::vector<Entry>& entries);
 
 } // namespace ZipWriter

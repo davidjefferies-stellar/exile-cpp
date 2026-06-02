@@ -195,6 +195,12 @@ public:
         tile_dx = 0; tile_dy = 0; return false;
     }
 
+    // Capture the current framebuffer as a 24-bit BMP blob. Default no-op
+    // returns false. Used by Game::create_issue_bundle to attach a
+    // screenshot of the bug repro; BMP keeps the encoder header-only —
+    // no PNG / zlib dependency — and Windows / GitHub both render it.
+    virtual bool capture_bmp(std::string& /*out*/) { return false; }
+
     // Set overlay text drawn in the top-right corner.
     virtual void set_overlay_text(const char* /*text*/) {}
 

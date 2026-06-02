@@ -1,122 +1,143 @@
 #include "game/zip_writer.h"
-#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <random>
+#include <sstream>
+#include <string>
+#include <vector>
 
-// PKZIP format reference: PKWARE APPNOTE.TXT v6.3.x sections 4.3.6-4.4.
-// We emit STORE (method=0) only — no compression, no encryption, no zip64.
-// Compatible with Windows Explorer, 7-Zip, unzip, Python's zipfile.
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
+
+namespace ZipWriter {
 
 namespace {
 
-constexpr uint16_t kVersionNeeded   = 20;     // 2.0 (STORE deflate-era)
-constexpr uint16_t kMethodStore     = 0;
-constexpr uint16_t kDosTime         = 0;      // we leave timestamps zeroed;
-constexpr uint16_t kDosDate         = 0x21;   // date=0 is rejected by some
-                                              // unzippers, so use 1980-01-01
-
-uint32_t crc32(const std::string& data) {
-    static uint32_t table[256] = {0};
-    static bool table_ready = false;
-    if (!table_ready) {
-        for (uint32_t i = 0; i < 256; ++i) {
-            uint32_t c = i;
-            for (int k = 0; k < 8; ++k) {
-                c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-            }
-            table[i] = c;
+// "abc/def.txt" -> ["abc", "def.txt"]. Forward slashes only (entries
+// are produced internally so we don't need to handle '\\').
+std::vector<std::string> split_path(const std::string& name) {
+    std::vector<std::string> parts;
+    size_t start = 0;
+    for (size_t i = 0; i <= name.size(); ++i) {
+        if (i == name.size() || name[i] == '/') {
+            if (i > start) parts.emplace_back(name.substr(start, i - start));
+            start = i + 1;
         }
-        table_ready = true;
     }
-    uint32_t c = 0xFFFFFFFFu;
-    for (unsigned char b : data) {
-        c = table[(c ^ b) & 0xFFu] ^ (c >> 8);
-    }
-    return c ^ 0xFFFFFFFFu;
+    return parts;
 }
 
-void put_u16(std::string& out, uint16_t v) {
-    out.push_back(static_cast<char>(v & 0xff));
-    out.push_back(static_cast<char>((v >> 8) & 0xff));
+bool write_file(const std::filesystem::path& path, const std::string& data) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    if (!data.empty()) {
+        out.write(data.data(), static_cast<std::streamsize>(data.size()));
+    }
+    return static_cast<bool>(out);
 }
-void put_u32(std::string& out, uint32_t v) {
-    out.push_back(static_cast<char>(v & 0xff));
-    out.push_back(static_cast<char>((v >> 8) & 0xff));
-    out.push_back(static_cast<char>((v >> 16) & 0xff));
-    out.push_back(static_cast<char>((v >> 24) & 0xff));
+
+// Pick a sibling temp directory next to out_path. Using the same volume
+// guarantees rename-style ops work and avoids littering %TEMP%.
+std::filesystem::path make_staging_dir(const std::filesystem::path& out_path) {
+    std::random_device rd;
+    std::uniform_int_distribution<uint64_t> dist;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        std::ostringstream name;
+        name << ".zipstage-" << std::hex << dist(rd);
+        std::filesystem::path candidate =
+            out_path.parent_path() / name.str();
+        std::error_code ec;
+        if (std::filesystem::create_directory(candidate, ec) && !ec) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+// Quote a path for PowerShell's single-quoted string context.
+std::string quote_for_ps(const std::filesystem::path& p) {
+    std::string s = p.string();
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\'') out += "''";
+        else           out += c;
+    }
+    out += "'";
+    return out;
+}
+
+bool run_compress_archive(const std::filesystem::path& staging,
+                          const std::filesystem::path& out_path) {
+    // -Path '<stage>\*' picks up every staged entry. -Force overwrites
+    // any leftover zip at the destination. -CompressionLevel Fastest
+    // keeps issue bundles cheap to build; we're not optimising on-disk
+    // size here.
+    std::string cmd = "powershell -NoProfile -NonInteractive -Command "
+                      "\"Compress-Archive -Path ";
+    cmd += quote_for_ps(staging / "*");
+    cmd += " -DestinationPath ";
+    cmd += quote_for_ps(out_path);
+    cmd += " -CompressionLevel Fastest -Force\"";
+
+#ifdef _WIN32
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    std::string mutable_cmd = cmd;  // CreateProcessA may modify the buffer.
+    BOOL ok = CreateProcessA(nullptr, mutable_cmd.data(),
+                             nullptr, nullptr, FALSE,
+                             CREATE_NO_WINDOW, nullptr, nullptr,
+                             &si, &pi);
+    if (!ok) return false;
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return code == 0;
+#else
+    return std::system(cmd.c_str()) == 0;
+#endif
 }
 
 } // namespace
 
-namespace ZipWriter {
+bool write(const std::string& out_path_str,
+           const std::vector<Entry>& entries) {
+    std::filesystem::path out_path(out_path_str);
+    std::error_code ec;
 
-bool write(const std::string& out_path, const std::vector<Entry>& entries) {
-    struct Computed { uint32_t crc; uint32_t local_header_offset; };
-    std::vector<Computed> meta(entries.size());
+    std::filesystem::path staging = make_staging_dir(out_path);
+    if (staging.empty()) return false;
 
-    std::string buf;
-    buf.reserve(64 * 1024);
-
-    // Local file headers + data.
-    for (size_t i = 0; i < entries.size(); ++i) {
-        const Entry& e = entries[i];
-        meta[i].crc = crc32(e.data);
-        meta[i].local_header_offset = static_cast<uint32_t>(buf.size());
-
-        put_u32(buf, 0x04034b50u);                           // local sig
-        put_u16(buf, kVersionNeeded);
-        put_u16(buf, 0);                                     // gp flag
-        put_u16(buf, kMethodStore);
-        put_u16(buf, kDosTime);
-        put_u16(buf, kDosDate);
-        put_u32(buf, meta[i].crc);
-        put_u32(buf, static_cast<uint32_t>(e.data.size()));  // compressed
-        put_u32(buf, static_cast<uint32_t>(e.data.size()));  // uncompressed
-        put_u16(buf, static_cast<uint16_t>(e.name.size()));
-        put_u16(buf, 0);                                     // extra len
-        buf.append(e.name);
-        buf.append(e.data);
+    bool stage_ok = true;
+    for (const Entry& e : entries) {
+        std::filesystem::path entry_path = staging;
+        for (const std::string& part : split_path(e.name)) {
+            entry_path /= part;
+        }
+        std::filesystem::create_directories(entry_path.parent_path(), ec);
+        if (!write_file(entry_path, e.data)) { stage_ok = false; break; }
     }
 
-    // Central directory.
-    uint32_t cd_offset = static_cast<uint32_t>(buf.size());
-    for (size_t i = 0; i < entries.size(); ++i) {
-        const Entry& e = entries[i];
-        put_u32(buf, 0x02014b50u);                           // central sig
-        put_u16(buf, kVersionNeeded);                        // ver made by
-        put_u16(buf, kVersionNeeded);                        // ver needed
-        put_u16(buf, 0);                                     // gp flag
-        put_u16(buf, kMethodStore);
-        put_u16(buf, kDosTime);
-        put_u16(buf, kDosDate);
-        put_u32(buf, meta[i].crc);
-        put_u32(buf, static_cast<uint32_t>(e.data.size()));
-        put_u32(buf, static_cast<uint32_t>(e.data.size()));
-        put_u16(buf, static_cast<uint16_t>(e.name.size()));
-        put_u16(buf, 0);                                     // extra len
-        put_u16(buf, 0);                                     // comment len
-        put_u16(buf, 0);                                     // disk no.
-        put_u16(buf, 0);                                     // internal attr
-        put_u32(buf, 0);                                     // external attr
-        put_u32(buf, meta[i].local_header_offset);
-        buf.append(e.name);
+    // Compress-Archive refuses to overwrite without -Force, but it also
+    // refuses if the destination is a directory or read-only — remove
+    // first to keep both paths simple.
+    if (stage_ok) {
+        std::filesystem::remove(out_path, ec);
     }
-    uint32_t cd_size = static_cast<uint32_t>(buf.size() - cd_offset);
 
-    // End-of-central-directory record.
-    put_u32(buf, 0x06054b50u);
-    put_u16(buf, 0);                                         // disk no.
-    put_u16(buf, 0);                                         // disk w/ CD
-    put_u16(buf, static_cast<uint16_t>(entries.size()));     // entries this disk
-    put_u16(buf, static_cast<uint16_t>(entries.size()));     // entries total
-    put_u32(buf, cd_size);
-    put_u32(buf, cd_offset);
-    put_u16(buf, 0);                                         // comment len
+    bool ok = stage_ok && run_compress_archive(staging, out_path);
 
-    std::ofstream out(out_path, std::ios::binary | std::ios::trunc);
-    if (!out) return false;
-    out.write(buf.data(), static_cast<std::streamsize>(buf.size()));
-    return static_cast<bool>(out);
+    std::filesystem::remove_all(staging, ec);
+    return ok;
 }
 
 } // namespace ZipWriter

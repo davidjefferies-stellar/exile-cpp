@@ -93,6 +93,7 @@ public:
     bool consume_right_click(int& tile_dx, int& tile_dy) override;
     void set_overlay_text(const char* text) override;
     void set_menu_overlay(const char* text, int selection_index) override;
+    bool capture_bmp(std::string& out) override;
     void set_fps_text(const char* text) override;
     void set_highlighted_tile(uint8_t world_x, uint8_t world_y) override;
     void render_debug_marker(uint8_t world_x, uint8_t world_y,

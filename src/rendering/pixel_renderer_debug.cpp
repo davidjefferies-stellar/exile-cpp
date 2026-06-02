@@ -1083,6 +1083,63 @@ void PixelRenderer::set_menu_overlay(const char* text, int selection_index) {
     menu_selection_ = selection_index;
 }
 
+// Encode the current CPU framebuffer as a 24-bit uncompressed BMP. Header
+// layout (Windows BITMAPFILEHEADER + BITMAPINFOHEADER): 14 + 40 = 54
+// bytes, pixel data BGR rows bottom-up, row stride padded to 4. Our
+// framebuffer pixels are 0xAARRGGBB stored little-endian (memory: B,G,R,A)
+// so we can just copy the low three bytes of each uint32_t directly.
+bool PixelRenderer::capture_bmp(std::string& out) {
+    const int W = win_w();
+    const int H = win_h();
+    if (W <= 0 || H <= 0) return false;
+    const int row_stride = ((W * 3) + 3) & ~3;
+    const int pixel_bytes = row_stride * H;
+    const int header_bytes = 54;
+
+    out.clear();
+    out.resize(header_bytes + pixel_bytes);
+    auto put_u16 = [&out](int off, uint16_t v) {
+        out[off  ] = static_cast<char>(v & 0xff);
+        out[off+1] = static_cast<char>((v >> 8) & 0xff);
+    };
+    auto put_u32 = [&out](int off, uint32_t v) {
+        out[off  ] = static_cast<char>(v & 0xff);
+        out[off+1] = static_cast<char>((v >> 8) & 0xff);
+        out[off+2] = static_cast<char>((v >> 16) & 0xff);
+        out[off+3] = static_cast<char>((v >> 24) & 0xff);
+    };
+    out[0] = 'B'; out[1] = 'M';
+    put_u32(2,  header_bytes + pixel_bytes);
+    put_u32(6,  0);
+    put_u32(10, header_bytes);
+    put_u32(14, 40);              // BITMAPINFOHEADER size
+    put_u32(18, static_cast<uint32_t>(W));
+    put_u32(22, static_cast<uint32_t>(H));
+    put_u16(26, 1);               // planes
+    put_u16(28, 24);              // bits per pixel
+    put_u32(30, 0);               // compression = BI_RGB
+    put_u32(34, static_cast<uint32_t>(pixel_bytes));
+    put_u32(38, 0);
+    put_u32(42, 0);
+    put_u32(46, 0);
+    put_u32(50, 0);
+
+    const uint32_t* src = framebuffer();
+    for (int y = 0; y < H; ++y) {
+        // BMP rows are bottom-up; flip y.
+        const uint32_t* row = src + static_cast<size_t>(H - 1 - y) * W;
+        char* dst = &out[header_bytes + y * row_stride];
+        for (int x = 0; x < W; ++x) {
+            uint32_t px = row[x];
+            *dst++ = static_cast<char>( px        & 0xff);  // B
+            *dst++ = static_cast<char>((px >>  8) & 0xff);  // G
+            *dst++ = static_cast<char>((px >> 16) & 0xff);  // R
+        }
+        // remaining bytes in row_stride - W*3 are already zero from resize.
+    }
+    return true;
+}
+
 void PixelRenderer::set_fps_text(const char* text) {
     fps_text_ = text ? text : "";
 }
