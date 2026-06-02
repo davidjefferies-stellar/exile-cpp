@@ -1267,7 +1267,11 @@ void update_gargoyle(Object& obj, UpdateContext& ctx) {
         int slot = NPC::fire_projectile(obj, kProj[type], ctx);
         if (slot >= 0) {
             Object& proj = ctx.mgr.object(slot);
-            proj.velocity_x = vx;
+            // &33b4 JSR &331d folds the firer's vx into vector_x and
+            // clamps the magnitude (cap is 0x50 or |firer.vx|+0x20).
+            // Without this, vx=0x7f bullets fly too flat — the angle to
+            // vy=0x0c is ~5° instead of the 6502's ~8.5°.
+            proj.velocity_x = NPC::apply_firing_vx_clamp(vx, obj.velocity_x);
             proj.velocity_y = vy;
             NPC::offset_child_from_parent(proj, obj);
         }

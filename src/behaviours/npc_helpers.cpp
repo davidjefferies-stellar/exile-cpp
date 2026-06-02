@@ -218,6 +218,27 @@ int fire_projectile(Object& obj, ObjectType bullet_type, UpdateContext& ctx) {
     return ctx.mgr.create_object_at(bullet_type, 4, obj);
 }
 
+// Port of &331d-&3340 calculate_firing_vector_from_this_object_velocity.
+//   sum = bullet_vx + firer_vx, clamped to int8.
+//   if |sum| < 0x50: leave it alone.
+//   else cap = max(|firer_vx| + 0x20, 0x50), clamped to int8.
+// Restore the sign of sum onto the capped magnitude.
+int8_t apply_firing_vx_clamp(int8_t bullet_vx, int8_t firer_vx) {
+    int sum = int(bullet_vx) + int(firer_vx);
+    if (sum >  127) sum =  127;
+    if (sum < -128) sum = -128;
+    const bool negative = sum < 0;
+    int abs_sum = negative ? -sum : sum;
+    if (abs_sum >= 0x50) {
+        int abs_firer = firer_vx < 0 ? -int(firer_vx) : int(firer_vx);
+        int cap = abs_firer + 0x20;
+        if (cap > 127) cap = 127;
+        if (cap < 0x50) cap = 0x50;
+        abs_sum = cap;
+    }
+    return static_cast<int8_t>(negative ? -abs_sum : abs_sum);
+}
+
 // &33b8-&342f create_child_object X/Y offset. Shifts onto firing side
 // with relative-velocity pre-compensation. Skipping it makes bullets
 // spawn inside the parent's tile and explode on frame 1.

@@ -177,6 +177,14 @@ int fire_projectile(Object& obj, ObjectType bullet_type, UpdateContext& ctx);
 // setting child velocity. No-op for non-atlas sprites.
 void offset_child_from_parent(Object& child, const Object& parent);
 
+// Port of &331d calculate_firing_vector_from_this_object_velocity.
+// 6502 folds the firer's vx into the bullet's vx and clamps |vx| to a
+// ceiling derived from |firer.vx|: at least 0x50, more if the firer is
+// itself moving fast. Without this, fast-table bullets (e.g. gargoyle
+// PLASMA at 0x7f) fly too flat and miss their intended angle. Y is left
+// untouched — the 6502 routine only operates on vector_x.
+int8_t apply_firing_vx_clamp(int8_t bullet_vx, int8_t firer_vx);
+
 // Diamond-metric firing velocity (|vx|+|vy|≈speed). Approximates &2357
 // via the from->target angle, cheaper than the full &3355 chain.
 void aim_toward(int8_t& vel_x, int8_t& vel_y,
