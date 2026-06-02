@@ -7,16 +7,18 @@ void InputHandler::clear() {
 
 void InputHandler::process_key(int key) {
     switch (key) {
-        // Jetpack movement: arrow keys plus QWPL letter aliases.
-        //   Q = left, W = right, P = up, L = down.
-        // Q + W sit adjacent on the left of the keyboard, P + L stack
-        // on the right, so the two halves can be split across both
-        // hands without crossing.
-        case InputKey::LEFT:  case 'q': case 'Q': state_.move_left  = true; break;
-        case InputKey::RIGHT: case 'w': case 'W': state_.move_right = true; break;
-        case InputKey::UP:    case 'p': case 'P': state_.move_up    = true; break;
-        case InputKey::DOWN:  case 'l': case 'L': state_.move_down  = true; break;
-        case 'z': case 'Z': state_.jetpack      = true; break;
+        // Jetpack movement: QWPL letter keys. Arrow keys drive the
+        // map-view pan instead (matching the original 6502's cursor-
+        // key slew). Q + W sit adjacent on the left of the keyboard,
+        // P + L stack on the right.
+        case 'q': case 'Q': state_.move_left  = true; break;
+        case 'w': case 'W': state_.move_right = true; break;
+        case 'p': case 'P': state_.move_up    = true; break;
+        case 'l': case 'L': state_.move_down  = true; break;
+        case InputKey::LEFT:  state_.pan_left  = true; break;
+        case InputKey::RIGHT: state_.pan_right = true; break;
+        case InputKey::UP:    state_.pan_up    = true; break;
+        case InputKey::DOWN:  state_.pan_down  = true; break;
         case ' ':           state_.fire         = true; break;
         case InputKey::TAB:        state_.turn_around = true; break;
         case InputKey::CTRL_LEFT:

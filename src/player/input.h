@@ -7,7 +7,13 @@ struct InputState {
     bool move_right   = false;
     bool move_up      = false;   // Jetpack thrust up
     bool move_down    = false;   // Jetpack thrust down
-    bool jetpack      = false;   // Z key: toggle jetpack
+    // Arrow keys: pan the map view (in addition to the right-drag mouse
+    // pan). 6502 used the cursor keys for a "map slew" inspection; ours
+    // is the same idea — a slow, frame-paced nudge to the camera.
+    bool pan_left     = false;
+    bool pan_right    = false;
+    bool pan_up       = false;
+    bool pan_down     = false;
     bool fire         = false;   // Space: fire weapon
     bool turn_around  = false;   // Tab: swap player facing direction
     bool lie_down     = false;   // Left Ctrl: lie down (&16 handle_lying_down)

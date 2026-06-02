@@ -331,17 +331,17 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
     bool boost_active = inp.boost && (player_weapons_collected_[0] & 0x80);
     const int accel_scale = boost_active ? 2 : 1;
 
-    // &2c7a set_object_jumping_or_flying triggers on jetpack/up-thrust or
+    // &2c7a set_object_jumping_or_flying triggers on up-thrust or
     // booster+horizontal, setting state low nibble to 0x0f so &3b0b sees
     // "not walking" and skips the walk branch. Down-input also skips
     // walking — let thrust handle vertical motion.
     bool flying =
-        inp.jetpack || inp.move_up || inp.move_down ||
+        inp.move_up || inp.move_down ||
         (boost_active && (inp.move_left || inp.move_right));
 
     // &2c6a-&2c73 input handlers INC/DEC accel by ±1; &3795 doubles
     // every frame; &2c81 booster fall-through doubles again → ±2 / ±4.
-    if (inp.jetpack || inp.move_up) {
+    if (inp.move_up) {
         accel_y = static_cast<int8_t>(-2 * accel_scale);
     }
     if (inp.move_down) {
@@ -681,10 +681,10 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
     }
 
     // &37e6-&380d jetpack drain. Eligible iff jumping/flying (state low
-    // nibble >= 0x0a OR forced this frame by jetpack/up/down/boost-
-    // horizontal via &2c7a) AND currently accelerating AND functioning
-    // jetpack. Cadence: every 2 frames on boost, every 8 otherwise.
-    bool flying_now = inp.jetpack || inp.move_up || inp.move_down ||
+    // nibble >= 0x0a OR forced this frame by up/down/boost-horizontal
+    // via &2c7a) AND currently accelerating AND functioning jetpack.
+    // Cadence: every 2 frames on boost, every 8 otherwise.
+    bool flying_now = inp.move_up || inp.move_down ||
                       (inp.boost && (inp.move_left || inp.move_right));
     bool jumping_state = (player.state & 0x0f) >= 0x0a;
     bool thrusting = (accel_x != 0 || accel_y != 0);

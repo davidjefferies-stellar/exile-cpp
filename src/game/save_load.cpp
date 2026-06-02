@@ -295,7 +295,6 @@ void Game::write_state(std::ostream& f) const {
         f << "move_right "   << (int)s.move_right   << "\n";
         f << "move_up "      << (int)s.move_up      << "\n";
         f << "move_down "    << (int)s.move_down    << "\n";
-        f << "jetpack "      << (int)s.jetpack      << "\n";
         f << "fire "         << (int)s.fire         << "\n";
         f << "turn_around "  << (int)s.turn_around  << "\n";
         f << "lie_down "     << (int)s.lie_down     << "\n";
@@ -577,7 +576,6 @@ bool Game::read_state(std::istream& f) {
             else if (k == "move_right")   restored_input.move_right   = v;
             else if (k == "move_up")      restored_input.move_up      = v;
             else if (k == "move_down")    restored_input.move_down    = v;
-            else if (k == "jetpack")      restored_input.jetpack      = v;
             else if (k == "fire")         restored_input.fire         = v;
             else if (k == "turn_around")  restored_input.turn_around  = v;
             else if (k == "lie_down")     restored_input.lie_down     = v;
