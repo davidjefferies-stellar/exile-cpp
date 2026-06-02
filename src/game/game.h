@@ -513,6 +513,21 @@ private:
     // doesn't make the camera bob a BBC row each step. -1 = uninit.
     int camera_y_target_ = -1;
 
+    // Port-only smooth arrow-key map pan. Press-edge driven: each rising
+    // edge of an arrow key bumps `*_target_` by ±256 frac (one tile).
+    // Each frame `*_current_` eases toward target at kPanRatePerFrame
+    // frac/frame so the slew renders smoothly over ~16 frames per tile.
+    // Combined with camera_.pan_x/y (in tile units, set by right-drag)
+    // at render time.
+    int cursor_pan_x_current_ = 0;
+    int cursor_pan_x_target_  = 0;
+    int cursor_pan_y_current_ = 0;
+    int cursor_pan_y_target_  = 0;
+    bool pan_left_prev_  = false;
+    bool pan_right_prev_ = false;
+    bool pan_up_prev_    = false;
+    bool pan_down_prev_  = false;
+
     // Port-only smooth flood — runs alongside the 6502 integrator so
     // the visible waterline moves at 1 tile / second. The 6502's
     // integrator advances g_y[1] by ~1 tile every 128 frames; we use

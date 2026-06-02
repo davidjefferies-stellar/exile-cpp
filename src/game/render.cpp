@@ -1,4 +1,5 @@
 #include "game/game.h"
+#include "audio/audio.h"
 #include "behaviours/environment.h"
 #include "behaviours/mood.h"
 #include "objects/collision.h"
@@ -112,10 +113,48 @@ void Game::render() {
     if (panned) {
         camera_.apply_pan(pan_dx, pan_dy);
     }
-    // Re-derive view centre (player pos + pan) WITHOUT clamping — the
-    // uint8_t cast lets center_x/y wrap at the map edges so right-drag
-    // panning is never blocked. Accepts the trade-off that you can see
-    // wrapped territory if you scroll far past the bounds.
+    // Arrow keys: each press-edge queues a one-tile slew. *_target_ is
+    // the goal in signed frac (256 = 1 tile), *_current_ eases toward
+    // it at kPanRatePerFrame frac/frame. Press twice → 512 frac queued
+    // → two tiles slewed smoothly. The opposite arrow cancels. Each
+    // press fires the 6502's &2c37 scroll-viewport SFX.
+    {
+        const InputState& in = input_.state();
+        // 6502 &2c37 sound packet for handle_scrolling_viewpoint.
+        static constexpr uint8_t kSoundScrollView[4] = { 0x3d, 0x04, 0x11, 0xd4 };
+        bool edge_l = in.pan_left  && !pan_left_prev_;
+        bool edge_r = in.pan_right && !pan_right_prev_;
+        bool edge_u = in.pan_up    && !pan_up_prev_;
+        bool edge_d = in.pan_down  && !pan_down_prev_;
+        if (edge_l) cursor_pan_x_target_ -= 256;
+        if (edge_r) cursor_pan_x_target_ += 256;
+        if (edge_u) cursor_pan_y_target_ -= 256;
+        if (edge_d) cursor_pan_y_target_ += 256;
+        if (edge_l || edge_r || edge_u || edge_d) {
+            Audio::play(Audio::CH_ANY, kSoundScrollView);
+        }
+        pan_left_prev_  = in.pan_left;
+        pan_right_prev_ = in.pan_right;
+        pan_up_prev_    = in.pan_up;
+        pan_down_prev_  = in.pan_down;
+
+        constexpr int kPanRatePerFrame = 32; // 8 frames per tile
+        int dx = cursor_pan_x_target_ - cursor_pan_x_current_;
+        int dy = cursor_pan_y_target_ - cursor_pan_y_current_;
+        if      (dx >  kPanRatePerFrame) cursor_pan_x_current_ += kPanRatePerFrame;
+        else if (dx < -kPanRatePerFrame) cursor_pan_x_current_ -= kPanRatePerFrame;
+        else                              cursor_pan_x_current_  = cursor_pan_x_target_;
+        if      (dy >  kPanRatePerFrame) cursor_pan_y_current_ += kPanRatePerFrame;
+        else if (dy < -kPanRatePerFrame) cursor_pan_y_current_ -= kPanRatePerFrame;
+        else                              cursor_pan_y_current_  = cursor_pan_y_target_;
+        if (dx || dy) panned = true;
+    }
+    bool any_pan = camera_.pan_x != 0 || camera_.pan_y != 0 ||
+                   cursor_pan_x_current_ != 0 || cursor_pan_y_current_ != 0;
+    // Camera centre (player pos + pan, no clamp). uint8_t cast wraps at
+    // the map edges so right-drag panning is never blocked. Tile-level
+    // pan goes through camera_.pan_*; the sub-tile cursor pan adds to
+    // vp_fx/fy further down.
     const Object& player_obj = object_mgr_.player();
     int vp_w_half = renderer_->viewport_width_tiles() / 2;
     int vp_h_half = renderer_->viewport_height_tiles() / 2;
@@ -139,17 +178,34 @@ void Game::render() {
     // player is stationary, track at full frac precision when moving.
     renderer_->set_camera_motion(player_obj.velocity_x,
                                  player_obj.velocity_y);
-    uint8_t vp_fx = player_obj.x.fraction;
-    uint8_t vp_fy = player_obj.y.fraction;
+    // Decompose cursor-pan into (tile, frac) using floored division so a
+    // negative target yields a 0..255 frac and the tile delta gets folded
+    // into center_x/y. Combined with player.x.fraction for vp_fx/fy.
+    {
+        int total_x = int(player_obj.x.fraction) + cursor_pan_x_current_;
+        int total_y = int(player_obj.y.fraction) + cursor_pan_y_current_;
+        int tile_dx = (total_x >= 0) ? (total_x >> 8) : -(((-total_x) + 255) >> 8);
+        int tile_dy = (total_y >= 0) ? (total_y >> 8) : -(((-total_y) + 255) >> 8);
+        int frac_x  = total_x - tile_dx * 256;
+        int frac_y  = total_y - tile_dy * 256;
+        camera_.center_x = static_cast<uint8_t>(camera_.center_x + tile_dx);
+        camera_.center_y = static_cast<uint8_t>(camera_.center_y + tile_dy);
+        // Override the vp_fx/vp_fy defaults computed above.
+        // (Both will be set just below for the !any_pan / dead-zone path.)
+    }
+    uint8_t vp_fx = static_cast<uint8_t>(
+        (int(player_obj.x.fraction) + cursor_pan_x_current_) & 0xff);
+    uint8_t vp_fy = static_cast<uint8_t>(
+        (int(player_obj.y.fraction) + cursor_pan_y_current_) & 0xff);
 
     // Port-only Y dead-zone. Walking on flat ground oscillates pl.y by
     // ~15 frac (gravity vs floor bounce); without a dead-zone the
     // camera bobs 1 BBC row each step. Hold a 16-bit "camera_y_target"
     // and only update it when the player moves >kDeadZone frac from it,
-    // then carry the player along at the band's edge. Skipped while the
-    // user is right-drag-panning — the pan position drives the camera
-    // directly and the dead-zone would otherwise yank it back.
-    if (camera_.pan_x == 0 && camera_.pan_y == 0) {
+    // then carry the player along at the band's edge. Skipped while any
+    // pan (right-drag or arrow keys) is active so the pan position
+    // drives the camera directly.
+    if (!any_pan) {
         constexpr int kDeadZone = 0x10; // 16 frac = 2 BBC rows
         int player_y_16 = int(player_obj.y.whole) * 256
                         + int(player_obj.y.fraction);
