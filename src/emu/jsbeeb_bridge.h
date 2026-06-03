@@ -6,6 +6,12 @@
 // `dist/` (produced by a one-time `npm run build`) and a /bridge/events
 // SSE channel that our port pokes into when 'J' is pressed. No npm at
 // runtime; the browser loads jsbeeb directly from our exe.
+//
+// Release builds compile this out — Chrome and Defender flag unsigned
+// exes that listen on a network port, and the bridge is a debug-only
+// convenience. Define EXILE_JSBEEB_BRIDGE (set by Debug|x64 in
+// exile.vcxproj) to enable. The Release stubs in jsbeeb_bridge.cpp's
+// `#else` branch make J a no-op and skip the network stack entirely.
 namespace JsbeebBridge {
 
 struct Write {

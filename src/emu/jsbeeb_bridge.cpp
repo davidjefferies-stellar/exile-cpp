@@ -6,6 +6,14 @@
 
 #include "emu/jsbeeb_bridge.h"
 
+// Release builds OMIT this entire implementation — Chrome / SmartScreen
+// flag unsigned exes that listen on a network port (the embedded HTTP +
+// SSE server). Debug builds define EXILE_JSBEEB_BRIDGE in exile.vcxproj
+// to compile the real bridge in; the no-op stubs at the bottom take
+// over otherwise. Pressing J still works, it just silently does nothing.
+
+#ifdef EXILE_JSBEEB_BRIDGE
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -306,3 +314,15 @@ void poke(const std::vector<Write>& writes) {
 }
 
 }  // namespace JsbeebBridge
+
+#else  // !EXILE_JSBEEB_BRIDGE — no-op stubs for release builds.
+
+namespace JsbeebBridge {
+
+void poke(const std::vector<Write>& /*writes*/) {}
+bool start(int /*port*/, const char* /*doc_root*/) { return false; }
+void stop() {}
+
+}  // namespace JsbeebBridge
+
+#endif  // EXILE_JSBEEB_BRIDGE
