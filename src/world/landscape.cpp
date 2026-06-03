@@ -753,11 +753,16 @@ uint8_t Landscape::get_tile_for_surface(uint8_t tile_x, uint8_t f1) const {
         return leave_with_tile_from_table(idx);
     }
 
-    // &1942: surface with optional H-flip
-    // ROR f1 puts f1 bit 0 into carry; ROR A puts carry into A bit 7
-    uint8_t result = tiles_table[0x19]; // TILE_SPACE
-    if (f1 & 1) result |= 0x80; // FLIP_H
-    return result;
+    // &1942-&1945: surface fall-through. The 6502 does NOT look up the
+    // table here — it RTSes with A directly. A was 0 after the AND #&17
+    // at &193e, then &1942 ROR &9d (carry = f1 bit 0), &1944 ROR A
+    // (rotates that carry into A's bit 7). So the returned byte is 0x00
+    // or 0x80 — tile type 0x00 is TILE_INVISIBLE_SWITCH, which checks
+    // the tertiary range-zero table at runtime to spawn birds, frogmen,
+    // imps, and any other nest/pipe creatures whose tertiary entry x
+    // matches this cell. Returning TILE_SPACE instead leaves the cell
+    // inert and kills every surface-level nest in the world.
+    return (f1 & 1) ? 0x80 : 0x00;
 }
 
 // ============================================================================

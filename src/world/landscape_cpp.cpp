@@ -131,8 +131,14 @@ static uint8_t tile_for_surface(uint8_t tile_x, uint8_t f1) {
     const uint8_t  hash_a   = uint8_t(phase1) & 0x17;
 
     if (hash_a == 0) {
-        // Open surface: TILE_SPACE, optionally H-flipped per f1 bit 0.
-        return uint8_t(kTilesTable[0x19] | ((f1 & 1) ? 0x80 : 0));
+        // Open surface: tile type 0x00 (TILE_INVISIBLE_SWITCH), optionally
+        // H-flipped per f1 bit 0. The 6502 RTSes here without a table
+        // lookup (&1942-&1945), so A = 0 from the AND, rotated with f1's
+        // bit 0 into bit 7. TILE_INVISIBLE_SWITCH triggers the tertiary
+        // range-zero lookup at runtime to spawn nest creatures (birds,
+        // frogmen, imps) keyed on this cell's x. Returning TILE_SPACE
+        // instead silently kills every surface-level nest in the world.
+        return (f1 & 1) ? 0x80 : 0x00;
     }
 
     // Surface-feature variant. 6502 ADC + ROL*3 + AND #&02 + ADC #&19

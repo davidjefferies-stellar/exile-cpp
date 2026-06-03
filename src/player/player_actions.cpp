@@ -470,20 +470,6 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
         player_lying_down_ = false;
     }
 
-    // Port of &1f3d add_jetpack_thrust_particles: emit one jetpack
-    // particle per frame while the player is accelerating. [debug]
-    // jetpack_boost_tint pins colour to red/magenta during boost so the
-    // 2x accel path is visible — cf_base=0xe1 (red, no CYCLE), cf_rand
-    // =0x04 (only bit 2 flips, so result is colour 1 or 5).
-    if (accel_x != 0 || accel_y != 0) {
-        if (jetpack_boost_tint_ && boost_active) {
-            particles_.emit(ParticleType::JETPACK, 1, player, cosmetic_rng_,
-                            /*angle=*/0xc0, /*cf_base=*/0xe1, /*cf_rand=*/0x04);
-        } else {
-            particles_.emit(ParticleType::JETPACK, 1, player, cosmetic_rng_);
-        }
-    }
-
     // Whistles: &2cac whistle_one (low note only) and &2c99 whistle_two
     // (high note at &2c9e + shared low at &2cb4 -> two-tone "tweet"). Both
     // gated on "_collected" flags. Whistle two also stamps whistle_two_
@@ -760,6 +746,16 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
                        (player_immobility_movement_ < 0x06) &&
                        (player_immobility_thrust_ == 0);
     if ((flying_now || jumping_state) && thrusting && functioning) {
+        // &37fd add_jetpack_thrust_particles, then &3802 drain. Both sit
+        // inside the jumping/flying + functional gate, so walking accel
+        // never emits exhaust. [debug] jetpack_boost_tint pins red/magenta
+        // (cf_base=0xe1, cf_rand=0x04) so the 2x boost path is visible.
+        if (jetpack_boost_tint_ && boost_active) {
+            particles_.emit(ParticleType::JETPACK, 1, player, cosmetic_rng_,
+                            /*angle=*/0xc0, /*cf_base=*/0xe1, /*cf_rand=*/0x04);
+        } else {
+            particles_.emit(ParticleType::JETPACK, 1, player, cosmetic_rng_);
+        }
         bool drain_tick = inp.boost ? every_two_frames_
                                     : every_eight_frames_;
         if (drain_tick) weapon_energy_[0]--;
