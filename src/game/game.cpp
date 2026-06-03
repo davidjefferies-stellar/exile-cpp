@@ -18,7 +18,6 @@
 #include <algorithm>
 #include <chrono>
 #include <ctime>
-#include <thread>
 #include <fstream>
 #include <sstream>
 
@@ -291,32 +290,38 @@ bool Game::init() {
 
 void Game::step() {
     using clock = std::chrono::steady_clock;
-    // Locked logic+render rate from [debug] target_fps. Logic and render
-    // tick together so motion is judder-free; higher rates fast-forward
-    // the game (audio aligned via Audio::set_logic_rate in init).
-    static auto frame_duration =
-        std::chrono::microseconds(1'000'000 / target_fps_);
+    // Fixed-timestep logic, decoupled from the vsync'd present in frame_cb.
+    // sokol forces vsync (swap_interval >= 1), so a sleep-based pace would
+    // round up to a vblank multiple (41.67ms = 24fps on 144Hz). Instead we
+    // run tick() once per frame_duration of real time and let frame_cb
+    // present every vblank, locking logic to exactly target_fps_ on any
+    // monitor. Audio is aligned via Audio::set_logic_rate in init.
+    static const auto frame_duration =
+        std::chrono::duration_cast<clock::duration>(
+            std::chrono::microseconds(1'000'000 / target_fps_));
+    static auto last = clock::now();
+    static clock::duration accumulator{frame_duration};  // tick on frame 0
 
-    // 30-frame rolling FPS window.
+    // 30-tick rolling FPS window (measures the logic rate, not the present).
     static auto fps_window_start = clock::now();
     static int  fps_frame_count  = 0;
 
-    auto frame_start = clock::now();
-    tick();
-    if (show_fps_) {
-        fps_frame_count++;
-        if (fps_frame_count >= 30) {
+    auto now = clock::now();
+    accumulator += now - last;
+    last = now;
+    // Cap after a stall (window drag, breakpoint) to avoid a tick spiral.
+    if (accumulator > frame_duration * 5) accumulator = frame_duration * 5;
+
+    while (accumulator >= frame_duration) {
+        accumulator -= frame_duration;
+        tick();
+        if (show_fps_ && ++fps_frame_count >= 30) {
             double ms = std::chrono::duration<double, std::milli>(
                 clock::now() - fps_window_start).count();
             if (ms > 0.0) fps_value_ = 1000.0 * fps_frame_count / ms;
             fps_window_start = clock::now();
             fps_frame_count  = 0;
         }
-    }
-    auto frame_end = clock::now();
-    auto elapsed = frame_end - frame_start;
-    if (elapsed < frame_duration) {
-        std::this_thread::sleep_for(frame_duration - elapsed);
     }
 }
 
