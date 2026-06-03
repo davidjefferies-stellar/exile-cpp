@@ -244,6 +244,24 @@ bool Game::init() {
     // promote_selective misses the destinator and the Triax intro misfires.
     object_mgr_.promote_distance_check();
 
+    // Port-only intro fix-up: the 6502 always spawned the player at
+    // (&9b, &3b), right next to Triax + the destinator at (&99, &3c).
+    // Our [player] start_x/start_y can put the player far away, leaving
+    // the destinator as a secondary that Triax never touches — he then
+    // falls through update_triax's absorb check and starts attacking
+    // the player. Force-promote any DESTINATOR secondary so the intro
+    // works regardless of debug spawn position.
+    if (cfg.spawn_initial_triax) {
+        for (int i = object_mgr_.active_secondary_slots() - 1; i >= 0; --i) {
+            const SecondaryObject& sec = object_mgr_.secondary(i);
+            if (sec.y == 0) continue;
+            if (static_cast<ObjectType>(sec.type) == ObjectType::DESTINATOR) {
+                object_mgr_.promote_from_secondary(i, /*min_free_slots=*/0);
+                break;  // only one destinator in the world
+            }
+        }
+    }
+
     // [player] bbc_save — drop a BBC-format save over the world after
     // everything else has been set up. Failures are silent (the player
     // just gets the normal startup state); the lifecycle log records

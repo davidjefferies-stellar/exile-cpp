@@ -301,6 +301,15 @@ private:
     // i.e. press-edge only). We share `inp.move_up` for both and detect
     // the rising edge here.
     bool move_up_prev_         = false;
+    // 6502 &25 energy_level_bells_remaining. Set to (weapon_energy_high
+    // >> 3) on weapon select (&2cf4-&2cfd) or 1 on energy transfer
+    // (&2d21-&2d23). Decremented and chimes one bell every 4 frames in
+    // the player update at &4a57-&4a66.
+    uint8_t energy_level_bells_remaining_ = 0;
+    // 1..5 press-edge gate: we play the initial high beep + reload the
+    // bell counter once per press, not every frame the key is held.
+    uint8_t weapon_select_prev_ = 0xff;
+    bool    shift_select_prev_  = false;
     // SPACE (fire) is `repeat = no` in the 6502 action table (&0d at
     // line 3572 of the disassembly), i.e. one press = one bullet. Without
     // the edge gate, holding space empties the weapon in a few frames.

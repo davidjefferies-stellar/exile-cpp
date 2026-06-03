@@ -443,16 +443,24 @@ VelocityTransfer apply_mass_ratio_velocity(
     bool this_heavier_or_equal = (this_weight >= other_weight);
 
     // &2bc6 apply_collision_to_object_velocity per side. Halve (ROR
-    // signed); the &2bcd BCS skip_doubling fires when LSR &9f shifted
-    // out a 1 — i.e. when this IS the smallest-overlap axis — so the
-    // &2bcf ADC doubling lands on the OPPOSITE axis (the larger
-    // overlap one), NOT the push-out axis. Then PHA/JSR/PLA/fall-
-    // through adds processed to the recipient TWICE, each pass clamped
-    // by &327f prevent_overflow.
+    // signed); &2bcd BCS skip_doubling skips when LSR &9f's outgoing
+    // bit is 1. The &9f init at &2b6c is 0x0c for smallest=X and 0x03
+    // for smallest=Y. The X-axis call's 2 LSRs shift &9f's low bits;
+    // the Y-axis call shifts the next two. Tracing both starts:
+    // smallest=X (&9f=0x0c -> 0b1100): X calls get carry=0,0 (APPLY),
+    // Y calls get carry=1,1 (SKIP). smallest=Y (&9f=0x03 -> 0b0011):
+    // X calls SKIP, Y calls APPLY. So doubling lands on the SMALLEST
+    // (push-out) axis — the opposite of an earlier port assumption.
+    //
+    // The ADC at &2bcf adds with the carry from LSR &9f, which is 0
+    // whenever doubling applies (BCS skip_doubling not taken). The
+    // (transfer & 1) earlier ports added comes from ROR's carry-out
+    // and gets clobbered by LSR &9f before the ADC — it must not be
+    // included.
     auto apply_one = [&](int transfer, int& target_v) {
         int processed = asr1_floor(transfer);
-        if (!smallest_overlap_in_this_axis) {
-            processed = clamp_s8(processed + transfer + (transfer & 1));
+        if (smallest_overlap_in_this_axis) {
+            processed = clamp_s8(processed + transfer);
         }
         if (!this_heavier_or_equal && processed >= 0) {
             processed = -processed;

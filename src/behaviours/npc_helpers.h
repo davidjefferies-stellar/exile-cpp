@@ -149,6 +149,16 @@ void enforce_minimum_energy(Object& obj, uint8_t min_energy);
 // Simple NPC targeting: set velocity toward player
 void seek_player(Object& obj, const Object& player, int8_t speed);
 
+// Port of &31da move_towards_target_with_probability_X. Adds clamped
+// acceleration toward `target` — does NOT overwrite velocity. Each axis
+// moves the current velocity toward the desired vector_component by at
+// most max_accel per call (6502's &31f6 apply_weighted_acceleration loop
+// with weight 0, so the limit equals max_accel directly). Used for
+// Triax/clawed-robot/hovering-NPC thrust so a falling NPC doesn't brake
+// mid-air the moment LOS upgrades and the firing branch tries to chase.
+void steer_toward(Object& obj, uint8_t target_x, uint8_t target_y,
+                  uint8_t magnitude, uint8_t max_accel);
+
 // NPC avoidance: set velocity away from player
 void flee_player(Object& obj, const Object& player, int8_t speed);
 

@@ -1369,6 +1369,25 @@ void update_triax(Object& obj, UpdateContext& ctx) {
         }
     }
 
+    // Port-only intro guard: while the destinator is still a live
+    // primary, Triax's whole job is to fall onto it and absorb. The 6502
+    // gets away with chasing the player straight away because its
+    // thrust path uses clamped acceleration; our cumulative velocity
+    // arithmetic snaps Triax to a hover within ~1 frame of the firing
+    // branch triggering, which strands him 1 tile above the destinator
+    // forever. Skip the chase/fire entirely until absorb completes —
+    // the 6502 reaches the same end state (absorb on frame ~30, then
+    // teleport away), it just also tries to look busy doing it.
+    bool destinator_alive = false;
+    for (int s = 1; s < GameConstants::PRIMARY_OBJECT_SLOTS; ++s) {
+        const Object& o = ctx.mgr.object(s);
+        if (o.type == ObjectType::DESTINATOR && o.is_active()) {
+            destinator_alive = true;
+            break;
+        }
+    }
+    if (destinator_alive) return;
+
     // &4726-&4730: 1-in-32 grenade else icer. consider_firing_at_player_
     // and_move_triax grants +2 energy per update, then flows into
     // move_hovering_npc (&486e) -> thrust_towards_target (&487a) which
@@ -1386,12 +1405,13 @@ void update_triax(Object& obj, UpdateContext& ctx) {
             bool grenade = (ctx.rng.next() & 0xf8) == 0;  // 1/32
             ObjectType proj = grenade ? ObjectType::ACTIVE_GRENADE
                                       : ObjectType::ICER_BULLET;
-            ctx.mgr.log_diag("TRIAX pre-seek v=(%d,%d)",
-                             (int)obj.velocity_x, (int)obj.velocity_y);
-            NPC::seek_player(obj, player, 8);
-            ctx.mgr.log_diag("TRIAX post-seek v=(%d,%d) (seek_player "
-                             "OVERWRITES velocity — vs 6502 accel-based)",
-                             (int)obj.velocity_x, (int)obj.velocity_y);
+            // Port of &487a-&4880 thrust_towards_target: magnitude 0x1c,
+            // max_accel 4. Velocity is NUDGED by up to +/-4 per frame —
+            // not overwritten — so Triax keeps his vy=0x10 fall long
+            // enough to land on the destinator instead of braking
+            // mid-air the moment LOS upgrades to directness 2.
+            NPC::steer_toward(obj, player.x.whole, player.y.whole,
+                              /*magnitude=*/0x1c, /*max_accel=*/4);
             int8_t vx, vy;
             if (NPC::fire_at_target(obj, player, ctx.rng, vx, vy)) {
                 int slot = NPC::fire_projectile(obj, proj, ctx);

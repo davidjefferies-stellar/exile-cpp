@@ -695,11 +695,16 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
     // &2d02 transfer_energy: drain 0x800 from selected source weapon
     // (&2d27 consider_reducing_weapon_energy) and add 0x800 to the
     // currently-equipped weapon (&2d16). Without SHIFT, &2ce8 change_
-    // weapon swaps to the requested slot.
+    // weapon swaps to the requested slot. Both paths reload the energy-
+    // level bell counter at &25 and play the initial high beep at &14a5;
+    // press-edge gate so holding the key doesn't restart the chime each
+    // frame.
     if (inp.weapon_select < 6) {
         uint8_t w = inp.weapon_select;
+        bool press_edge = (w != weapon_select_prev_) ||
+                          (inp.shift_held != shift_select_prev_);
         bool collected = (w == 0) || (player_weapons_collected_[w] & 0x80);
-        if (collected) {
+        if (collected && press_edge) {
             if (inp.shift_held) {
                 // &2d27 fails if weapon_energy_high < 0x08 (less than
                 // 0x800). &2d16 caps at 0xff00 (carry from +0x08 to high).
@@ -710,11 +715,37 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
                     if (hi + 0x08 <= 0xff) {
                         weapon_energy_[player_weapon_] = cur + 0x0800;
                     }
+                    // &2d21 cue one bell to mark a successful transfer.
+                    // 6502 doesn't fire the high beep here — only the
+                    // bell on the next chime tick — so neither do we.
+                    energy_level_bells_remaining_ = 1;
                 }
             } else {
                 player_weapon_ = w;
+                // &2cf7-&2cfd: bells = energy_high >> 3. weapon_energy_
+                // is uint16; high byte is >> 8, then >> 3.
+                energy_level_bells_remaining_ = static_cast<uint8_t>(
+                    (weapon_energy_[w] >> 11) & 0xff);
+                // &2cff play_high_beep always plays, even at zero bells,
+                // so the press is audibly acknowledged.
+                static constexpr uint8_t kSoundHighBeep[4] =
+                    { 0x17, 0x82, 0x13, 0xf2 };
+                Audio::play(Audio::CH_ANY, kSoundHighBeep);
             }
         }
+    }
+    weapon_select_prev_ = inp.weapon_select;
+    shift_select_prev_  = inp.shift_held;
+
+    // &4a57-&4a66 — once every 4 frames, if bells_remaining is non-zero,
+    // decrement it and play the bell tone. Counts down from the high-
+    // beep press until silent, so the player hears one chime per 0x800
+    // chunk of energy in the selected weapon.
+    if ((frame_counter_ & 0x03) == 0 && energy_level_bells_remaining_ > 0) {
+        --energy_level_bells_remaining_;
+        static constexpr uint8_t kSoundEnergyBell[4] =
+            { 0x17, 0xe3, 0x2f, 0x82 };
+        Audio::play(Audio::CH_ANY, kSoundEnergyBell);
     }
 
     // &37e6-&380d jetpack drain. Eligible iff jumping/flying (state low

@@ -29,6 +29,16 @@
 #include <fstream>
 #include <ostream>
 
+// Stack-trace helper for the sfx debug log. CaptureStackBackTrace gives
+// us the return addresses; SymFromAddr resolves them to symbol names
+// when symbols are available (PDB next to the exe). Lazy SymInitialize.
+#if defined(_WIN32)
+#include <dbghelp.h>
+#if defined(_MSC_VER)
+#pragma comment(lib, "dbghelp.lib")
+#endif
+#endif
+
 namespace {
 
 // fenster_audio.h uses float PCM at 44100 Hz mono. Audio::tick fires
@@ -428,6 +438,49 @@ void close() {
 // the game thread only.
 static bool g_suppress_play_debug_log = false;
 
+#if defined(_WIN32)
+// Resolve a return address to "symbol+offset" via dbghelp. Caller passes
+// a buffer; we fill it with at most `cap` chars. Lazy SymInitialize on
+// the first call — slow once, cheap thereafter (SymFromAddr caches).
+static void format_caller(void* addr, char* out, size_t cap) {
+    static bool inited = false;
+    if (!inited) {
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+        SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+        inited = true;
+    }
+    alignas(SYMBOL_INFO) char buf[sizeof(SYMBOL_INFO) + 256];
+    SYMBOL_INFO* sym = reinterpret_cast<SYMBOL_INFO*>(buf);
+    sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+    sym->MaxNameLen   = 256;
+    DWORD64 disp = 0;
+    if (SymFromAddr(GetCurrentProcess(),
+                    reinterpret_cast<DWORD64>(addr), &disp, sym)) {
+        std::snprintf(out, cap, "%s+0x%llx",
+                      sym->Name, static_cast<unsigned long long>(disp));
+    } else {
+        std::snprintf(out, cap, "0x%p", addr);
+    }
+}
+
+// Walks past the audio.cpp frames so the "from" symbol points at the
+// outermost caller (e.g. behaviours/creature.cpp), not Audio::play
+// itself. CaptureStackBackTrace skips its own frame; we pass 1 to
+// also skip the immediate caller (the play/play_at body).
+static void log_sfx_caller(std::ostream& out) {
+    void* frames[6] = {};
+    USHORT n = CaptureStackBackTrace(1, 6, frames, nullptr);
+    out << " from";
+    for (USHORT i = 0; i < n && i < 3; ++i) {
+        char sym[300] = {};
+        format_caller(frames[i], sym, sizeof(sym));
+        out << ' ' << sym;
+    }
+}
+#else
+static void log_sfx_caller(std::ostream&) {}
+#endif
+
 void play(int channel_hint, const uint8_t params[4]) {
     if (!g_open || !g_enabled) return;
     const int ch_idx = pick_channel(channel_hint);
@@ -447,9 +500,11 @@ void play(int channel_hint, const uint8_t params[4]) {
     if (g_debug_log && !g_suppress_play_debug_log) {
         char line[128];
         std::snprintf(line, sizeof(line),
-            "sfx ch=%d params=[%02x %02x %02x %02x]\n",
+            "sfx ch=%d params=[%02x %02x %02x %02x]",
             ch_idx, params[0], params[1], params[2], params[3]);
         *g_debug_log << line;
+        log_sfx_caller(*g_debug_log);
+        *g_debug_log << '\n';
         g_debug_log->flush();
     }
 
@@ -506,10 +561,12 @@ void play_at(int channel_hint, const uint8_t params[4],
         const int ch_idx_dbg = pick_channel(channel_hint);
         char line[160];
         std::snprintf(line, sizeof(line),
-            "sfx ch=%d params=[%02x %02x %02x %02x] @(%u,%u) dist=%d\n",
+            "sfx ch=%d params=[%02x %02x %02x %02x] @(%u,%u) dist=%d",
             ch_idx_dbg, params[0], params[1], params[2], params[3],
             src_x, src_y, distance);
         *g_debug_log << line;
+        log_sfx_caller(*g_debug_log);
+        *g_debug_log << '\n';
         g_debug_log->flush();
     }
 

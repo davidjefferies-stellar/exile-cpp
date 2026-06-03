@@ -342,10 +342,16 @@ void update_door(Object& obj, UpdateContext& ctx) {
                                obj.x.whole, obj.y.whole);
             } else if (ctx.mgr.door_timer_ == 0) {
                 // cyG/rmB doors: arm the 60-frame hold-open timer and
-                // toggle direction (fallthrough from &4d1f into &4d22).
+                // toggle direction (fallthrough from &4d1f into &4d22),
+                // which plays the open/close sound on the new direction.
                 ctx.mgr.door_timer_ = 60;
                 data ^= DoorFlag::OPENING;
                 opening = (data & DoorFlag::OPENING) != 0;
+                static constexpr uint8_t kSoundDoorOpen[4]  = { 0xc7, 0xc3, 0xc1, 0x13 };
+                static constexpr uint8_t kSoundDoorClose[4] = { 0xc7, 0xc3, 0xc1, 0x03 };
+                Audio::play_at(Audio::CH_ANY,
+                               opening ? kSoundDoorOpen : kSoundDoorClose,
+                               obj.x.whole, obj.y.whole);
             }
         }
     }

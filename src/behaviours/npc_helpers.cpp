@@ -178,6 +178,36 @@ void seek_player(Object& obj, const Object& player, int8_t speed) {
     move_toward(obj, player.x.whole, player.y.whole, speed);
 }
 
+// Port of &31da. Compute target vector at `magnitude`, then clamp the
+// per-axis velocity delta to +/- max_accel. The 6502 derives the per-
+// axis "desired velocity" from angle+magnitude via &3347 use_vector_
+// between_object_centres; we approximate with axis-aligned magnitude
+// (the difference is invisible at the velocities Triax operates at —
+// vy bias dominates the absorb-fall vs chase-player tradeoff).
+void steer_toward(Object& obj, uint8_t target_x, uint8_t target_y,
+                  uint8_t magnitude, uint8_t max_accel) {
+    int8_t dx = static_cast<int8_t>(target_x - obj.x.whole);
+    int8_t dy = static_cast<int8_t>(target_y - obj.y.whole);
+    int8_t desired_vx = 0;
+    int8_t desired_vy = 0;
+    int8_t mag = static_cast<int8_t>(magnitude);
+    if (dx > 0) desired_vx = mag;
+    else if (dx < 0) desired_vx = static_cast<int8_t>(-mag);
+    if (dy > 0) desired_vy = mag;
+    else if (dy < 0) desired_vy = static_cast<int8_t>(-mag);
+
+    int8_t accel_cap = static_cast<int8_t>(max_accel);
+    int diff_x = int(desired_vx) - int(obj.velocity_x);
+    if (diff_x >  accel_cap) diff_x =  accel_cap;
+    if (diff_x < -accel_cap) diff_x = -accel_cap;
+    obj.velocity_x = static_cast<int8_t>(int(obj.velocity_x) + diff_x);
+
+    int diff_y = int(desired_vy) - int(obj.velocity_y);
+    if (diff_y >  accel_cap) diff_y =  accel_cap;
+    if (diff_y < -accel_cap) diff_y = -accel_cap;
+    obj.velocity_y = static_cast<int8_t>(int(obj.velocity_y) + diff_y);
+}
+
 // Port-only inverse of seek_player. 6502 equivalent is &3c09
 // avoid_fireballs with negated angle into move_towards_target.
 void flee_player(Object& obj, const Object& player, int8_t speed) {
