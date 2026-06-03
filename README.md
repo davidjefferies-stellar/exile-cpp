@@ -79,6 +79,7 @@ flags, key bindings, and the landscape-generator A/B toggle.
 | Shift + `1`–`5`| transfer energy from that slot into current weapon |
 | `Y` / `U`      | whistle one / two                         |
 | Esc            | pause menu (save / load game state via menu items) |
+| Numpad `-` / `*` | rewind / forward through the time buffer (hold to scrub) |
 | `\`            | save current landscape to `exile.map`     |
 | mouse wheel    | zoom                                      |
 | right-drag     | pan camera (map mode)                     |
@@ -87,6 +88,18 @@ flags, key bindings, and the landscape-generator A/B toggle.
 Map-mode toggle and the rest of the debug overlays (tile grid, object
 labels, switch / transporter wires, collision shading, debug text) live
 on the bottom-HUD checkboxes — click them to toggle.
+
+## Rewind / forward through time
+
+Every frame's full world state is captured into a rolling ring buffer
+(~10 seconds at 25 fps). Tap Numpad `-` to step one frame back in time
+or Numpad `*` to step forward; hold either to scrub continuously, one
+frame per tick. Entering scrub mode freezes the simulation so you can
+inspect a moment frame-by-frame. Press Esc to commit the frame you've
+scrubbed to as the new live state and resume — the timeline branches
+from there, discarding the frames you'd wound past. Shift+`;` dumps the
+entire ring buffer to `exile-frames.txt` (one `=== frame N ===` block
+per frame) for offline inspection.
 
 ![exile-cpp screenshot 2](docs/images/exile-cpp_2.png)
 
@@ -165,6 +178,42 @@ exists so the C++ rewrite can be A/B-tested against the reference.
 Flipping the flag at runtime via the ini and relaunching is the easiest
 way to compare — see `docs/landscape.md` for details.
 
+## jsbeeb bridge
+
+Press `J` to open a live bridge between this port and the BBC emulator
+[jsbeeb](https://bbc.xania.org/) running in another tab. Two ways to
+use it:
+
+- **Full state push** (default). One press of `J` snapshots the entire
+  game state — primary and secondary object caches, weapons, keys,
+  tertiary table, all relevant zero-page bytes — and POKEs it into
+  jsbeeb's emulated 6502 memory. From the next frame on, jsbeeb runs
+  Exile from your current position with your current inventory.
+  Useful for "see how the original would have handled this exact
+  state" debugging.
+- **Position-only push**. Set `[debug] jsbeeb_position_only = true` in
+  `exile.ini` and `J` only writes the player's `(x, y)` to jsbeeb,
+  leaving the BBC's own object caches alone. Useful when you want to
+  walk the BBC player to a specific spot and compare per-object
+  behaviour without overwriting jsbeeb's world.
+
+**Full-state requires the caches match the original.** This port lets
+`exile.ini`'s `[caches] primary_slots` and `secondary_slots` go above
+the BBC's 16 / 32 to test with more objects in play, but a full-state
+push will only work if both sides have the same slot counts as the
+original. Set:
+
+```ini
+[caches]
+primary_slots   = 16
+secondary_slots = 32
+```
+
+before launching, or position-only is the only mode that works.
+
+Step-by-step setup (jsbeeb console snippet and a bookmarklet version)
+lives in [`docs/jsbeeb_bridge_setup.md`](docs/jsbeeb_bridge_setup.md).
+
 ## Tests
 
 A small headless test suite lives under `tests/`, built by
@@ -216,6 +265,14 @@ AI-assisted tooling has been used during the development of this project.
   (`exile-standard-disassembly.txt`) that this port works from. Every
   function in the C++ source is cross-referenced back to the original
   RAM address from their analysis.
+- **Lord Triax** - [Full Exile (BBC Micro) playthrough (fully annotated)](https://www.youtube.com/watch?v=yjWjWvOwdlw)
+  Creator of the annotated playthrough used as reference when testing the port.
+  The save games from the walkthrough are included under the save debug tab.
+- **Matt Godbolt** — author of the excellent 
+  [jsbeeb](https://bbc.xania.org/) ([github.com/mattgodbolt/jsbeeb](https://github.com/mattgodbolt/jsbeeb)),
+  the in-browser BBC Micro emulator that the
+  [jsbeeb bridge](#jsbeeb-bridge) above pairs with for side-by-side
+  comparison against the original.
 - **sokol** by Andre Weissflog (floooh) —
   [github.com/floooh/sokol](https://github.com/floooh/sokol). The
   windowing, input, and cross-platform GPU layer (D3D11 on Windows
@@ -226,6 +283,9 @@ AI-assisted tooling has been used during the development of this project.
   cross-platform single-header audio driver used for the non-Windows
   audio backend. MIT license; vendored as `deps/fenster_audio.h`.
 
+## Special thanks to
+
+- RichTW, kieranhj, Stew B, VectorEyes, tom_seddon, MattG and scarybeasts for their seemingly limitless 6502 and Exile knowledge.
 
 ## Licence
 

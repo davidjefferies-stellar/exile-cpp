@@ -88,6 +88,13 @@ void set_spacesuit_sprite_from_angle(Object& player,
             sprite = 0x04; // SPRITE_SPACESUIT_VERTICAL (standing)
         } else if (jumping_or_flying) {
             sprite = 0x02; // SPRITE_SPACESUIT_JUMPING
+        } else if (player.flags & ObjectFlags::TELEPORTING) {
+            // Don't clobber player.timer while teleporting — it holds
+            // the 0x20-down teleport-animation countdown, and overwriting
+            // it with the walking-cycle counter (0..7) means timer never
+            // hits 0x10 and the position rewrite at advance_player_
+            // teleport never fires. Keep the standing sprite.
+            sprite = 0x04;
         } else {
             // &3937-&3946 walking. &2555 update_sprite_offset_using_
             // velocities with modulus 8: timer += 1 + (max(|vx|,|vy|)/16)
@@ -136,11 +143,16 @@ void Game::update_player_sprite(int8_t accel_x, int8_t accel_y) {
     // &38ec-&38fa protected suit 0x33 (rcY), unprotected 0x3e (mwY).
     uint8_t base_palette = (weapon_energy_[5] > 0) ? 0x33 : 0x3e;
 
-    // &38d9-&3901 low-energy strobe. Compare (frame_counter & 0x1f) * 2
-    // against energy; CMP sets carry if A >= operand, i.e. flash. At
-    // full energy the threshold never reaches it; lower energy widens
-    // the flashing window. EOR #&0b: 0x33<->0x38, 0x3e<->0x35 (gyY).
-    if (((frame_counter_ & 0x1f) << 1) >= player.energy) {
+    // &38d9-&3901 low-energy strobe. The 6502 compares (frame_counter
+    // & 0x1f) * 2 against energy: a 32-frame outer cycle that produces
+    // alternating strobe-on / strobe-off windows whose widths scale with
+    // energy — lower energy widens the strobe window, full energy
+    // disables it. Port-only deviation: inside the strobe window we
+    // also gate on frame parity so the flicker reads as 25Hz (fast
+    // damage cue) instead of a flat hold. EOR #&0b: 0x33<->0x38,
+    // 0x3e<->0x35 (gyY).
+    bool strobe_window = (((frame_counter_ & 0x1f) << 1) >= player.energy);
+    if (strobe_window && (frame_counter_ & 0x01)) {
         base_palette ^= 0x0b;
     }
     player.palette = base_palette;
