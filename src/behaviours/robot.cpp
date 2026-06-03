@@ -284,36 +284,16 @@ void update_hovering_robot(Object& obj, UpdateContext& ctx) {
     regen_and_flash_if_damaged(obj, ctx, 0x14);
     if (obj.energy < 0x80) return;
 
-    NPC::cancel_gravity(obj);
-
     // &480c-&4811: 1-in-128 chance per frame of the ambient hover whine.
     if ((ctx.rng.next() & 0x7f) == 0) {
         static constexpr uint8_t kSoundHover[4] = { 0x33, 0xf3, 0x63, 0xe3 };
         Audio::play_at(Audio::CH_ANY, kSoundHover, obj.x.whole, obj.y.whole);
     }
 
-    // Patrol: hover near player
-    if (ctx.every_eight_frames) {
-        NPC::seek_player(obj, ctx.mgr.player(), 3);
-    }
-
-    // Random vertical jitter
-    if (ctx.every_four_frames) {
-        obj.velocity_y += (ctx.rng.next() & 0x03) - 1;
-    }
-
-    // &4877: 1-in-4 gated flip (hovering robots share move_hovering_npc
-    // which runs the probability-gated variant).
-    {
-        uint8_t before_flip = obj.flags & ObjectFlags::FLIP_HORIZONTAL;
-        NPC::consider_face_movement_direction(obj, ctx.rng);
-        log_flip_if_changed(obj, ctx, before_flip);
-    }
-
-    // &4815-&4819 LDA &d9 / CMP #&40 / BCS move_hovering_npc — outer
-    // 1-in-4 gate. &276c-&2773 inside find_a_target_and_fire_at_it
-    // applies the inner energy-scaled gate ((energy>>3)+2 >= rnd) so the
-    // robot fires less when wounded.
+    // &4815-&481d LDA &d9 / CMP #&40 / BCS move_hovering_npc — 1-in-4
+    // detour to fire, then falls through to move_hovering_npc either way.
+    // &276c-&2773 inside find_a_target_and_fire_at_it applies the inner
+    // energy-scaled gate ((energy>>3)+2 >= rnd) so it fires less wounded.
     if ((ctx.rng.next() & 0xc0) == 0 &&
         NPC::has_line_of_sight_randomized(obj, /*target_slot=*/0, ctx) &&
         ctx.rng.next() <= static_cast<uint8_t>((obj.energy >> 3) + 2)) {
@@ -329,10 +309,27 @@ void update_hovering_robot(Object& obj, UpdateContext& ctx) {
         }
     }
 
-    // &4885 consider_hovering_over_ground — hover robots share &487a
-    // thrust_towards_target, which calls hover-over-ground after
-    // cancel_gravity. Without this they sink into the floor.
-    NPC::consider_hovering_over_ground(obj, ctx);
+    // &486e move_hovering_npc (shared with hovering balls): target the
+    // player, follow the LOS-gated path waypoint, then thrust hard toward
+    // it every frame. Runs unconditionally after the fire detour.
+    obj.target_and_flags = (obj.target_and_flags & ~0x1fu);  // &4870 target = player
+    NPC::update_npc_path(obj, ctx);                          // &4872 consider_updating_npc_path
+
+    // &4875 LDA #&07 / consider_flipping_object_to_match_velocity_x_A:
+    // (#&07 AND rnd)==0 -> 1-in-8 flip (the "1 in 32" disasm note is wrong).
+    {
+        uint8_t before_flip = obj.flags & ObjectFlags::FLIP_HORIZONTAL;
+        if ((ctx.rng.next() & 0x07) == 0) NPC::face_movement_direction(obj);
+        log_flip_if_changed(obj, ctx, before_flip);
+    }
+
+    // &487a thrust_towards_target: magnitude 0x1c, max-accel 4, 1-in-2.
+    NPC::move_towards_target_with_probability(obj, ctx, 0x1c, 4, 0x80);
+    NPC::cancel_gravity(obj);                       // &4883 DEC acceleration_y
+    NPC::consider_hovering_over_ground(obj, ctx);   // &4885
+    if (ctx.particles) {                            // &4888 add_jetpack_thrust_particles
+        ctx.particles->emit(ParticleType::JETPACK, 1, obj, ctx.cosmetic_rng);
+    }
 }
 
 // Port of &481f update_clawed_robot head (5-inst entry, falls through

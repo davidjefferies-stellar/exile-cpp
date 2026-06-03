@@ -743,8 +743,11 @@ void update_transporter_beam(Object& obj, UpdateContext& ctx) {
             if (next > 0xb0) next = 0x00;
             obj.state = next;
         }
+    } else {
+        // &4d8a-&4d8c: stationary pins the beam at the top of the sweep
+        // (y-fraction 0xb0), regardless of where it stopped.
+        obj.state = 0xb0;
     }
-    // Stationary or newly-created: state keeps its current value.
 
     // &4dbd-&4dc6 rendered y_fraction. 6502 BIT y_flip / invert_if_positive
     // negates when y_flip bit 7 is CLEAR — sign condition is reversed
