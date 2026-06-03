@@ -43,10 +43,15 @@ bool point_in_tile_solid(const Landscape& landscape,
 // callers that want closed doors to block (NPC LOS, projectile vs tile,
 // etc.). The plain point_in_tile_solid stays available for callers that
 // must NOT see doors as obstacles (held-object overlap probes).
+// door_to_suppress mirrors the 6502's &3599: when an LOS check targets a
+// door, that door's data_offset is passed here so its own tile is treated
+// as clear (&3e9c CPY &3599 / BEQ leave) instead of blocking sight to
+// itself. -1 = suppress nothing.
 bool point_in_tile_solid_with_doors(
     const Landscape& landscape, ObjectManager& mgr,
     uint8_t tile_x, uint8_t tile_y,
-    uint8_t x_frac, uint8_t y_frac);
+    uint8_t x_frac, uint8_t y_frac,
+    int door_to_suppress = -1);
 
 // Same pattern check, but operates on an explicit tile_and_flip byte rather
 // than reading from landscape. Useful after substitute_door_for_obstruction:

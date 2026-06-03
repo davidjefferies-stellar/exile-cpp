@@ -83,8 +83,13 @@ static bool tile_obstructs_point(const Landscape& landscape,
 bool point_in_tile_solid_with_doors(
         const Landscape& landscape, ObjectManager& mgr,
         uint8_t tile_x, uint8_t tile_y,
-        uint8_t x_frac, uint8_t y_frac) {
+        uint8_t x_frac, uint8_t y_frac,
+        int door_to_suppress) {
     ResolvedTile r = resolve_tile_with_tertiary(landscape, tile_x, tile_y);
+    // &3e9c: the targeted door's own tile is not created during the
+    // obstruction check, so it never blocks line of sight to itself.
+    if (door_to_suppress >= 0 && r.data_offset == door_to_suppress)
+        return false;
     uint8_t tile = substitute_door_for_obstruction(
         r.tile_and_flip, r.data_offset,
         mgr.primary_array(),

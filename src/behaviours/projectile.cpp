@@ -1078,6 +1078,11 @@ void apply_explosion_radius(ObjectManager& mgr, const Landscape& landscape,
         if (!other.is_active()) continue;
         if (&other == &source) continue;
 
+        // Door targets (object types 0x3c-0x3f) need self-tile LOS
+        // suppression so the explosion isn't blocked by the door it hits.
+        uint8_t other_ti = static_cast<uint8_t>(other.type);
+        bool target_is_door = other_ti >= 0x3c && other_ti <= 0x3f;
+
         // Fractional position deltas — full 16-bit precision so a target
         // sharing a tile with the source still gets a non-zero direction.
         int other_fx = int(other.x.whole) * 256 + int(other.x.fraction);
@@ -1141,8 +1146,13 @@ void apply_explosion_radius(ObjectManager& mgr, const Landscape& landscape,
                     uint8_t ty = static_cast<uint8_t>((py >> 8) & 0xff);
                     uint8_t xf = static_cast<uint8_t>(px & 0xff);
                     uint8_t yf = static_cast<uint8_t>((py & 0xf8) | 0x04);
+                    // &35ae-&35b1: a door target suppresses its own tile
+                    // so the explosion's LOS isn't blocked by the door it
+                    // is trying to damage.
+                    int suppress = target_is_door
+                        ? static_cast<int>(other.tertiary_slot) : -1;
                     if (Collision::point_in_tile_solid_with_doors(
-                            landscape, mgr, tx, ty, xf, yf)) {
+                            landscape, mgr, tx, ty, xf, yf, suppress)) {
                         blocked = true;
                         break;
                     }
