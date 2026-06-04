@@ -104,8 +104,8 @@ TEST(push_out_of_overlap_kicks_obj_along_smallest_axis) {
 
     int px_before = obj.x.whole * 256 + obj.x.fraction;
     int py_before = obj.y.whole * 256 + obj.y.fraction;
-    bool pushed   = Collision::push_out_of_overlap(obj, blocker);
-    EXPECT_TRUE(pushed);
+    int push_axis = Collision::push_out_of_overlap(obj, blocker);
+    EXPECT_TRUE(push_axis >= 0);
 
     // Push moved obj on exactly one axis and added a +/-2 kick along
     // that same axis. Don't assert which one — the smallest-overlap pick
@@ -126,7 +126,7 @@ TEST(push_out_of_overlap_returns_false_when_not_overlapping) {
     obj.x = {0x10, 0x00}; obj.y = {0x10, 0x00};
     blocker.x = {0x40, 0x00}; blocker.y = {0x40, 0x00};   // miles apart
 
-    EXPECT_TRUE(!Collision::push_out_of_overlap(obj, blocker));
+    EXPECT_EQ(Collision::push_out_of_overlap(obj, blocker), -1);
     // Untouched: no position or velocity changes.
     EXPECT_EQ(obj.x.whole,    0x10);
     EXPECT_EQ(obj.x.fraction, 0x00);
