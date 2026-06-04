@@ -3,9 +3,7 @@
 // declarations only via FENSTER_HEADER + extern "C".
 
 // C mode doesn't transitively pull stdint via windows.h like C++; without
-// it the struct's int16_t buf[][] fails to parse. stddef.h gives size_t,
-// used in fenster_audio.h's struct + write() signature (windows.h pulls it
-// in on Windows, but nothing else does on the Linux/ALSA path).
+// it the struct's int16_t buf[][] fails to parse.
 #include <stddef.h>
 #include <stdint.h>
 
