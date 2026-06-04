@@ -128,23 +128,32 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
 
     if (obj_type >= static_cast<uint8_t>(ObjectType::COUNT)) return;
 
-    // Compute sub-tile placement from the flip bits (matches &4069-&407e).
-    // The 6502 stores (pixels-1)*16 and (rows-1)*8 in its sprite size tables;
-    // we reproduce that from the atlas entry's pixel dimensions.
+    // Sub-tile placement, port of &4069-&407e. Two subtleties matter:
+    // the SBCs read the FULL width/height table byte (intrinsic-flip bit
+    // 0 included), and carry from the x-SBC chains into the y-SBC. With
+    // either omitted, the h-flip-only tile of a 2-tile vertical door
+    // lands 1 BBC pixel below its v-flipped twin (snap-mode rendering).
+    // Carry entering &4069 is CLEAR (caller's &4057 BCS not taken).
     uint8_t sprite_id = object_types_sprite[obj_type];
-    uint8_t width_byte  = 0;
-    uint8_t height_byte = 0;
-    if (sprite_id <= 0x80) {
-        const SpriteAtlasEntry& e = sprite_atlas[sprite_id];
-        width_byte  = static_cast<uint8_t>((e.w > 0 ? (e.w - 1) : 0) * 16);
-        height_byte = static_cast<uint8_t>((e.h > 0 ? (e.h - 1) : 0) * 8);
+    uint8_t w_byte = 0, h_byte = 0;
+    if (sprite_id < BBC_SPRITE_COUNT) {
+        w_byte = BBC_SPRITE_WIDTH_FLIP[sprite_id];
+        h_byte = BBC_SPRITE_HEIGHT_FLIP[sprite_id];
     }
-    uint8_t x_frac = (tile_flip & TileFlip::HORIZONTAL)
-        ? static_cast<uint8_t>(0u - width_byte)
-        : 0;
-    uint8_t y_frac = (tile_flip & TileFlip::VERTICAL)
-        ? 0
-        : static_cast<uint8_t>(0u - height_byte);
+    bool carry = false;
+    uint8_t a = 0;
+    if (tile_flip & TileFlip::HORIZONTAL) {
+        int sub = int(a) - int(w_byte) - (carry ? 0 : 1);
+        a = static_cast<uint8_t>(sub & 0xff);
+        carry = (sub >= 0);
+    }
+    uint8_t x_frac = a;
+    a = 0;
+    if (!(tile_flip & TileFlip::VERTICAL)) {
+        int sub = int(a) - int(h_byte) - (carry ? 0 : 1);
+        a = static_cast<uint8_t>(sub & 0xff);
+    }
+    uint8_t y_frac = a;
 
     // TILE_SWITCH: button (OBJECT_SWITCH) needs the tile's own y-offset
     // (high nibble of tiles_y_offset_and_pattern, 0x10 fraction units)
