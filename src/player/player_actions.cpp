@@ -302,9 +302,11 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
     }
 
     // Tab: turn around (&1e19 handle_swapping_direction). Edge-triggered.
-    // Toggle player_facing_ — update_player_sprite rewrites the flag from
-    // it later this frame, so a direct flag toggle gets clobbered. 6502's
-    // player_object_x_flip (&38) is the same single source of truth.
+    // The 6502 ONLY toggles &df player_facing — the sprite picker
+    // (&3906 set_spacesuit_sprite_from_angle) turns a facing change
+    // into a 180°-rotated sprite via the EOR #&07 + 1 step. Touching
+    // player_angle_ here teleports the body and the slew snaps it
+    // back through upright the next frame.
     {
         bool down = inp.turn_around;
         if (down && !turn_around_key_prev_) {
@@ -368,12 +370,22 @@ void Game::apply_player_input(Object& player, const InputState& inp_in,
         accel_y = static_cast<int8_t>( 2 * accel_scale);
     }
 
-    // Set facing from input BEFORE the walking branch overwrites accel_x.
-    // 6502 stores facing at &38b0-&38b7 from input-driven accel_x; the
-    // &3b53 walking overwrite (slope vector / braking) lands AFTER so
-    // facing isn't flipped on deceleration.
-    if (inp.move_right)      player_facing_ = 0x00;
-    else if (inp.move_left)  player_facing_ = 0x80;
+    // Set facing from input — only while the body is in the upright
+    // angle range. Port of the &3897-&389d gate: &37c8 keeps the &05
+    // player_is_upright bit 7 set iff player_angle is in [0xb0, 0xce],
+    // and &3897 BIT &05 / &3899 BMI is_upright falls through to LDX #&00
+    // (which then makes &38b5 BMI skip the &38b7 STA &df) when bit 7 is
+    // clear. So while flying diagonally (angle outside [0xb0, 0xce]),
+    // the 6502 DOES NOT overwrite player_facing from accel_x — which
+    // lets a Tab press persist mid-flight. Without this gate Tab gets
+    // clobbered next frame and the player snaps back to input-direction
+    // facing.
+    bool angle_in_upright_range =
+        (player_angle_ >= 0xb0 && player_angle_ <= 0xce);
+    if (angle_in_upright_range) {
+        if (inp.move_right)      player_facing_ = 0x00;
+        else if (inp.move_left)  player_facing_ = 0x80;
+    }
 
     // Port of &3b25 walk_along_flat_or_shallow_slope:
     //   diff  = sign(dir) * 0x1f - velocity_x
