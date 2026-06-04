@@ -62,10 +62,14 @@ if(WIN32)
   # CMake/clang-cl build is at least wired correctly. SOKOL_D3D11 + winsock.
   target_link_libraries(exile PRIVATE winmm ws2_32)
 elseif(APPLE)
-  # sokol picks Metal here; audio uses fenster's AudioToolbox path.
+  # Untested, but kept internally consistent: sokol_impl.cpp selects
+  # SOKOL_GLCORE on every non-Windows platform, so macOS uses desktop GL
+  # (deprecated on macOS but still functional) with the same GLSL present
+  # shaders as Linux — NOT Metal. sokol's GLCORE path links Cocoa (AppKit)
+  # + QuartzCore + OpenGL; fenster's audio backend uses AudioToolbox.
   target_link_libraries(exile PRIVATE
-    "-framework Cocoa" "-framework QuartzCore" "-framework Metal"
-    "-framework MetalKit" "-framework AudioToolbox")
+    "-framework Cocoa" "-framework QuartzCore" "-framework OpenGL"
+    "-framework AudioToolbox")
 else()
   # Linux / *nix: sokol GLCORE over GLX/X11, audio over ALSA (libasound).
   find_package(X11 REQUIRED)

@@ -89,8 +89,9 @@ cmake --build build --target exile_tests -j
 ctest --test-dir build --output-on-failure   # or: ./build/exile_tests
 ```
 
-macOS is wired up in `CMakeLists.txt` (sokol's Metal backend) but is
-not regularly tested.
+macOS is wired up in `CMakeLists.txt` too — it uses the same desktop-GL
+(`SOKOL_GLCORE`) backend and GLSL shaders as Linux (OpenGL is deprecated
+on macOS but still functional), not Metal — but it is untested.
 
 The build pulls in single-header dependencies bundled under `deps/`:
 
