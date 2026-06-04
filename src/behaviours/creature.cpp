@@ -27,8 +27,12 @@ static void chatter_common(Object& obj, UpdateContext& ctx) {
         obj.state = NPCMood::MINUS_TWO;
     }
 
-    // &48b1-&48b6: NPC stimuli (type 7) + path update.
+    // &48b1-&48b6: NPC stimuli (type 7) + path update. Both calls
+    // matter — without consider_updating_npc_path the tx/ty waypoint
+    // never refreshes from target_and_flags and chatter thrusts toward
+    // a stale (spawn-time) coordinate instead of the player.
     Mood::update_mood(obj, ctx);
+    NPC::update_npc_path(obj, ctx);
 
     // &48b9-&48bd: feeding. 6502 reads bit 0 of the stimuli byte (food
     // absorbed) and INCs chatter_energy_reserve. Mood::update_mood owns
