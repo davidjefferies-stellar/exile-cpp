@@ -41,7 +41,8 @@ namespace {
     int         fb_w      = 0;
     int         fb_h      = 0;
 
-    // HLSL passthrough: float2 pos in clip space, float2 uv in [0,1].
+#if defined(_WIN32)
+    // HLSL passthrough (D3D11 backend): float2 pos in clip space, uv in [0,1].
     const char* fb_vs_src =
         "struct vs_in  { float2 pos : POSITION; float2 uv : TEXCOORD0; };\n"
         "struct vs_out { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
@@ -59,6 +60,32 @@ namespace {
         "float4 main(vs_out inp) : SV_Target0 {\n"
         "    return tex.Sample(smp, inp.uv);\n"
         "}\n";
+#else
+    // GLSL 410 passthrough (GLCORE/GLX backend on Linux & co.). Mirrors the
+    // HLSL above one-for-one. Attribute names (`pos`, `uv`) and the combined
+    // sampler name (`tex_smp`) are wired to the shader desc below via
+    // glsl_name fields — required by sokol's GL 4.1 path.
+    const char* fb_vs_src =
+        "#version 410\n"
+        "in vec2 pos;\n"
+        "in vec2 uv;\n"
+        "out vec2 uv_frag;\n"
+        "void main() {\n"
+        "    gl_Position = vec4(pos, 0.0, 1.0);\n"
+        "    uv_frag = uv;\n"
+        "}\n";
+
+    const char* fb_fs_src =
+        "#version 410\n"
+        "uniform sampler2D tex_smp;\n"
+        "in vec2 uv_frag;\n"
+        "out vec4 frag_color;\n"
+        "void main() {\n"
+        // RGBA8 texture holds the CPU buffer's B,G,R,A bytes, so the
+        // sampled .rgba is actually (B,G,R,A) — .bgra restores (R,G,B,A).
+        "    frag_color = texture(tex_smp, uv_frag).bgra;\n"
+        "}\n";
+#endif
 }
 
 // (Re)create the framebuffer texture and its sampling view at (w,h). Called
@@ -69,7 +96,16 @@ static void recreate_fb_image(int w, int h) {
     sg_image_desc id = {};
     id.width  = w;
     id.height = h;
-    id.pixel_format = SG_PIXELFORMAT_BGRA8;   // CPU buf is 0xAARRGGBB = B,G,R,A bytes
+    // CPU buf is uint32_t 0xAARRGGBB = bytes [B,G,R,A] in little-endian.
+    // D3D11 takes that verbatim as BGRA8. Desktop GL has no renderable
+    // BGRA8 internal format (BGRA is upload-only there), so on GL we store
+    // the bytes in an RGBA8 texture and undo the channel order with a
+    // `.bgra` swizzle in the fragment shader (see fb_fs_src).
+#if defined(_WIN32)
+    id.pixel_format = SG_PIXELFORMAT_BGRA8;
+#else
+    id.pixel_format = SG_PIXELFORMAT_RGBA8;
+#endif
     id.usage.stream_update = true;            // updated every frame
     id.label = "exile-framebuffer";
     fb_img = sg_make_image(&id);
@@ -130,17 +166,26 @@ static void init_cb() {
     sh.vertex_func.entry  = "main";
     sh.fragment_func.source = fb_fs_src;
     sh.fragment_func.entry  = "main";
+#if defined(_WIN32)
+    // D3D11: attributes bind by HLSL semantic, texture/sampler by register.
     sh.attrs[0].hlsl_sem_name = "POSITION";
     sh.attrs[0].hlsl_sem_index = 0;
     sh.attrs[1].hlsl_sem_name = "TEXCOORD";
     sh.attrs[1].hlsl_sem_index = 0;
+    sh.views[0].texture.hlsl_register_t_n = 0;
+    sh.samplers[0].hlsl_register_s_n = 0;
+#else
+    // GL 4.1: attributes bind by name; the texture+sampler pair is a single
+    // combined `sampler2D` uniform, named via texture_sampler_pairs.glsl_name.
+    sh.attrs[0].glsl_name = "pos";
+    sh.attrs[1].glsl_name = "uv";
+    sh.texture_sampler_pairs[0].glsl_name = "tex_smp";
+#endif
     sh.views[0].texture.stage = SG_SHADERSTAGE_FRAGMENT;
     sh.views[0].texture.image_type = SG_IMAGETYPE_2D;
     sh.views[0].texture.sample_type = SG_IMAGESAMPLETYPE_FLOAT;
-    sh.views[0].texture.hlsl_register_t_n = 0;
     sh.samplers[0].stage = SG_SHADERSTAGE_FRAGMENT;
     sh.samplers[0].sampler_type = SG_SAMPLERTYPE_FILTERING;
-    sh.samplers[0].hlsl_register_s_n = 0;
     sh.texture_sampler_pairs[0].stage = SG_SHADERSTAGE_FRAGMENT;
     sh.texture_sampler_pairs[0].view_slot = 0;
     sh.texture_sampler_pairs[0].sampler_slot = 0;

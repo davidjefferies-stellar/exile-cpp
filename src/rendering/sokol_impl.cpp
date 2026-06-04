@@ -5,10 +5,16 @@
 // sapp_run(sapp_desc) explicitly from there rather than letting sokol
 // generate WinMain. Lets the migration be phased.
 //
-// SOKOL_D3D11 pins the backend on Windows; no GL fallback compiled in.
+// Backend is picked per-platform: D3D11 on Windows, desktop GL (GLCORE,
+// GLX/X11) everywhere else. main.cpp's present shaders branch on the same
+// _WIN32 split (HLSL vs GLSL) so the two stay in lockstep.
 
 #define SOKOL_IMPL
-#define SOKOL_D3D11
+#if defined(_WIN32)
+  #define SOKOL_D3D11
+#else
+  #define SOKOL_GLCORE
+#endif
 #define SOKOL_NO_ENTRY
 
 #include "sokol_log.h"

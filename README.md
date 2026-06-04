@@ -18,6 +18,13 @@ The disassembly used as the spec is the superbly annotated version by **Level7**
 
 ## Build
 
+Two build systems, kept in sync: the Visual Studio solution is the
+canonical **Windows** build; `CMakeLists.txt` is the **Linux / cross-platform**
+build. They share the same sources and produce the same two artefacts
+(`exile` and `exile_tests`). Pick whichever matches your platform.
+
+### Windows (Visual Studio)
+
 Visual Studio solution. 
 
 **Command line (MSBuild):**
@@ -42,15 +49,62 @@ msbuild exile.vcxproj /p:Configuration=Release /p:Platform=x64
 5. The working directory at launch is the project root, so `exile.ini`,
    `exile.map`, `data/`, and `resources/` resolve as-is.
 
+### Linux (CMake)
+
+The game uses [sokol](https://github.com/floooh/sokol)'s desktop-GL
+backend (GLX/X11) and ALSA for audio, so it builds against the standard
+X11 + OpenGL + ALSA development packages. On Debian/Ubuntu:
+
+```sh
+sudo apt install build-essential cmake \
+    libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev libasound2-dev
+```
+
+| Package            | Why                                              |
+|--------------------|--------------------------------------------------|
+| `build-essential`  | A C++20 compiler (GCC 12+ / Clang 15+) and make  |
+| `cmake`            | Build-system generator (3.16+)                   |
+| `libx11-dev`       | X11 windowing (sokol_app)                        |
+| `libxi-dev`        | X Input extension — required by sokol_app's X11 backend |
+| `libxcursor-dev`   | Cursor handling (sokol_app)                      |
+| `libgl1-mesa-dev`  | OpenGL headers + libGL                           |
+| `libasound2-dev`   | ALSA audio (libasound)                           |
+
+The game links `-lX11 -lXi -lXcursor -lGL -lasound -ldl -lm -lpthread`.
+
+Build and run:
+
+```sh
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+./build/exile          # run from the repo root so exile.ini / data/ resolve
+```
+
+**The headless test runner needs none of the above** — `exile_tests`
+is built against the `NullRenderer` with audio compiled out, so it links
+with only the C++ runtime + pthreads. Build and run just the tests with:
+
+```sh
+cmake --build build --target exile_tests -j
+ctest --test-dir build --output-on-failure   # or: ./build/exile_tests
+```
+
+macOS is wired up in `CMakeLists.txt` (sokol's Metal backend) but is
+not regularly tested.
+
 The build pulls in single-header dependencies bundled under `deps/`:
 
 - `sokol_app.h` + `sokol_gfx.h` + `sokol_glue.h` + `sokol_log.h` —
   windowing, input, and a CPU-framebuffer-as-texture present path
-  (D3D11 backend on Windows). Hardware-accelerated blit; the per-pixel
-  rendering logic stays CPU-side.
-- `fenster_audio.h` — audio (Windows backend is bypassed by our own
-  `waveOut` implementation in `src/audio/`; the upstream sets `nBlockAlign`
-  incorrectly for PCM 16-bit mono).
+  (D3D11 backend on Windows, desktop GL via GLX/X11 on Linux).
+  Hardware-accelerated blit; the per-pixel rendering logic stays
+  CPU-side. The framebuffer is `0xAARRGGBB`: D3D11 takes that as BGRA8
+  directly, while GL uploads it to an RGBA8 texture and swizzles back
+  with `.bgra` in the present shader.
+- `fenster_audio.h` — audio. On Windows the backend is bypassed by our
+  own `waveOut` implementation in `src/audio/` (the upstream sets
+  `nBlockAlign` incorrectly for PCM 16-bit mono); on Linux fenster's
+  ALSA path drives `libasound`.
 
 ## Run
 
@@ -231,8 +285,9 @@ exile_tests.exe
 ```
 
 The exe returns the failure count, so it doubles as CI. GitHub Actions
-runs the same build on every push to `master` and on PRs — see
-`.github/workflows/tests.yml`.
+runs the build on every push to `master` and on PRs — on **Windows**
+(MSBuild) and **Linux** (CMake), building both the game and the tests on
+each — see `.github/workflows/tests.yml`.
 
 ## Source layout
 
