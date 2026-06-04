@@ -81,17 +81,13 @@ jobs:
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target exile -j
 
-      # Stage the runtime bundle: the binary + the default exile.ini.
-      # Mirrors the Windows bundle — landscape is baked from seed when
-      # exile.map is absent, so no map ships.
       - name: Stage release bundle
         run: |
           mkdir -p stage
           cp build/exile stage/
           cp exile.ini stage/
 
-      # tar.gz keeps the executable bit (a zip would drop it). The tag
-      # name is the workflow's ref_name on a tag push.
+      # tar.gz, not zip, to keep the executable bit.
       - name: Tar the bundle
         run: |
           TAG="${{ github.ref_name }}"

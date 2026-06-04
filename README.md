@@ -18,10 +18,9 @@ The disassembly used as the spec is the superbly annotated version by **Level7**
 
 ## Build
 
-Two build systems, kept in sync: the Visual Studio solution is the
-canonical **Windows** build; `CMakeLists.txt` is the **Linux / cross-platform**
-build. They share the same sources and produce the same two artefacts
-(`exile` and `exile_tests`). Pick whichever matches your platform.
+The Visual Studio solution is the Windows build; `CMakeLists.txt` is the
+Linux / cross-platform build. They share the same sources and produce the
+same two artefacts, `exile` and `exile_tests`.
 
 ### Windows (Visual Studio)
 
@@ -65,7 +64,7 @@ sudo apt install build-essential cmake \
 | `build-essential`  | A C++20 compiler (GCC 12+ / Clang 15+) and make  |
 | `cmake`            | Build-system generator (3.16+)                   |
 | `libx11-dev`       | X11 windowing (sokol_app)                        |
-| `libxi-dev`        | X Input extension — required by sokol_app's X11 backend |
+| `libxi-dev`        | X Input extension, needed by sokol_app's X11 backend |
 | `libxcursor-dev`   | Cursor handling (sokol_app)                      |
 | `libgl1-mesa-dev`  | OpenGL headers + libGL                           |
 | `libasound2-dev`   | ALSA audio (libasound)                           |
@@ -80,18 +79,18 @@ cmake --build build -j
 ./build/exile          # run from the repo root so exile.ini / data/ resolve
 ```
 
-**The headless test runner needs none of the above** — `exile_tests`
-is built against the `NullRenderer` with audio compiled out, so it links
-with only the C++ runtime + pthreads. Build and run just the tests with:
+The headless test runner needs none of the above. `exile_tests` is built
+against the `NullRenderer` with audio compiled out, so it links with only
+the C++ runtime plus pthreads. Build and run just the tests with:
 
 ```sh
 cmake --build build --target exile_tests -j
 ctest --test-dir build --output-on-failure   # or: ./build/exile_tests
 ```
 
-macOS is wired up in `CMakeLists.txt` too — it uses the same desktop-GL
-(`SOKOL_GLCORE`) backend and GLSL shaders as Linux (OpenGL is deprecated
-on macOS but still functional), not Metal — but it is untested.
+macOS is wired up in `CMakeLists.txt` too, using the same desktop-GL
+(`SOKOL_GLCORE`) backend and GLSL shaders as Linux rather than Metal
+(OpenGL is deprecated on macOS but still works). It's untested.
 
 The build pulls in single-header dependencies bundled under `deps/`:
 
@@ -286,9 +285,9 @@ exile_tests.exe
 ```
 
 The exe returns the failure count, so it doubles as CI. GitHub Actions
-runs the build on every push to `master` and on PRs — on **Windows**
-(MSBuild) and **Linux** (CMake), building both the game and the tests on
-each — see `.github/workflows/tests.yml`.
+runs the build on every push to `master` and on PRs, on Windows (MSBuild)
+and Linux (CMake), building both the game and the tests on each. See
+`.github/workflows/tests.yml`.
 
 ## Source layout
 

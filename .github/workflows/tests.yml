@@ -52,9 +52,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # The headless test runner itself needs no system libraries, but we
-      # build the full game target too (CI scope: prove the game compiles
-      # and links on Linux), which needs sokol's X11/GL deps + ALSA.
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -65,11 +62,8 @@ jobs:
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
-      # Builds both exile and exile_tests. A compile/link failure on
-      # either fails the job.
       - name: Build
         run: cmake --build build -j
 
-      # main() returns the failure count → non-zero exit fails the job.
       - name: Run tests
         run: ./build/exile_tests
