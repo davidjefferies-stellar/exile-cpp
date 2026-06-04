@@ -64,6 +64,19 @@ struct Object {
     // update_rotating_player (&3814-&3856) — the angle of incidence
     // chooses which way to tumble.
     uint8_t    pre_collision_angle = 0;
+    // 6502 &1c tile_collision_angle. Surface-normal angle of the tile the
+    // object is resting against, set by apply_tile_collision (&306c) each
+    // frame a tile collision occurs, else 0. Read by the NPC walker
+    // (&3b25) to thrust along the slope tangent. Player keeps its own
+    // player_tile_collision_angle_; this is the NPC equivalent.
+    uint8_t    tile_collision_angle = 0;
+    // 6502 &40/&42 this_object_acceleration_x/y. Transient per-frame accel
+    // the behaviour writes and the shared apply_acceleration consumes
+    // during physics. Zeroed each frame in update_objects (6502 &1aca).
+    // The port's NPCs mostly steer velocity directly, so these stay 0
+    // except for accel-based behaviours (the walker).
+    int8_t     accel_x = 0;
+    int8_t     accel_y = 0;
     // 6502 &50/&54/&52/&56 previous_(x_fraction|x|y_fraction|y). Captured
     // from the object table at &1a27-&1a33 at the start of each object
     // update; the per-type updater can revert position from this snapshot

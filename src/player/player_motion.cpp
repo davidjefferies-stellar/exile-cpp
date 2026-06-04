@@ -172,16 +172,29 @@ static bool player_aabb_obstructed(
     return false;
 }
 
+// &1aea-&1af5: while the player holds an object its weight comes from
+// player_weights_when_holding_objects_table (&19ac), indexed by the held
+// object's weight; otherwise it's the player's own weight (3). The whole
+// frame reads this single value (&38), so buoyancy and mass-ratio
+// collisions all see the heavier player — a held big fish (weight 5)
+// zeroes buoyancy so the player sinks and walks the seabed.
+static uint8_t player_effective_weight(const Object& player,
+                                       const Object* held) {
+    if (!held) return player.weight();
+    static constexpr uint8_t kHoldWeights[7] = {2, 2, 3, 4, 4, 5, 6};
+    uint8_t w = held->weight();
+    return kHoldWeights[w > 6 ? 6 : w];
+}
+
 // AABB scan for a lighter active primary overlapping the player. Used
 // by both axes' &2bb6 heavier-hits-lighter branch. Returns the slot, or
 // -1 if none. Skips held<->player (&2afd-&2b0e), intangible (&0354 bit
 // 7), and zero-weight types.
 static int find_lighter_overlap(const Object& player, ObjectManager& mgr,
-                                uint8_t held_slot,
+                                uint8_t held_slot, uint8_t pw_weight,
                                 int sprite_w_frac, int sprite_h_frac) {
     int px = player.x.whole * 256 + player.x.fraction;
     int py = player.y.whole * 256 + player.y.fraction;
-    uint8_t pw_weight = player.weight();
     for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
         if (i == held_slot) continue;
         const Object& other = mgr.object(i);
@@ -226,6 +239,13 @@ void Game::integrate_player_motion(Object& player,
     // the integrator just dropped the player across the waterline. Mirrors
     // the per-object splash detection in object_update.cpp.
     Fixed8_8 pre_motion_y = player.y;
+
+    // &1aea-&1af5: effective player weight for this frame, raised by any
+    // held object. Drives buoyancy (a held big fish sinks the player) and
+    // the mass-ratio collisions below.
+    const Object* held_obj = ((held_object_slot_ & 0x80) == 0)
+        ? &object_mgr_.object(held_object_slot_) : nullptr;
+    uint8_t pw = player_effective_weight(player, held_obj);
 
     // Apply wind (surface only)
     Wind::apply_surface_wind(player);
@@ -302,56 +322,55 @@ void Game::integrate_player_motion(Object& player,
     {
         auto& all = reinterpret_cast<const std::array<Object, GameConstants::PRIMARY_OBJECT_SLOTS>&>(
             object_mgr_.object(0));
-        if (Collision::overlaps_solid_object(player, 0, all,
-                                             static_cast<int>(held_object_slot_))) {
-            int blocker = -1;
-            for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; i++) {
-                if (i == static_cast<int>(held_object_slot_)) continue;
-                const Object& other = all[i];
-                if (!other.is_active()) continue;
-                if (other.weight() <= player.weight()) continue;
-                // Same NEWLY_CREATED skip as find_lighter_overlap — plasma
-                // fires a heavier bullet that would otherwise revert the
-                // player's position and drag bullet velocity on spawn.
-                if (other.flags & ObjectFlags::NEWLY_CREATED) continue;
-                blocker = i;
-                break;
-            }
-            if (blocker >= 0) {
+        // Find the heavier primary that ACTUALLY overlaps the player. The
+        // old code took overlaps_solid_object as a yes/no, then grabbed the
+        // first heavier object by slot — usually NOT the overlapping one —
+        // so push_out_of_overlap got the wrong blocker, found no overlap,
+        // skipped the position separation, and let the velocity transfer
+        // run on degenerate geometry (launching the player off it).
+        int blocker = Collision::overlapping_solid_slot(
+            player, 0, all, static_cast<int>(held_object_slot_));
+        // Skip a just-spawned heavier object (e.g. the player's own plasma
+        // bullet) for one frame, matching find_lighter_overlap.
+        if (blocker >= 0 && (all[blocker].flags & ObjectFlags::NEWLY_CREATED))
+            blocker = -1;
+        if (blocker >= 0) {
                 // &2b80-&2b91: push player position out of overlap along
                 // the smallest-overlap axis and kick velocity by ±2 in
                 // that direction. Replaces the old "revert to old_x/old_y"
                 // approach — that was a no-op when the blocker moved into
                 // the player (closing door) since old_x already overlapped.
                 Object& other = object_mgr_.object(blocker);
-                Collision::push_out_of_overlap(player, other);
+                int push_axis = Collision::push_out_of_overlap(player, other);
 
-                // &2b9e mass-ratio velocity transfer afterwards. Door is
-                // weight 7 with velocity 0 (step 15 zeroes statics), so this
-                // primarily damps the player's velocity rather than driving
-                // the door — exactly the 6502 behaviour against a static.
+                // &2b9e mass-ratio velocity transfer. Pass the HEAVIER
+                // object as "this": the &2bee transfer adds the lighter
+                // object's share in the direction that *opposes* the
+                // closing velocity only when the heavier side is "this".
+                // Run with the player as "this" it does the reverse and
+                // launches the player (and cannon) along their motion.
+                // &2bcd doubles only the smallest-overlap (push-out) axis.
                 {
                     auto t = Collision::apply_mass_ratio_velocity(
-                        player.velocity_x, other.velocity_x,
-                        player.weight(), other.weight(), true);
-                    player.velocity_x = t.this_v;
-                    other.velocity_x  = t.other_v;
+                        other.velocity_x, player.velocity_x,
+                        other.weight(), pw, push_axis == 0);
+                    other.velocity_x  = t.this_v;
+                    player.velocity_x = t.other_v;
                 }
                 {
                     auto t = Collision::apply_mass_ratio_velocity(
-                        player.velocity_y, other.velocity_y,
-                        player.weight(), other.weight(), true);
-                    player.velocity_y = t.this_v;
-                    other.velocity_y  = t.other_v;
+                        other.velocity_y, player.velocity_y,
+                        other.weight(), pw, push_axis == 1);
+                    other.velocity_y  = t.this_v;
+                    player.velocity_y = t.other_v;
                 }
                 if (player.velocity_y >= 0) object_supported = true;
-            }
-        } else {
+            } else {
             // Lighter-overlap push: kick lighter primaries the player
             // walks/falls into. Same as &2bb6's heavier-pushes-lighter
             // half — no position revert here, just a velocity transfer.
             int pushee = find_lighter_overlap(player, object_mgr_,
-                                               held_object_slot_,
+                                               held_object_slot_, pw,
                                                sprite_w_frac, sprite_h_frac);
             // (verbose plr-push diagnostics removed — flask issue fixed)
             if (pushee >= 0) {
@@ -359,14 +378,14 @@ void Game::integrate_player_motion(Object& player,
                 {
                     auto t = Collision::apply_mass_ratio_velocity(
                         player.velocity_x, other.velocity_x,
-                        player.weight(), other.weight(), false);
+                        pw, other.weight(), false);
                     player.velocity_x = t.this_v;
                     other.velocity_x  = t.other_v;
                 }
                 {
                     auto t = Collision::apply_mass_ratio_velocity(
                         player.velocity_y, other.velocity_y,
-                        player.weight(), other.weight(), false);
+                        pw, other.weight(), false);
                     player.velocity_y = t.this_v;
                     other.velocity_y  = t.other_v;
                 }
@@ -580,7 +599,7 @@ void Game::integrate_player_motion(Object& player,
     // finished_applying_buoyancy emit-particle decision: true when the
     // object is partially submerged AND moving downward / stationary,
     // i.e. swimming at the surface. Emit one PARTICLE_WATER upward.
-    if (Water::apply_water_effects(landscape_, player, player.weight(),
+    if (Water::apply_water_effects(landscape_, player, pw,
                                     every_four_frames_)) {
         particles_.emit_directed(ParticleType::WATER, 0xc0, player,
                                  cosmetic_rng_);

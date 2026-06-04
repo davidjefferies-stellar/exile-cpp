@@ -113,7 +113,13 @@ void update_target_directness(Object& obj, UpdateContext& ctx) {
     const Object& target = (target_slot < GameConstants::PRIMARY_OBJECT_SLOTS)
                          ? ctx.mgr.object(target_slot)
                          : ctx.mgr.player();
-    if (!target.is_active() || target_slot >= GameConstants::PRIMARY_OBJECT_SLOTS) {
+    // &3ce6 check_if_object_has_target: a slot pointing at this object
+    // itself (or an empty slot) means "no target" — &3cfd then branches to
+    // reduce_targeting_directness, so directness decays toward the relaxed
+    // wander path instead of locking on (LOS-to-self is trivially clear).
+    if (!target.is_active() ||
+        target_slot >= GameConstants::PRIMARY_OBJECT_SLOTS ||
+        target_slot == ctx.this_slot) {
         // No target: decay directness by one level. Port of &3d36
         // reduce_targeting_directness.
         uint8_t flags = obj.target_and_flags;

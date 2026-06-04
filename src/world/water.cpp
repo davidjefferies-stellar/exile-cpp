@@ -124,8 +124,7 @@ static int8_t seven_eighths(int8_t v) {
 // Port of &2f01-&2f8a apply_buoyancy_loop + the &2f85 four-frame damping.
 // Total velocity_y DECs when fully submerged: weight 0/1->5, 2->4, 3->3,
 // 4->2, 5+->0.
-bool apply_water_effects(const Landscape& landscape, Object& obj,
-                         uint8_t weight, bool every_four_frames) {
+uint8_t submersion_depth(const Landscape& landscape, const Object& obj) {
     int sprite_h_units = (obj.sprite <= 0x80)
         ? (sprite_atlas[obj.sprite].h > 0
             ? (sprite_atlas[obj.sprite].h - 1) * 8 : 0)
@@ -135,21 +134,24 @@ bool apply_water_effects(const Landscape& landscape, Object& obj,
     int waterline_abs =
         static_cast<int>(get_waterline_y(obj.x.whole)) * 256;
     int diff = max_y_abs - waterline_abs;
-    uint8_t amount_under;
-    if (diff <= 0) {
-        amount_under = 0;
-    } else if (diff >= 0x100) {
-        amount_under = 0xff;
-    } else {
-        amount_under = static_cast<uint8_t>(diff);
-    }
-
+    uint8_t depth = (diff <= 0) ? 0
+                  : (diff >= 0x100) ? 0xff
+                  : static_cast<uint8_t>(diff);
     // Upper-world ponds (TILE_WATER above the global waterline) — 6502
     // OR's the water_tile flag at &01 into the buoyancy calc.
-    bool in_tile_water = is_underwater(landscape, obj.x.whole, obj.y.whole);
-    if (amount_under == 0 && !in_tile_water) return false;
-    if (amount_under == 0 && in_tile_water) amount_under = 0xff;
+    if (depth == 0 && is_underwater(landscape, obj.x.whole, obj.y.whole))
+        depth = 0xff;
+    return depth;
+}
 
+bool apply_water_effects(const Landscape& landscape, Object& obj,
+                         uint8_t weight, bool every_four_frames) {
+    uint8_t amount_under = submersion_depth(landscape, obj);
+    bool in_tile_water = is_underwater(landscape, obj.x.whole, obj.y.whole);
+    if (amount_under == 0) return false;
+
+    int sprite_h_units = (obj.sprite <= 0x80 && sprite_atlas[obj.sprite].h > 0)
+        ? (sprite_atlas[obj.sprite].h - 1) * 8 : 0;
     int Y = (weight == 0) ? 1 : weight;  // &2f43 INY treats 0 as 1
     int h4 = sprite_h_units >> 2;
     if (h4 == 0) h4 = 1;  // guarantee progress on tiny sprites

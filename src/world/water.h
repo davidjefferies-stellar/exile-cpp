@@ -38,6 +38,12 @@ uint8_t get_waterline_y_fraction(uint8_t x);
 // global waterline (without it flasks don't fill).
 bool is_underwater(const Landscape& landscape, uint8_t x, uint8_t y);
 
+// 6502 &20 this_object_waterline: submersion depth of the object's bottom
+// edge below the waterline, clamped 0..0xff (0x100 abs units = 1 tile).
+// Forced to 0xff inside an upper-world water tile (matches the buoyancy
+// override). This is the value update_big_fish (&476b) gates on.
+uint8_t submersion_depth(const Landscape& landscape, const Object& obj);
+
 // &2f41-&2f8a water effects. Four-iteration apply_buoyancy_loop at &2f57
 // (DEC count depends on weight + depth), then 7/8 velocity damping every
 // four frames (&2f85 -> &3222). `every_four_frames` is the &2f85 BIT &c5.

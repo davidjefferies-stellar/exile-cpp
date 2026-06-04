@@ -91,6 +91,26 @@ static int spr_h_units(uint8_t sprite_id) {
     return (h > 0 ? (h - 1) : 0) * 8;
 }
 
+// &2bb6 mass-ratio transfer with the HEAVIER object as "this". The 6502
+// math launches the lighter object when it's "this" (adds velocity in its
+// direction of travel); running it heavier-first instead damps the lighter
+// side toward the heavy object's velocity. Without this a thrown flask
+// (weight 2) hitting a door (weight 7) had its velocity amplified instead
+// of stopped, bouncing off violently. Mirrors the player-vs-heavier fix.
+static void mass_ratio_heavier_first(int8_t& obj_v, uint8_t obj_w,
+                                     int8_t& other_v, uint8_t other_w,
+                                     bool smallest) {
+    if (obj_w >= other_w) {
+        auto t = Collision::apply_mass_ratio_velocity(
+            obj_v, other_v, obj_w, other_w, smallest);
+        obj_v = t.this_v; other_v = t.other_v;
+    } else {
+        auto t = Collision::apply_mass_ratio_velocity(
+            other_v, obj_v, other_w, obj_w, smallest);
+        other_v = t.this_v; obj_v = t.other_v;
+    }
+}
+
 // ±2 velocity kick along the smallest-overlap axis (port of &2b80-&2b8b).
 // Clamps to signed 8-bit per &327f prevent_overflow.
 static void nudge_velocity(int8_t& v, int sign) {
@@ -144,21 +164,12 @@ static void resolve_obj_overlap_response(Object& obj, int slot,
     if (!axis_y) nudge_velocity(obj.velocity_x, sign);
     else         nudge_velocity(obj.velocity_y, sign);
 
-    // &2bb6 per-axis mass-ratio transfer.
-    {
-        auto t = Collision::apply_mass_ratio_velocity(
-            obj.velocity_x, other.velocity_x,
-            obj.weight(), other.weight(), !axis_y);
-        obj.velocity_x = t.this_v;
-        other.velocity_x = t.other_v;
-    }
-    {
-        auto t = Collision::apply_mass_ratio_velocity(
-            obj.velocity_y, other.velocity_y,
-            obj.weight(), other.weight(), axis_y);
-        obj.velocity_y = t.this_v;
-        other.velocity_y = t.other_v;
-    }
+    // &2bb6 per-axis mass-ratio transfer, heavier object as "this" so the
+    // lighter side is damped rather than launched (see helper above).
+    mass_ratio_heavier_first(obj.velocity_x, obj.weight(),
+                             other.velocity_x, other.weight(), !axis_y);
+    mass_ratio_heavier_first(obj.velocity_y, obj.weight(),
+                             other.velocity_y, other.weight(), axis_y);
 
     // &2b1d-&2b27 symmetric touching stamp.
     obj.touching   = static_cast<uint8_t>(other_slot);
@@ -188,6 +199,10 @@ void Game::update_objects() {
         // per-type updaters can revert via set_position_from_previous.
         obj.prev_x = obj.x;
         obj.prev_y = obj.y;
+        // &1aca-&1ace: zero this_object_acceleration_x/y each frame. The
+        // walker writes these; other behaviours leave them 0.
+        obj.accel_x = 0;
+        obj.accel_y = 0;
         // &1ae1 STX &2b with X=0xff: visibility defaults to visible
         // every frame; invisible_bird / invisible_frogman clear it later.
         obj.visible = true;
@@ -483,7 +498,8 @@ void Game::update_objects() {
                         static_cast<uint8_t>(slot);
                 }
             } else {
-                Physics::apply_acceleration(obj, 0, 0, every_sixteen_frames_);
+                Physics::apply_acceleration(obj, obj.accel_x, obj.accel_y,
+                                            every_sixteen_frames_);
                 if (gravity_exempt && obj.velocity_y > 0) {
                     // Undo the gravity +1 that apply_acceleration's y-axis
                     // hard-codes. Leaves any real upward/downward velocity
@@ -503,6 +519,9 @@ void Game::update_objects() {
                 // 6502 derives it from tile_collision_y_flags bit 7.
                 obj.flags &= ~ObjectFlags::SUPPORTED;
                 obj.bottom_collision = false;
+                // &1adc: zero tile_collision_angle each frame; resolve's
+                // apply_tile_collision re-sets it if a tile is hit.
+                obj.tile_collision_angle = 0;
 
                 TileCollision::Result tcr = TileCollision::resolve(
                     obj, ou_old_x.whole, ou_old_x.fraction,
@@ -513,6 +532,69 @@ void Game::update_objects() {
                 if (tcr.landed_on_bottom) {
                     obj.flags |= ObjectFlags::SUPPORTED;
                     obj.bottom_collision = true;
+                }
+
+                // [diag] Wall-penetration tracking for grenade-style objects.
+                // Logs each frame an INACTIVE_GRENADE (or any non-projectile
+                // weight 4) moves, including pre/post position, velocity,
+                // tile-collision-resolve result, touching slot, supported.
+                // Flags `PENETRATE` if any corner of the post-resolve AABB
+                // still sits inside a solid tile — that's the smoking gun
+                // for "pushed through wall".
+                {
+                    uint8_t ti = static_cast<uint8_t>(obj.type);
+                    if (ti == 0x12 || ti == 0x50) {  // active/inactive grenade
+                        int dx_int = int(obj.x.whole) * 256
+                                   + int(obj.x.fraction)
+                                   - (int(ou_old_x.whole) * 256
+                                      + int(ou_old_x.fraction));
+                        int dy_int = int(obj.y.whole) * 256
+                                   + int(obj.y.fraction)
+                                   - (int(ou_old_y.whole) * 256
+                                      + int(ou_old_y.fraction));
+                        bool penetrate = false;
+                        if (obj.sprite <= 0x80) {
+                            const SpriteAtlasEntry& e = sprite_atlas[obj.sprite];
+                            int wf = (e.w > 0 ? (e.w - 1) : 0) * 16;
+                            int hf = (e.h > 0 ? (e.h - 1) : 0) * 8;
+                            int rx = int(obj.x.whole) * 256
+                                   + int(obj.x.fraction) + wf;
+                            int by = int(obj.y.whole) * 256
+                                   + int(obj.y.fraction) + hf;
+                            uint8_t rtx = uint8_t((rx >> 8) & 0xff);
+                            uint8_t rxf = uint8_t(rx & 0xff);
+                            uint8_t bty = uint8_t((by >> 8) & 0xff);
+                            uint8_t byf = uint8_t(by & 0xff);
+                            penetrate =
+                                Collision::point_in_tile_solid(landscape_,
+                                    obj.x.whole, obj.y.whole,
+                                    obj.x.fraction, obj.y.fraction) ||
+                                Collision::point_in_tile_solid(landscape_,
+                                    rtx, obj.y.whole,
+                                    rxf, obj.y.fraction) ||
+                                Collision::point_in_tile_solid(landscape_,
+                                    obj.x.whole, bty,
+                                    obj.x.fraction, byf) ||
+                                Collision::point_in_tile_solid(landscape_,
+                                    rtx, bty, rxf, byf);
+                        }
+                        object_mgr_.log_diag(
+                            "GREN f=%u s=%d t=0x%02x prev=(%u.%02x,%u.%02x) "
+                            "pos=(%u.%02x,%u.%02x) d=(%d,%d) v=(%d,%d) "
+                            "touch=0x%02x sup=%d topbot=%d %s",
+                            frame_counter_, slot,
+                            static_cast<unsigned>(obj.type),
+                            ou_old_x.whole, ou_old_x.fraction,
+                            ou_old_y.whole, ou_old_y.fraction,
+                            obj.x.whole, obj.x.fraction,
+                            obj.y.whole, obj.y.fraction,
+                            dx_int, dy_int,
+                            int(obj.velocity_x), int(obj.velocity_y),
+                            unsigned(obj.touching),
+                            int((obj.flags & ObjectFlags::SUPPORTED) != 0),
+                            int(tcr.top_or_bottom_collision),
+                            penetrate ? "PENETRATE" : "");
+                    }
                 }
 
                 // Port of &2b51-&2bb0 — split detection keeps the

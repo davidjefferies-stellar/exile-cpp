@@ -791,67 +791,127 @@ void update_imp(Object& obj, UpdateContext& ctx) {
     }
 }
 
-// Common frogman behavior
-static void frogman_common(Object& obj, UpdateContext& ctx, uint8_t damage) {
-    Mood::update_mood(obj, ctx);
-    uint8_t mood = Mood::get_mood(obj);
+// &3a5b set_npc_jumping_with_speed_A: steer velocity toward the path target
+// at `speed`, add an upward acceleration kick, mark the object flying.
+static void set_npc_jumping(Object& obj, UpdateContext& ctx, uint8_t speed) {
+    // &3a5e move_towards_target (prob 0xff = always): magnitude & max accel
+    // both = speed, weight 0. Drives velocity toward obj.tx/ty.
+    NPC::move_towards_target_with_probability(obj, ctx, speed, speed, 0xff);
+    // &3a63 accel_y -= 0x0a with borrow (carry clear) = -0x0b upward kick.
+    obj.accel_y = static_cast<int8_t>(obj.accel_y - 0x0b);
+    // &2c7a set_object_jumping_or_flying: nibble = 0x0f.
+    obj.state = static_cast<uint8_t>((obj.state & 0xf0) | 0x0f);
+}
 
-    // Frogmen jump periodically
-    if (obj.is_supported() && ctx.every_sixteen_frames) {
-        if (ctx.rng.next() < 0x40) {
-            obj.velocity_y = -0x18; // Jump
-        }
+// &44b6 consider_starting_jump. X = 4 normally, 0xff to suppress on a steep
+// slope (only the 7/8 speed-X branch honours suppression). The &44ba
+// jump-9-on-object-collision branch is omitted: the port can't separate an
+// object-bottom collision from tile support, so all frogmen use the ladder.
+static void frogman_consider_jump(Object& obj, UpdateContext& ctx, uint8_t x) {
+    if (obj.timer != 0) return;          // &44b6 jump cooldown
+    uint8_t r = ctx.rng.next();          // &44c5 rnd_state+2 probability
+    if (r >= 0x20) {                     // 7/8: speed 4
+        obj.timer = 0x05;                // &44d2 timer = walking_speed >> 2
+        if (x != 0xff) set_npc_jumping(obj, ctx, 0x10); // 4 * 4
+    } else if (r >= 0x0a) {              // 22/256: speed 9
+        obj.timer = 0x09;
+        set_npc_jumping(obj, ctx, 0x24); // 9 * 4
+    } else {                             // 10/256: speed 14
+        obj.timer = 0x0e;
+        set_npc_jumping(obj, ctx, 0x38); // 14 * 4
     }
+}
 
-    if (mood == NPCMood::MINUS_TWO) {
-        NPC::seek_player(obj, ctx.mgr.player(), 6);
-        NPC::damage_player_if_touching(obj, ctx.mgr.player(), damage, ctx.damage_events, &ctx);
+// &44dc animate_sprite_from_timer: decrement the cooldown and pick the
+// frog frame. timer 0 -> still (offset 0); otherwise kicking legs (1/2).
+static void frogman_animate(Object& obj) {
+    uint8_t off;
+    if (obj.timer == 0) {
+        off = 0;
     } else {
-        if (ctx.every_sixteen_frames) {
-            obj.velocity_x = (ctx.rng.next() & 0x07) - 3;
-        }
+        obj.timer--;
+        off = (obj.timer == 0) ? 0
+            : static_cast<uint8_t>(((obj.timer >> 2) & 0x01) + 1);
+    }
+    NPC::change_object_sprite_to_base_plus_A(obj, off);
+}
+
+// &448a set_frogman_minimum_energy onward — shared by all three frogmen.
+// Walk toward the path target, flip to face it, then consider a jump and
+// animate the legs. walking type 1, walking_speed 0x14.
+static void frogman_walk_jump_animate(Object& obj, UpdateContext& ctx,
+                                      uint8_t min_energy) {
+    NPC::enforce_minimum_energy(obj, min_energy); // &448a give_object_minimum_energy
+    NPC::update_walking_npc(obj, ctx, /*walking_type=*/1, /*walking_speed=*/0x14);
+    NPC::consider_face_movement_direction(obj, ctx.rng); // &4496 (#&03, 1-in-4)
+
+    // &4499 check_if_npc_can_walk: nibble 0 -> on a walkable surface.
+    if ((obj.state & 0x0f) == 0) {
+        // &449e-&44a3: jump if slope < 0x28 (~56 deg), else suppress (0xff).
+        uint8_t tcA = obj.tile_collision_angle;
+        uint8_t abs_a = (tcA & 0x80)
+            ? static_cast<uint8_t>(-static_cast<int8_t>(tcA)) : tcA;
+        frogman_consider_jump(obj, ctx, (abs_a < 0x28) ? 0x04 : 0xff);
+    } else {
+        // &44ac-&44b2: airborne path only jumps in water, every 16 frames
+        // (per-object &07 -> ctx.every_sixteen_frames). Frame counter +
+        // in_water gate stop land-bound frogmen flailing mid-fall.
+        bool in_water = Water::is_underwater(ctx.landscape,
+                                             obj.x.whole, obj.y.whole);
+        if (in_water && ctx.every_sixteen_frames)
+            frogman_consider_jump(obj, ctx, 0x04);
     }
 
-    NPC::face_movement_direction(obj);
-    NPC::enforce_minimum_energy(obj, 0x7f);
+    frogman_animate(obj); // &44dc
 }
 
-// Port of &4463 update_red_frogman:
-//   &4463 LDX #&09 ; npc stimuli type
-//   &4465 JSR &27c9 check_for_npc_stimuli
-//   &4468 LDA #&33 ; OBJECT_RED_MUSHROOM_BALL
-//   &446a TAY
-//   &446b JSR &3c0c avoid_object_type_Y
-//   &446e JSR &3d26 consider_updating_npc_path
-//   &4471 LDY #&64                    ; min energy 100
-//   &4473 BNE &448a set_frogman_minimum_energy (always)
-// Red frogman does NOT deal touch damage in the original; only the
-// green/invisible variants do (they enter at &4477).
+// Port of &4463 update_red_frogman: stimuli, avoid red mushroom balls, path
+// toward the player, then the shared walk/jump core. Min energy 100; no
+// touch damage (only green/invisible deal it).
 void update_red_frogman(Object& obj, UpdateContext& ctx) {
-    frogman_common(obj, ctx, 0);
-    NPC::enforce_minimum_energy(obj, 0x64);
+    Mood::update_mood(obj, ctx);   // &4465 check_for_npc_stimuli (type 9) analog
+
+    // &4468-&446b avoid_object_type_Y: target the nearest red mushroom ball
+    // and set AVOID so update_npc_path steers (tx,ty) away from it.
+    NPC::consider_finding_target(obj, ObjectType::RED_MUSHROOM_BALL, ctx);
+    uint8_t tslot = obj.target_and_flags & TargetFlags::OBJECT_MASK;
+    if (tslot < GameConstants::PRIMARY_OBJECT_SLOTS &&
+        ctx.mgr.object(tslot).type == ObjectType::RED_MUSHROOM_BALL) {
+        obj.target_and_flags |= TargetFlags::AVOID;
+    }
+
+    NPC::update_npc_path(obj, ctx); // &446e consider_updating_npc_path
+    frogman_walk_jump_animate(obj, ctx, 0x64);
 }
 
-// Port of &4477 update_green_frogman / cyan frogman:
-//   &4477 LDX &3b ; this_object_touching
-//   &4479 BNE &4488 ; not_touching_player
-//   &447b JSR &4005 add_to_player_mushroom_timer (X=0 → red mushroom)
-//   &447e LDA #&07
-//   &4480 STA &12 ; this_object_timer (jump cooldown 7 frames)
-//   &4482 ASL A                       ; A = 14 damage
-//   &4483 LDY #&00 ; OBJECT_SLOT_PLAYER
-//   &4485 JSR &24a6 damage_object
-//   &4488 LDY #&5a                    ; min energy 90
-//         (falls through to set_frogman_minimum_energy)
+// Port of &4477 update_green_frogman / cyan frogman. On contact with the
+// player: red-mushroom timer, jump cooldown 7, and 14 damage. No stimuli
+// or path update in the original — green frogmen use the target they
+// already hold (e.g. set by retaliation when attacked).
 void update_green_frogman(Object& obj, UpdateContext& ctx) {
-    frogman_common(obj, ctx, 14);
-    NPC::enforce_minimum_energy(obj, 0x5a); // min 90
+    // &4477-&4485: touching the player (slot 0).
+    if (obj.touching == 0) {
+        // &447b add_to_player_mushroom_timer (X=0 red): +0x3f, cap 0xff.
+        // Immunity / immobility gates (&400f-&4019) not tracked yet.
+        if (ctx.player_mushroom_timers) {
+            int s = static_cast<int>(ctx.player_mushroom_timers[0]) + 0x3f;
+            ctx.player_mushroom_timers[0] = static_cast<uint8_t>(s > 0xff ? 0xff : s);
+        }
+        obj.timer = 0x07; // &447e-&4480 jump cooldown / kicking legs
+        NPC::damage_player_if_touching(obj, ctx.mgr.player(), 14,
+                                       ctx.damage_events, &ctx); // &4485
+    }
+    // The 6502 green frogman omits an explicit path update and rides a
+    // target maintained elsewhere; the port inits tx/ty to 0, so without
+    // this the walker would drag it toward world (0,0). Default target
+    // (slot 0 = player) makes it approach the player when it has LOS.
+    NPC::update_npc_path(obj, ctx);
+    frogman_walk_jump_animate(obj, ctx, 0x5a); // &4488 min energy 90
 }
 
-// Port of &4475 update_invisible_frogman (one instruction, falls
-// through into update_green_frogman):
+// Port of &4475 update_invisible_frogman (one instruction, falls through
+// into update_green_frogman):
 //   &4475 LSR &2b ; this_object_visibility   ; clear top bit → invisible
-// Bit 7 of palette is our visibility flag (matches update_invisible_bird).
 void update_invisible_frogman(Object& obj, UpdateContext& ctx) {
     obj.visible = false;  // &4475 LSR &2b unconditional
     update_green_frogman(obj, ctx);
@@ -922,16 +982,31 @@ void update_big_fish(Object& obj, UpdateContext& ctx) {
     // &4766-&476a: minimum energy 25 (was 0x3f in the old placeholder).
     NPC::enforce_minimum_energy(obj, 0x19);
 
-    // &476b-&476f: out-of-water gate. 
-    if (!Water::is_underwater(ctx.landscape, obj.x.whole, obj.y.whole)) {
+    // &476b-&476f: out-of-water gate. Leave if this_object_waterline (&20)
+    // < 0x32 — i.e. the fish's bottom edge isn't at least ~0.2 tiles below
+    // the surface. Keeps the fish from chasing up to the waterline.
+    if (Water::submersion_depth(ctx.landscape, obj) < 0x32) {
         return;
     }
 
-    // &4771-&4776: consider_finding_target(PIRANHA, range=PIRANHA). 
+    // &4771-&4776: consider_finding_target(PIRANHA, range=PIRANHA).
     NPC::consider_finding_target(obj, ObjectType::PIRANHA, ctx);
 
-    // &4777: consider_updating_npc_path — LOS sweep + tx/ty pick.
-    NPC::update_target_directness(obj, ctx);
+    // The 6502 inits an object's target to itself (&1edf) and only the
+    // piranha scan ever retargets the fish — it never chases the player.
+    // The port inits target to slot 0 (player), so when no piranha is
+    // present pin the target to self; the fish then idles instead of
+    // drifting toward the player.
+    uint8_t tslot = obj.target_and_flags & TargetFlags::OBJECT_MASK;
+    bool targeting_piranha = tslot < GameConstants::PRIMARY_OBJECT_SLOTS &&
+        ctx.mgr.object(tslot).type == ObjectType::PIRANHA;
+    if (!targeting_piranha) {
+        obj.target_and_flags = static_cast<uint8_t>(
+            (obj.target_and_flags & ~TargetFlags::OBJECT_MASK) |
+            (ctx.this_slot & TargetFlags::OBJECT_MASK));
+    }
+
+    // &4777: consider_updating_npc_path (does its own LOS directness sweep).
     NPC::update_npc_path(obj, ctx);
 
     // &477a-&4785: magnitude 0x10, doubled to 0x20 when DIRECTNESS_TWO

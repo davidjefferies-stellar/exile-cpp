@@ -411,6 +411,9 @@ static void apply_tile_collision(Ctx& ctx) {
 
     // &306c JSR calculate_angle_from_vector -> A = tile_collision_angle.
     uint8_t tile_collision_angle = angle_from_vector(vector_x, vector_y);
+    // Persist on the object (6502 &1c) so the NPC walker can read the
+    // surface slope next frame. Reset to 0 each frame in object_update.
+    ctx.obj.tile_collision_angle = tile_collision_angle;
 
     // &3071: A = angle - 0x60 (rotate -135°).
     uint8_t A = static_cast<uint8_t>(tile_collision_angle - 0x60);

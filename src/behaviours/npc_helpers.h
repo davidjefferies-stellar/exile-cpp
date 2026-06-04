@@ -162,6 +162,15 @@ void steer_toward(Object& obj, uint8_t target_x, uint8_t target_y,
 // NPC avoidance: set velocity away from player
 void flee_player(Object& obj, const Object& player, int8_t speed);
 
+// Port of &3b08 update_walking_npc. Maintains the walking-state nibble
+// (&3a6d) and, when grounded, thrusts the object along the surface tangent
+// toward its path target obj.tx/ty — writing obj.accel_x/accel_y for the
+// shared apply_acceleration (and steering velocity directly on the steep-
+// climb branch). walking_type indexes the &3962/&3969/&3970 tables (1 for
+// frogmen); walking_speed is the per-type magnitude (&14 for frogmen).
+void update_walking_npc(Object& obj, UpdateContext& ctx,
+                        uint8_t walking_type, uint8_t walking_speed);
+
 // Flip sprite to face movement direction. Port of &257e
 // flip_object_to_match_velocity_x — unconditional:
 //   &257e LDA &43 ; velocity_x

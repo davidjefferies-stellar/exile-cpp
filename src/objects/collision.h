@@ -101,8 +101,10 @@ int overlapping_solid_slot(const Object& obj, int self_slot,
 // `obj`'s position out along it, and adds ±2 to the matching velocity
 // component. Used so a door closing onto a stationary player pushes the
 // player aside instead of leaving them embedded in the door.
-// Returns true iff there was overlap to resolve.
-bool push_out_of_overlap(Object& obj, const Object& blocker);
+// Returns the push-out axis: -1 = no overlap, 0 = X, 1 = Y. The 6502
+// doubles the mass-ratio transfer only on this axis (&9f), so callers
+// pass it as `smallest_overlap_in_this_axis`.
+int push_out_of_overlap(Object& obj, const Object& blocker);
 
 // Port of &2bee calculate_transfer_velocities + &2bc6 apply_collision_
 // to_object_velocity. Mass-ratio elastic-ish transfer:

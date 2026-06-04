@@ -683,4 +683,104 @@ void consider_hovering_over_ground(Object& obj, UpdateContext& ctx) {
     obj.velocity_y = calculate_seven_eighths(obj.velocity_y);
 }
 
+// &3962/&3969/&3970 npc_walking_types tables (max slope angle the type can
+// walk, max acceleration, weight shift). Index 0 is the player (driven by
+// player_motion); 1 = frogman/worm, 2 = maggot, 3-6 = imps/birds etc.
+static constexpr uint8_t kWalkMaxAngle[7] = {0x32,0x80,0x80,0x20,0x20,0x20,0x80};
+static constexpr uint8_t kWalkMaxAccel[7] = {0x06,0x08,0x10,0x03,0x04,0x05,0x08};
+static constexpr uint8_t kWalkWeight[7]   = {0x00,0x01,0x01,0x01,0x01,0x01,0x01};
+
+// &3201 apply_weight_and_limit_to_acceleration: |accel| >> weight, clamp to
+// max_accel, restore sign.
+static int8_t apply_weight_and_limit(int8_t accel, uint8_t weight,
+                                     uint8_t max_accel) {
+    bool neg = accel < 0;
+    int mag = neg ? -static_cast<int>(accel) : static_cast<int>(accel);
+    mag >>= weight;
+    if (mag > static_cast<int>(max_accel)) mag = max_accel;
+    return static_cast<int8_t>(neg ? -mag : mag);
+}
+
+// Port of &3b08 update_walking_npc (+ &3b0b body, &3a6d walking-state). The
+// walker sets obj.accel_x/accel_y for the shared apply_acceleration; only
+// the steep-climb path (&3b5b) also steers velocity directly. Reads
+// tile_collision_angle (set last frame by tile collision) and the path
+// target obj.tx/ty (caller updates via update_npc_path). Mirrors the
+// player's &3b25 block (apply_player_input) generalised to any object.
+void update_walking_npc(Object& obj, UpdateContext& ctx,
+                        uint8_t walking_type, uint8_t walking_speed) {
+    uint8_t tcA = obj.tile_collision_angle;
+    uint8_t abs_angle = (tcA & 0x80)
+        ? static_cast<uint8_t>(-static_cast<int8_t>(tcA)) : tcA;
+    bool too_steep = abs_angle >= kWalkMaxAngle[walking_type];
+
+    // &3a6d update_walking_state (NPC path — &05 negative falls through to
+    // the counter logic): on a walkable surface this frame -> nibble 0,
+    // else count frames airborne (cap 0x0f). any_y mirrors the player's
+    // tcr.top_or_bottom_collision || object_supported.
+    bool any_y = obj.tile_collision || obj.is_supported();
+    uint8_t nibble = obj.state & 0x0f;
+    if (any_y && !too_steep) nibble = 0;
+    else if (nibble < 0x0f)  nibble++;
+    obj.state = static_cast<uint8_t>((obj.state & 0xf0) | nibble);
+
+    // &3b77 set_this_object_relative_tx_ty.
+    int8_t rel_tx = static_cast<int8_t>(obj.tx - obj.x.whole);
+    int8_t rel_ty = static_cast<int8_t>(obj.ty - obj.y.whole);
+
+    // &3b10: only thrust along the surface when on a walkable surface.
+    if (nibble != 0) return;
+
+    uint8_t max_accel = kWalkMaxAccel[walking_type];
+    uint8_t weight    = kWalkWeight[walking_type];
+
+    // &3b1d-&3b23: 0x2c <= |angle| < 0x54 -> climb steep slope branch.
+    if (abs_angle < 0x2c || abs_angle >= 0x54) {
+        // &3b25 walk along flat / shallow slope.
+        int8_t target_v = static_cast<int8_t>(walking_speed);
+        if (rel_tx < 0) target_v = static_cast<int8_t>(-target_v);
+        int8_t delta = static_cast<int8_t>(target_v - obj.velocity_x);
+        int8_t accel = apply_weight_and_limit(delta, weight, max_accel);
+
+        // &3b31-&3b37 moving-left-vs-surface flag.
+        uint8_t accel_sign = (accel < 0) ? 0x80 : 0x00;
+        uint8_t shifted = static_cast<uint8_t>((accel_sign ^ tcA) + 0x40);
+        bool moving_left = (shifted & 0x80) != 0;
+
+        // &3b3e-&3b44 angle into the surface; &3b3a-&3b3c zero magnitude
+        // at target so a stationary NPC keeps its slope-aware angle.
+        uint8_t angle_base = moving_left ? 0x6f : 0x10;
+        uint8_t angle = static_cast<uint8_t>(angle_base + tcA +
+                                             (moving_left ? 1 : 0));
+        uint8_t magnitude = (rel_tx == 0) ? 0
+            : static_cast<uint8_t>(accel < 0 ? -accel : accel);
+
+        int8_t vx = 0, vy = 0;
+        vector_from_magnitude_and_angle(magnitude, angle, vx, vy);
+        obj.accel_x = vx;
+        obj.accel_y = vy;
+
+        // &3b55/&3b58 dampen velocity_y twice.
+        obj.velocity_y = calculate_seven_eighths(
+            calculate_seven_eighths(obj.velocity_y));
+    } else {
+        // &3b5b climb_steep_slope: accelerate velocity_y toward the target
+        // y, push slightly into the surface in x, dampen velocity_x thrice.
+        int8_t target_vy = static_cast<int8_t>(walking_speed);
+        if (rel_ty < 0) target_vy = static_cast<int8_t>(-target_vy);
+        int8_t dy = static_cast<int8_t>(target_vy - obj.velocity_y);
+        int8_t accel = apply_weight_and_limit(dy, weight, max_accel);
+        int nv = static_cast<int>(obj.velocity_y) + accel;
+        if (nv >  127) nv =  127;
+        if (nv < -128) nv = -128;
+        obj.velocity_y = static_cast<int8_t>(nv);
+
+        // &3b65-&3b6c: -8 into surface if it's to the left (tcA positive),
+        // +8 if to the right (tcA negative).
+        obj.accel_x = (tcA & 0x80) ? 8 : -8;
+        obj.velocity_x = calculate_seven_eighths(calculate_seven_eighths(
+            calculate_seven_eighths(obj.velocity_x)));
+    }
+}
+
 } // namespace NPC

@@ -249,7 +249,7 @@ ObjectCollisionResult check_object_collision(
     return result;
 }
 
-bool push_out_of_overlap(Object& obj, const Object& blocker) {
+int push_out_of_overlap(Object& obj, const Object& blocker) {
     int p_x = obj.x.whole * 256 + obj.x.fraction;
     int p_y = obj.y.whole * 256 + obj.y.fraction;
     int p_w = sprite_width_units(obj.sprite);
@@ -269,7 +269,7 @@ bool push_out_of_overlap(Object& obj, const Object& blocker) {
     int shift_up    = (p_y + p_h) - o_y;
     if (shift_right <= 0 || shift_left <= 0 ||
         shift_down  <= 0 || shift_up   <= 0) {
-        return false;
+        return -1;
     }
 
     // Pick the axis with the smallest overlap — the path of least
@@ -291,7 +291,10 @@ bool push_out_of_overlap(Object& obj, const Object& blocker) {
     obj.x.fraction = static_cast<uint8_t>(p_x & 0xff);
     obj.y.whole    = static_cast<uint8_t>((p_y >> 8) & 0xff);
     obj.y.fraction = static_cast<uint8_t>(p_y & 0xff);
-    return true;
+    // Return the push-out axis: 0 = X (right/left), 1 = Y (down/up). The
+    // 6502 doubles the mass-ratio transfer only on this smallest-overlap
+    // axis (&9f), so the caller must know which one it was.
+    return (axis < 2) ? 0 : 1;
 }
 
 int overlapping_solid_slot(const Object& obj, int self_slot,
