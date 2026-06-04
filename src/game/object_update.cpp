@@ -507,95 +507,18 @@ void Game::update_objects() {
                     obj.velocity_y--;
                 }
 
-                // Tile collision — TileCollision::resolve, port of
-                // &2f8c-&30df. Object-object overlap is handled below
-                // by the &2bb6 mass-ratio transfer.
+                // 6502 order at &1ae3 → &1b54 → &2a64 → &2a61/&2ee8:
+                // integrate velocity, then object-overlap, then tiles.
+                // Inverting (tiles first) lets the overlap push-out shove
+                // the object through a wall with no second tile check.
                 Fixed8_8 ou_old_x = obj.x;
                 Fixed8_8 ou_old_y = obj.y;
                 obj.x.add_velocity(obj.velocity_x);
                 obj.y.add_velocity(obj.velocity_y);
 
-                // SUPPORTED re-set from tcr.landed_on_bottom below;
-                // 6502 derives it from tile_collision_y_flags bit 7.
                 obj.flags &= ~ObjectFlags::SUPPORTED;
                 obj.bottom_collision = false;
-                // &1adc: zero tile_collision_angle each frame; resolve's
-                // apply_tile_collision re-sets it if a tile is hit.
                 obj.tile_collision_angle = 0;
-
-                TileCollision::Result tcr = TileCollision::resolve(
-                    obj, ou_old_x.whole, ou_old_x.fraction,
-                    ou_old_y.whole, ou_old_y.fraction,
-                    landscape_, object_mgr_,
-                    /*skip_slot=*/-1);
-                obj.tile_collision = tcr.top_or_bottom_collision;
-                if (tcr.landed_on_bottom) {
-                    obj.flags |= ObjectFlags::SUPPORTED;
-                    obj.bottom_collision = true;
-                }
-
-                // [diag] Wall-penetration tracking for grenade-style objects.
-                // Logs each frame an INACTIVE_GRENADE (or any non-projectile
-                // weight 4) moves, including pre/post position, velocity,
-                // tile-collision-resolve result, touching slot, supported.
-                // Flags `PENETRATE` if any corner of the post-resolve AABB
-                // still sits inside a solid tile — that's the smoking gun
-                // for "pushed through wall".
-                {
-                    uint8_t ti = static_cast<uint8_t>(obj.type);
-                    if (ti == 0x12 || ti == 0x50) {  // active/inactive grenade
-                        int dx_int = int(obj.x.whole) * 256
-                                   + int(obj.x.fraction)
-                                   - (int(ou_old_x.whole) * 256
-                                      + int(ou_old_x.fraction));
-                        int dy_int = int(obj.y.whole) * 256
-                                   + int(obj.y.fraction)
-                                   - (int(ou_old_y.whole) * 256
-                                      + int(ou_old_y.fraction));
-                        bool penetrate = false;
-                        if (obj.sprite <= 0x80) {
-                            const SpriteAtlasEntry& e = sprite_atlas[obj.sprite];
-                            int wf = (e.w > 0 ? (e.w - 1) : 0) * 16;
-                            int hf = (e.h > 0 ? (e.h - 1) : 0) * 8;
-                            int rx = int(obj.x.whole) * 256
-                                   + int(obj.x.fraction) + wf;
-                            int by = int(obj.y.whole) * 256
-                                   + int(obj.y.fraction) + hf;
-                            uint8_t rtx = uint8_t((rx >> 8) & 0xff);
-                            uint8_t rxf = uint8_t(rx & 0xff);
-                            uint8_t bty = uint8_t((by >> 8) & 0xff);
-                            uint8_t byf = uint8_t(by & 0xff);
-                            penetrate =
-                                Collision::point_in_tile_solid(landscape_,
-                                    obj.x.whole, obj.y.whole,
-                                    obj.x.fraction, obj.y.fraction) ||
-                                Collision::point_in_tile_solid(landscape_,
-                                    rtx, obj.y.whole,
-                                    rxf, obj.y.fraction) ||
-                                Collision::point_in_tile_solid(landscape_,
-                                    obj.x.whole, bty,
-                                    obj.x.fraction, byf) ||
-                                Collision::point_in_tile_solid(landscape_,
-                                    rtx, bty, rxf, byf);
-                        }
-                        object_mgr_.log_diag(
-                            "GREN f=%u s=%d t=0x%02x prev=(%u.%02x,%u.%02x) "
-                            "pos=(%u.%02x,%u.%02x) d=(%d,%d) v=(%d,%d) "
-                            "touch=0x%02x sup=%d topbot=%d %s",
-                            frame_counter_, slot,
-                            static_cast<unsigned>(obj.type),
-                            ou_old_x.whole, ou_old_x.fraction,
-                            ou_old_y.whole, ou_old_y.fraction,
-                            obj.x.whole, obj.x.fraction,
-                            obj.y.whole, obj.y.fraction,
-                            dx_int, dy_int,
-                            int(obj.velocity_x), int(obj.velocity_y),
-                            unsigned(obj.touching),
-                            int((obj.flags & ObjectFlags::SUPPORTED) != 0),
-                            int(tcr.top_or_bottom_collision),
-                            penetrate ? "PENETRATE" : "");
-                    }
-                }
 
                 // Port of &2b51-&2bb0 — split detection keeps the
                 // weight filter for door/turret/cannon; bullets (&2afd)
@@ -612,14 +535,9 @@ void Game::update_objects() {
                     int blocker = Collision::overlapping_solid_slot(
                         obj, slot, all_primaries);
                     if (eligible && blocker >= 0) {
-                        // Heavier-blocker: same &2b97 response as lighter
-                        // — push out + nudge + transfer for every overlap.
                         Object& other = object_mgr_.object(blocker);
                         resolve_obj_overlap_response(obj, slot, other, blocker);
                     } else if (eligible) {
-                        // Lighter target: overlapping_solid_slot only
-                        // matches HEAVIER, so grenade vs flask would
-                        // fly through without this explicit branch.
                         auto coll = Collision::check_object_collision(
                             obj, slot, all_primaries);
                         if (coll.collided) {
@@ -633,6 +551,19 @@ void Game::update_objects() {
                             }
                         }
                     }
+                }
+
+                // Tile collision LAST — &2a61 JMP &2ee8 falls through
+                // here after the object-overlap loop finishes.
+                TileCollision::Result tcr = TileCollision::resolve(
+                    obj, ou_old_x.whole, ou_old_x.fraction,
+                    ou_old_y.whole, ou_old_y.fraction,
+                    landscape_, object_mgr_,
+                    /*skip_slot=*/-1);
+                obj.tile_collision = tcr.top_or_bottom_collision;
+                if (tcr.landed_on_bottom) {
+                    obj.flags |= ObjectFlags::SUPPORTED;
+                    obj.bottom_collision = true;
                 }
 
                 // Water splash — port of &2f69-&2f82. Emit one upward
