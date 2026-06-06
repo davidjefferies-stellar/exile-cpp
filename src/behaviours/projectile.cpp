@@ -237,8 +237,8 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
         uint16_t hurt = std::min<uint16_t>(damage, target.energy);
         if (target.energy > damage) target.energy -= damage;
         else                        target.energy = 0;
-        // 6502 &24a6 damage_object also sets WAS_DAMAGED on the target.
-        target.flags |= ObjectFlags::WAS_DAMAGED;
+        // &24ed damage_object only sets WAS_DAMAGED for damage >= 8.
+        if (damage >= 8) target.flags |= ObjectFlags::WAS_DAMAGED;
         if (ctx.damage_events) {
             DamageVisual ev;
             ev.src_x = obj.x.whole; ev.src_y = obj.y.whole;
@@ -302,7 +302,7 @@ static void common_bullet_update(Object& obj, UpdateContext& ctx, uint8_t damage
             uint16_t hurt = std::min<uint16_t>(damage, door.energy);
             if (door.energy > damage) door.energy -= damage;
             else                       door.energy = 0;
-            door.flags |= ObjectFlags::WAS_DAMAGED;
+            if (damage >= 8) door.flags |= ObjectFlags::WAS_DAMAGED;
             if (ctx.damage_events) {
                 DamageVisual ev;
                 ev.src_x = obj.x.whole; ev.src_y = obj.y.whole;
@@ -912,7 +912,7 @@ static void fireball_damage_and_animate(Object& obj, UpdateContext& ctx,
         target.energy = (target.energy > damage)
                       ? static_cast<uint8_t>(target.energy - damage)
                       : 0;
-        if (obj.touching != 0) target.flags |= ObjectFlags::WAS_DAMAGED;
+        if (obj.touching != 0 && damage >= 8) target.flags |= ObjectFlags::WAS_DAMAGED;
         if (ctx.damage_events && hurt > 0) {
             DamageVisual ev;
             ev.src_x = obj.x.whole; ev.src_y = obj.y.whole;
@@ -967,18 +967,55 @@ void update_fireball(Object& obj, UpdateContext& ctx) {
     // (&0976) — &1edf seeds it with the slot index on nest spawn.
     bool permanent = (obj.target_and_flags & TargetFlags::OBJECT_MASK) != 0;
 
-    // &4ae2-&4ae4 update_temporary_fireball: DEC timer; BMI removal.
-    if (!permanent) {
-        if (obj.timer == 0) {
-            obj.flags |= ObjectFlags::PENDING_REMOVAL;
+    // &4b4a update_permanent_fireball. A static flame pinned to its spawn
+    // tile that bobs its y_fraction for the flicker. Without this the
+    // flame freezes at its bottom-anchored spawn y_fraction and sits too
+    // high in the tile. &da gate is a peek (no rng advance) — the &2587
+    // consumed in fireball_damage_and_animate matches the 6502's flip rnd.
+    if (permanent) {
+        uint8_t r = ctx.rng.peek(1);                 // &4b4d BIT &da
+        obj.x = obj.prev_x;                          // x never bobs; pin it
+        obj.y.whole = obj.prev_y.whole;              // stay in the spawn tile
+        if (!(r & 0x80)) {
+            // &4b4f BPL &4ba9: hold this frame — zero velocity, keep the
+            // previous bobbed position, no damage/animate.
+            obj.velocity_x = 0;
+            obj.velocity_y = 0;
+            obj.y.fraction = obj.prev_y.fraction;
             return;
         }
-        obj.timer--;
+        // &4b51-&4b5c y_fraction bob = ((rnd&0x0f)+frame16)*2. The 6502 ADDs
+        // this to the LIVE y_fraction, accumulating into a full-tile sweep;
+        // on our taller tiles that reads as the flame roaming the cell, so
+        // we anchor it in place instead. Seat the sprite half-sunk into the
+        // floor below: centre = floor line (tile bottom), top = 0x100 -
+        // height/2, so the top half shows in the space tile and the bottom
+        // half hides behind the solid floor's fg_mask. Computed from the
+        // sprite height because the spawn y_fraction is flip-dependent (this
+        // cell is V-flipped -> spawn fraction 0, i.e. top of the tile).
+        int hb = (obj.sprite <= 0x80)
+                     ? (sprite_atlas[obj.sprite].h - 1) * 8 : 0x90;
+        uint8_t half_top = static_cast<uint8_t>(0x100 - hb / 2);  // sprite top, half-visible
+        uint8_t fc16 = static_cast<uint8_t>((ctx.frame_counter + ctx.this_slot) & 0x0f);
+        uint8_t bob  = static_cast<uint8_t>(((r & 0x0f) + fc16) << 1);
+        // 0x1e centres the jitter; +0x40 (8 px at 8 units/px) lifts the
+        // resting point so more than half the flame shows above the floor.
+        obj.y.fraction = static_cast<uint8_t>(half_top - 0x5e + bob);
+        obj.timer--;                                 // &4b5e animation timer
+        fireball_damage_and_animate(obj, ctx, 20);   // &4b60 20 damage
+        return;
     }
 
-    // &4ae6 / &4b60: temporary=10, permanent=20. MOVING_FIREBALL uses 4
+    // &4ae2-&4ae4 update_temporary_fireball: DEC timer; BMI removal.
+    if (obj.timer == 0) {
+        obj.flags |= ObjectFlags::PENDING_REMOVAL;
+        return;
+    }
+    obj.timer--;
+
+    // &4ae6: temporary fireball causes 10 damage. MOVING_FIREBALL uses 4
     // via the &4b26 entry and never lands here.
-    fireball_damage_and_animate(obj, ctx, permanent ? 20 : 10);
+    fireball_damage_and_animate(obj, ctx, 10);
 }
 
 // &4B26 update_moving_fireball. Enters consider_fireball_damage_and_
@@ -1026,14 +1063,6 @@ void update_explosion(Object& obj, UpdateContext& ctx) {
     // remaining_duration so hits taper as the explosion ages. peek(3)
     // matches BIT &dc; using next() would burn an extra rng byte.
     if ((ctx.rng.peek(3) & 0x07) >= obj.tertiary_data_offset) return;
-
-    ctx.mgr.log_diag(
-        "exp p%d tdo=%u pal=0x%02x sprite=0x%02x @%u,%u",
-        ctx.this_slot,
-        static_cast<unsigned>(obj.tertiary_data_offset),
-        static_cast<unsigned>(obj.palette),
-        static_cast<unsigned>(obj.sprite),
-        obj.x.whole, obj.y.whole);
 
     apply_explosion_radius(ctx.mgr, ctx.landscape, obj, /*source_slot=*/-1,
                            obj.tertiary_data_offset, ctx.damage_events);

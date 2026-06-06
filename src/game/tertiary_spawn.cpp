@@ -209,6 +209,19 @@ void Game::spawn_tertiary_object(uint8_t tile_type, uint8_t tile_flip,
         // (&4081-&4083). uint16_t — indices exceed 255 post-bake; a
         // uint8_t truncation breaks dedup and demote re-arm.
         obj.tertiary_slot = static_cast<uint16_t>(data_offset);
+        // &1edf seeds objects_target_object_and_flags with the slot index
+        // for every created object. update_fireball (&4ade) reads its low
+        // bits to tell a tertiary (permanent) fireball from an explosion-
+        // spawned (temporary) one — without this the permanent flame never
+        // bobs and sits frozen too high. Set the OBJECT_MASK bits non-zero
+        // without disturbing the directness/avoid bits (mask guards the
+        // 64-slot wrap where slot&0x1f could land on 0).
+        if (obj_type == static_cast<uint8_t>(ObjectType::FIREBALL)) {
+            uint8_t marker = static_cast<uint8_t>(slot) & TargetFlags::OBJECT_MASK;
+            if (marker == 0) marker = TargetFlags::OBJECT_MASK;
+            obj.target_and_flags = static_cast<uint8_t>(
+                (obj.target_and_flags & ~TargetFlags::OBJECT_MASK) | marker);
+        }
         // Copy tertiary data byte into objects_data (&0966) — door
         // flags / switch effect-id / transporter destination / turret
         // projectile type. Strip bit 7 EXCEPT for switch-redirects:

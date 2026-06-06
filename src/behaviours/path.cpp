@@ -152,7 +152,7 @@ void update_target_directness(Object& obj, UpdateContext& ctx) {
     // wander path instead of locking on (LOS-to-self is trivially clear).
     if (!target.is_active() ||
         target_slot >= GameConstants::PRIMARY_OBJECT_SLOTS ||
-        target_slot == ctx.this_slot) {
+        target_slot == (ctx.this_slot & TargetFlags::OBJECT_MASK)) {
         // No target: decay directness by one level. Port of &3d36
         // reduce_targeting_directness.
         uint8_t flags = obj.target_and_flags;

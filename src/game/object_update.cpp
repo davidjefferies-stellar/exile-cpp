@@ -481,8 +481,16 @@ void Game::update_objects() {
             // weight 6 (fall outside fully_static) — explicit pin
             // here, or wasp/projectile residual velocity drifts them.
             bool pin_bush = obj.type == ObjectType::BUSH;
+            // &4ad6 FIREBALL owns its own position: update_fireball /
+            // update_permanent_fireball write it directly and the 6502
+            // RTSs without the shared add_velocities/collision pass. Pin
+            // so the permanent flame's y_fraction bob isn't undone by the
+            // post-behaviour tile collision (which clamped it onto the
+            // floor and froze it high in the tile). MOVING_FIREBALL (0x39)
+            // genuinely integrates, so it is NOT pinned here.
+            bool pin_fireball = obj.type == ObjectType::FIREBALL;
 
-            if (fully_static || pin_undisturbed || pin_bush) {
+            if (fully_static || pin_undisturbed || pin_bush || pin_fireball) {
                 obj.velocity_x = 0;
                 obj.velocity_y = 0;
                 // Statics need touching for switch fire / door close;
@@ -644,8 +652,11 @@ void Game::update_objects() {
         // pinned and close at &4cea's clamp speed instead of the table.
         obj.touching |= 0x80;
 
-        // Step 18: Clear creation flags
+        // Step 18: clear creation flags. &1d83 AND #&f3 clears both
+        // NEWLY_CREATED and WAS_DAMAGED every frame — WAS_DAMAGED is a
+        // one-frame stimulus, so damage stuns (e.g. bird &4657) expire.
         obj.flags &= ~ObjectFlags::NOT_PLOTTED;
         obj.flags &= ~ObjectFlags::NEWLY_CREATED;
+        obj.flags &= ~ObjectFlags::WAS_DAMAGED;
     }
 }

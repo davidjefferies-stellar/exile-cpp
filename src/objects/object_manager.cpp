@@ -183,6 +183,9 @@ int ObjectManager::create_object(ObjectType type, int min_free_slots,
 
     Object& obj = primary_[slot];
     init_object_from_type(obj, type);
+    // &1edf TYA/STA: a new object targets its own slot = "no target", so
+    // it wanders instead of homing on primary slot 0 (the player).
+    obj.target_and_flags = static_cast<uint8_t>(slot & TargetFlags::OBJECT_MASK);
     obj.x = {spawn_x, spawn_x_frac};
     obj.y = {spawn_y, spawn_y_frac};
 
@@ -293,6 +296,9 @@ int ObjectManager::promote_from_secondary(int secondary_slot, int min_free_slots
     Object& obj = primary_[pri_slot];
     ObjectType type = static_cast<ObjectType>(sec.type);
     init_object_from_type(obj, type);
+    // &1edf: the packed secondary format stores no target, so a promoted
+    // object targets its own slot = "no target" (not slot 0 = the player).
+    obj.target_and_flags = static_cast<uint8_t>(pri_slot & TargetFlags::OBJECT_MASK);
 
     obj.x.whole = sec.x;
     obj.y.whole = sec.y;
