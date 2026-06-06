@@ -1380,56 +1380,14 @@ static void triax_teleport_away(Object& obj) {
 }
 
 void update_triax(Object& obj, UpdateContext& ctx) {
-    // Triax intro diagnostics: position, velocity, destinator pos + AABB
-    // overlap, to see whether Triax can ever physically reach the
-    // destinator or is blocked by a solid tile above it.
-    int triax_x_abs = (int)obj.x.whole * 256 + (int)obj.x.fraction;
-    int triax_y_abs = (int)obj.y.whole * 256 + (int)obj.y.fraction;
-    int triax_right = triax_x_abs + 64;   // SPACESUIT_VERTICAL (w-1)*16
-    int triax_bot   = triax_y_abs + 168;  // SPACESUIT_VERTICAL (h-1)*8
-    int dest_slot = -1, dest_x_abs = 0, dest_y_abs = 0;
-    int dest_right = 0, dest_bot = 0;
-    for (int s = 1; s < GameConstants::PRIMARY_OBJECT_SLOTS; ++s) {
-        Object& o = ctx.mgr.object(s);
-        if (o.type == ObjectType::DESTINATOR && o.is_active()) {
-            dest_slot = s;
-            dest_x_abs = (int)o.x.whole * 256 + (int)o.x.fraction;
-            dest_y_abs = (int)o.y.whole * 256 + (int)o.y.fraction;
-            dest_right = dest_x_abs + 112; // CONSOLE (w-1)*16
-            dest_bot   = dest_y_abs + 88;  // CONSOLE (h-1)*8
-            break;
-        }
-    }
-    ctx.mgr.log_diag(
-        "TRIAX f=%u pos=(%02x.%02x,%02x.%02x) v=(%d,%d) touch=%02x "
-        "e=%02x fl=%02x tm=%02x bot=0x%04x right=0x%04x",
-        ctx.frame_counter,
-        obj.x.whole, obj.x.fraction, obj.y.whole, obj.y.fraction,
-        (int)obj.velocity_x, (int)obj.velocity_y, obj.touching,
-        obj.energy, obj.flags, obj.timer, triax_bot, triax_right);
-    if (dest_slot >= 0) {
-        bool xov = (triax_right > dest_x_abs) && (triax_x_abs < dest_right);
-        bool yov = (triax_bot   > dest_y_abs) && (triax_y_abs < dest_bot);
-        ctx.mgr.log_diag(
-            "  DEST p%d at=0x%04x,0x%04x bot=0x%04x right=0x%04x "
-            "y_gap=%d xov=%d yov=%d",
-            dest_slot, dest_x_abs, dest_y_abs, dest_bot, dest_right,
-            dest_y_abs - triax_bot, (int)xov, (int)yov);
-    } else {
-        ctx.mgr.log_diag("  DEST not in primary table");
-    }
-
     // &4704-&4710 absorb destinator -> re-arm tertiary &9d so it
     // respawns at (0x64, 0xd6) in the lab, then teleport away.
     if (obj.touching < GameConstants::PRIMARY_OBJECT_SLOTS) {
         Object& target = ctx.mgr.object(obj.touching);
-        ctx.mgr.log_diag("TRIAX touching slot=%02x type=%02x",
-                         obj.touching, (uint8_t)target.type);
         if (target.type == ObjectType::DESTINATOR) {
             target.flags |= ObjectFlags::PENDING_REMOVAL;
             ctx.mgr.set_tertiary_data_byte(0x9d, 0x80);
             triax_teleport_away(obj);
-            ctx.mgr.log_diag("TRIAX absorbed destinator -> teleport away");
             return;
         }
     }

@@ -101,6 +101,39 @@ bool has_line_of_sight_randomized(const Object& obj,
     return has_line_of_sight_fracs(obj, target_slot, cap_fracs, ctx);
 }
 
+// Raycast from obj's centre toward an arbitrary world tile (target_x,
+// target_y), returning true if no solid tile/door obstructs. Port of the
+// &35d5 check_for_obstruction_along_vector that find_route uses to test a
+// candidate wander/route target before committing tx/ty.
+static bool point_has_clear_path(const Object& obj,
+                                 uint8_t target_x, uint8_t target_y,
+                                 const UpdateContext& ctx) {
+    int sx = centre16_axis(obj, true);
+    int sy = centre16_axis(obj, false);
+    int tx = static_cast<int>(target_x) * 256 + 0x80;
+    int ty = static_cast<int>(target_y) * 256 + 0x80;
+    int dx = tx - sx, dy = ty - sy;
+    int adx = std::abs(dx), ady = std::abs(dy);
+    int max_axis = (adx > ady) ? adx : ady;
+    if (max_axis == 0) return true;
+    int steps = max_axis / STEP_FRACTIONS;
+    if (steps == 0) steps = 1;
+    int vx = dx / steps, vy = dy / steps;
+    int px = sx, py = sy;
+    for (int i = 0; i < steps; ++i) {
+        px += vx;
+        py += vy;
+        uint8_t tile_x = static_cast<uint8_t>((px >> 8) & 0xff);
+        uint8_t tile_y = static_cast<uint8_t>((py >> 8) & 0xff);
+        uint8_t x_frac = static_cast<uint8_t>(px & 0xff);
+        uint8_t y_frac = static_cast<uint8_t>((py & 0xf8) | 0x04);
+        if (Collision::point_in_tile_solid_with_doors(
+                ctx.landscape, ctx.mgr, tile_x, tile_y, x_frac, y_frac))
+            return false;
+    }
+    return true;
+}
+
 void update_target_directness(Object& obj, UpdateContext& ctx) {
     // 6502 &3cf6: `LDA this_object_frame_counter_sixteen / BNE leave`.
     // frame_counter_sixteen is a per-object 0..15 counter, not the global
@@ -173,16 +206,16 @@ void update_npc_path(Object& obj, UpdateContext& ctx) {
     switch (lvl) {
     case 3:
     case 2: {
-        // use_direct_path (&3d31): head straight for the target's current
-        // position. update_target_directness already did this when LOS
-        // was clear; re-assert here for level-2 (target was seen recently
-        // but is now hidden — keep heading to where it last was).
-        if (obj.target_and_flags & TargetFlags::AVOID) {
-            obj.tx = static_cast<uint8_t>(obj.x.whole * 2 - target.x.whole);
-            obj.ty = static_cast<uint8_t>(obj.y.whole * 2 - target.y.whole);
-        } else {
-            obj.tx = target.x.whole;
-            obj.ty = target.y.whole;
+        // &3d31 use_direct_path: do NOT re-point tx/ty. They were frozen by
+        // update_target_directness (&3d0e) on the last LOS-clear frame, so
+        // the NPC heads to where the target was LAST SEEN. On each path-
+        // update frame, decay directness one level (&3d36 fall-through).
+        // Without the decay an NPC that briefly sighted the player stays
+        // pinned at level 2 and homes on its live position through walls.
+        uint8_t d = obj.target_and_flags & TargetFlags::DIRECTNESS_MASK;
+        if (d >= TargetFlags::DIRECTNESS_ONE) {
+            obj.target_and_flags = static_cast<uint8_t>(
+                obj.target_and_flags - TargetFlags::DIRECTNESS_ONE);
         }
         break;
     }
@@ -210,14 +243,26 @@ void update_npc_path(Object& obj, UpdateContext& ctx) {
         break;
     }
     default: {
-        // use_relaxed_path (&3d68): drift tx, ty around the NPC's own
-        // position. The 6502 picks a random nearby tile; we pick a
-        // random offset in [-8, +7] on each axis so the NPC wanders
-        // aimlessly until the target is re-sighted.
-        int8_t dx = static_cast<int8_t>((ctx.rng.next() & 0x0f) - 8);
-        int8_t dy = static_cast<int8_t>((ctx.rng.next() & 0x0f) - 8);
-        obj.tx = static_cast<uint8_t>(obj.x.whole + dx);
-        obj.ty = static_cast<uint8_t>(obj.y.whole + dy);
+        // &3d68 use_relaxed_path -> &3da7 find_route. The 6502 tries up to
+        // 4 random directions, raycasts each, and only commits tx/ty to a
+        // point it has clear LOS to; if every direction is blocked (a robot
+        // sealed in a small room) it leaves tx/ty alone so the NPC stays
+        // put. Without this reachability gate a confined hovering robot
+        // thrust at random through its own walls and zipped around, which
+        // read as "activating" while dir stayed 0. Fall back to the NPC's
+        // own position so a fully-blocked NPC decelerates in place.
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            uint8_t cx = static_cast<uint8_t>(
+                obj.x.whole + ((ctx.rng.next() & 0x0f) - 8));
+            uint8_t cy = static_cast<uint8_t>(
+                obj.y.whole + ((ctx.rng.next() & 0x0f) - 8));
+            if (point_has_clear_path(obj, cx, cy, ctx)) {
+                obj.tx = cx;
+                obj.ty = cy;
+                break;
+            }
+            if (attempt == 3) { obj.tx = obj.x.whole; obj.ty = obj.y.whole; }
+        }
         break;
     }
     }

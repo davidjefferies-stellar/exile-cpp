@@ -327,7 +327,14 @@ void update_hovering_robot(Object& obj, UpdateContext& ctx) {
     NPC::move_towards_target_with_probability(obj, ctx, 0x1c, 4, 0x80);
     NPC::cancel_gravity(obj);                       // &4883 DEC acceleration_y
     NPC::consider_hovering_over_ground(obj, ctx);   // &4885
-    if (ctx.particles) {                            // &4888 add_jetpack_thrust_particles
+    // &4888 add_jetpack_thrust_particles. 6502 gates on accel != 0; our
+    // hover folds thrust into velocity, so approximate with "heading
+    // somewhere": a confined robot parked on its own tile (tx/ty ==
+    // position via the relaxed-path fallback) has no thrust and must not
+    // puff in place.
+    int8_t tdx = static_cast<int8_t>(obj.tx - obj.x.whole);
+    int8_t tdy = static_cast<int8_t>(obj.ty - obj.y.whole);
+    if (ctx.particles && (tdx != 0 || tdy != 0)) {  // &4888
         ctx.particles->emit(ParticleType::JETPACK, 1, obj, ctx.cosmetic_rng);
     }
 }
