@@ -327,6 +327,12 @@ public:
         return false;
     }
 
+    // True when any pop-out debug panel/submenu is showing (Tiles submenu,
+    // Events, Saves, Sprite viewer). Esc closes these via close_debug_panels
+    // before falling through to the pause menu.
+    virtual bool debug_panels_open() const { return false; }
+    virtual void close_debug_panels() {}
+
     // Wire Game's debug_log_ into the renderer so renderer-side
     // diagnostics land in the same exile-debug.log Game writes to.
     // Default no-op; PixelRenderer stores the pointer for use by its

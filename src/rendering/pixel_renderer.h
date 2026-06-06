@@ -124,6 +124,14 @@ public:
     void set_paint_tile(uint8_t tile_type) override;
     bool consume_palette_click(uint8_t& tile_type) override;
     bool events_panel_enabled() const override { return events_panel_on; }
+    bool debug_panels_open() const override {
+        return tile_outline_on || events_panel_on ||
+               saves_panel_on || sprite_viewer_on;
+    }
+    void close_debug_panels() override {
+        tile_outline_on = events_panel_on =
+            saves_panel_on = sprite_viewer_on = false;
+    }
     bool consume_event_click(int& event_id) override;
     bool saves_panel_enabled() const override { return saves_panel_on; }
     void set_save_files(const std::vector<std::string>& paths) override;

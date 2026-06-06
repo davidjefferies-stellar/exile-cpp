@@ -339,15 +339,17 @@ void Game::tick() {
         // Activation-anchor mode is driven by the "Map mode"
         activation_from_camera_ = renderer_->map_mode_enabled();
 
-        // Esc: while scrubbing, commit the scrubbed frame; while the
-        // menu is open, navigate / close it; otherwise open the menu
-        // (which also pauses the sim). Menu nav keys handled in
-        // tick_menu_input below.
+        // Esc: while scrubbing, commit the scrubbed frame; if a debug
+        // panel/submenu is showing, close it; while the menu is open,
+        // navigate / close it; otherwise open the menu (which also pauses
+        // the sim). Menu nav keys handled in tick_menu_input below.
         {
             bool down = input_.state().toggle_pause;
             if (down && !pause_key_prev_) {
                 if (!commit_scrub_if_active()) {
-                    if (menu_open_) {
+                    if (renderer_->debug_panels_open()) {
+                        renderer_->close_debug_panels();
+                    } else if (menu_open_) {
                         menu_open_ = false;
                         paused_    = false;
                     } else {
