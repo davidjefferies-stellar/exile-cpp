@@ -993,22 +993,9 @@ void update_big_fish(Object& obj, UpdateContext& ctx) {
         return;
     }
 
-    // &4771-&4776: consider_finding_target(PIRANHA, range=PIRANHA).
+    // &4771-&4776: consider_finding_target(PIRANHA, range=PIRANHA). With no
+    // piranha the target stays self (&1edf init), so the fish idles.
     NPC::consider_finding_target(obj, ObjectType::PIRANHA, ctx);
-
-    // The 6502 inits an object's target to itself (&1edf) and only the
-    // piranha scan ever retargets the fish — it never chases the player.
-    // The port inits target to slot 0 (player), so when no piranha is
-    // present pin the target to self; the fish then idles instead of
-    // drifting toward the player.
-    uint8_t tslot = obj.target_and_flags & TargetFlags::OBJECT_MASK;
-    bool targeting_piranha = tslot < GameConstants::PRIMARY_OBJECT_SLOTS &&
-        ctx.mgr.object(tslot).type == ObjectType::PIRANHA;
-    if (!targeting_piranha) {
-        obj.target_and_flags = static_cast<uint8_t>(
-            (obj.target_and_flags & ~TargetFlags::OBJECT_MASK) |
-            (ctx.this_slot & TargetFlags::OBJECT_MASK));
-    }
 
     // &4777: consider_updating_npc_path (does its own LOS directness sweep).
     NPC::update_npc_path(obj, ctx);
@@ -1207,11 +1194,11 @@ static void update_bird_common(Object& obj, UpdateContext& ctx) {
     // is effectively a no-op today — kept for faithfulness.
     NPC::enforce_minimum_energy(obj, birds_energy_table[tidx]);
 
-    // &4654-&4659 visibility on damage. WAS_DAMAGED flag approximates the
-    // 6502's &253c check; invisible birds read obj.state to reveal.
-    if (obj.flags & ObjectFlags::WAS_DAMAGED) {
-        obj.state = 0x80;   // non-zero -> visible
-    }
+    // &4654-&4659 ROR &11: shift the damage bit into bit 7 of state and
+    // the old value down one place each frame, so a hit bird is stunned
+    // ~8 frames then resumes. Invisible birds read obj.state to reveal.
+    bool was_damaged = (obj.flags & ObjectFlags::WAS_DAMAGED) != 0;
+    obj.state = static_cast<uint8_t>((obj.state >> 1) | (was_damaged ? 0x80 : 0));
 
     // &4659 BNE skips the sprite + path block when state != 0 (just-
     // damaged or invisible bird that just revealed). Gate on it.

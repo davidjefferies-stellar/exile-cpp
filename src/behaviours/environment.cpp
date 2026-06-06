@@ -176,62 +176,6 @@ void update_door(Object& obj, UpdateContext& ctx) {
     // &4cab-&4cad: always re-set MOVING while the door is being ticked.
     uint8_t data = obj.tertiary_data_offset | DoorFlag::MOVING;
 
-    // Diag: log every door tick when an RCD is in flight, with the
-    // door's actual position, the sprite-centre fdx/fdy, the computed
-    // angle, and the aim-cone verdict. Restore the line and rebuild to
-    // diagnose left-facing RCD failures.
-    if (ctx.player_object_fired < GameConstants::PRIMARY_OBJECT_SLOTS) {
-        const Object& fired = ctx.mgr.object(ctx.player_object_fired);
-        if (fired.is_active() &&
-            fired.type == ObjectType::REMOTE_CONTROL_DEVICE) {
-            uint8_t door_colour = (obj.tertiary_data_offset >> 4) & 0x07;
-            int target_cx_frac = (obj.sprite <= 0x80 && sprite_atlas[obj.sprite].w > 0)
-                ? (sprite_atlas[obj.sprite].w - 1) * 16 / 2 : 0;
-            int target_cy_frac = (obj.sprite <= 0x80 && sprite_atlas[obj.sprite].h > 0)
-                ? (sprite_atlas[obj.sprite].h - 1) * 8 / 2 : 0;
-            int fired_cx_frac = (fired.sprite <= 0x80 && sprite_atlas[fired.sprite].w > 0)
-                ? (sprite_atlas[fired.sprite].w - 1) * 16 / 2 : 0;
-            int fired_cy_frac = (fired.sprite <= 0x80 && sprite_atlas[fired.sprite].h > 0)
-                ? (sprite_atlas[fired.sprite].h - 1) * 8 / 2 : 0;
-            int tcx = int(obj.x.whole) * 256 + int(obj.x.fraction) + target_cx_frac;
-            int tcy = int(obj.y.whole) * 256 + int(obj.y.fraction) + target_cy_frac;
-            int fcx = int(fired.x.whole) * 256 + int(fired.x.fraction) + fired_cx_frac;
-            int fcy = int(fired.y.whole) * 256 + int(fired.y.fraction) + fired_cy_frac;
-            int dx_frac = fcx - tcx;
-            int dy_frac = fcy - tcy;
-            int max_abs_frac = std::max(std::abs(dx_frac), std::abs(dy_frac));
-            int tiles = (max_abs_frac + 255) / 256;
-            int divisor = 1;
-            while (max_abs_frac / divisor > 127) divisor *= 2;
-            int8_t fdx = static_cast<int8_t>(dx_frac / divisor);
-            int8_t fdy = static_cast<int8_t>(dy_frac / divisor);
-            uint8_t angle = NPC::angle_from_deltas(fdx, fdy);
-            int raw_diff = static_cast<int8_t>(
-                angle - ctx.player_aim_angle - 0x80);
-            int abs_diff = raw_diff < 0 ? -raw_diff : raw_diff;
-            ctx.mgr.log_diag(
-                "door type=0x%02x @%u.%02x,%u.%02x spr=0x%02x w=%u h=%u "
-                "colour=%u locked=%d aim=0x%02x "
-                "RCD@%u.%02x,%u.%02x spr=0x%02x "
-                "fdx=%d fdy=%d tiles=%d angle=0x%02x raw_diff=%d "
-                "abs+dist=%d pass=%d",
-                static_cast<unsigned>(obj.type),
-                obj.x.whole, obj.x.fraction, obj.y.whole, obj.y.fraction,
-                obj.sprite,
-                obj.sprite <= 0x80 ? sprite_atlas[obj.sprite].w : 0,
-                obj.sprite <= 0x80 ? sprite_atlas[obj.sprite].h : 0,
-                door_colour,
-                (obj.tertiary_data_offset & DoorFlag::LOCKED) ? 1 : 0,
-                ctx.player_aim_angle,
-                fired.x.whole, fired.x.fraction,
-                fired.y.whole, fired.y.fraction,
-                fired.sprite,
-                (int)fdx, (int)fdy, tiles, angle, raw_diff,
-                abs_diff + tiles * 8,
-                ((abs_diff + tiles * 8) < 0x18) ? 1 : 0);
-        }
-    }
-
     // &4c9e/&31ac RCD door-unlock: the door reacts iff the player just
     // fired an RCD that's inside the aim-cone test at &0bc5 AND the
     // matching key has been collected. player_object_fired is one-frame
@@ -442,8 +386,7 @@ static constexpr uint8_t switch_effects_table[] = {
 // one byte per (tile_type, X). Writes up to max_out indices.
 static int find_shared_entries_for_data_offset(const Landscape& landscape,
                                                 uint8_t data_offset,
-                                                uint16_t* out, int max_out,
-                                                ObjectManager* diag_mgr) {
+                                                uint16_t* out, int max_out) {
     if (data_offset == 0 || max_out <= 0) return 0;
     int written = 0;
     // `range_idx` selects the per-range data-offset adjustment, not
@@ -456,10 +399,6 @@ static int find_shared_entries_for_data_offset(const Landscape& landscape,
         if (source_idx <  tertiary_ranges[range_idx]) continue;
         if (source_idx >= tertiary_ranges[range_idx + 1]) continue;
         uint8_t target_x = tertiary_objects_x_data[source_idx];
-        if (diag_mgr) diag_mgr->log_diag(
-            "diag find_shared data_off=0x%02x range=%d src_idx=0x%02x "
-            "tgt_x=0x%02x",
-            data_offset, range_idx, source_idx, target_x);
         for (int y = 0; y < 256; ++y) {
             if (landscape.tertiary_source_idx_at(
                     target_x, static_cast<uint8_t>(y)) != source_idx)
@@ -467,8 +406,6 @@ static int find_shared_entries_for_data_offset(const Landscape& landscape,
             uint16_t cell_idx = landscape.tertiary_index_at(
                 target_x, static_cast<uint8_t>(y));
             if (cell_idx == Landscape::NO_TERTIARY) continue;
-            if (diag_mgr) diag_mgr->log_diag(
-                "diag   cell (%d,%d) entry=%u", target_x, y, cell_idx);
             if (written >= max_out) return written;
             out[written++] = cell_idx;
         }
@@ -476,8 +413,6 @@ static int find_shared_entries_for_data_offset(const Landscape& landscape,
         // no need to keep checking other ranges.
         return written;
     }
-    if (diag_mgr) diag_mgr->log_diag(
-        "diag find_shared data_off=0x%02x NO MATCHING RANGE", data_offset);
     return written;
 }
 
@@ -510,11 +445,7 @@ static bool process_switch_effects(ObjectManager& mgr,
         // worlds.
         uint16_t entries[16];
         int n_entries = find_shared_entries_for_data_offset(
-            landscape, b, entries, 16, &mgr);
-        mgr.log_diag(
-            "diag process_switch eff=%u byte=0x%02x mask=0x%02x "
-            "toggle=0x%02x n_entries=%d",
-            effect_id, b, mask, toggle, n_entries);
+            landscape, b, entries, 16);
         if (n_entries == 0) continue;
 
         // Prefer a primary's live byte from any sibling entry (siblings
@@ -536,26 +467,18 @@ static bool process_switch_effects(ObjectManager& mgr,
                 mgr.tertiary_data_byte(entries[0]) & 0x7f);
         uint8_t newv = static_cast<uint8_t>((prev & mask) ^ toggle);
         if (newv != prev) any_changed = true;
-        mgr.log_diag(
-            "diag   prev=0x%02x newv=0x%02x sample_owner=%d",
-            prev, newv, sample_owner);
 
         // Apply newv to every sibling entry.
         for (int e = 0; e < n_entries; ++e) {
             uint16_t slot = entries[e];
             bool live = false;
-            int live_obj = -1;
             for (int i = 1; i < GameConstants::PRIMARY_OBJECT_SLOTS; ++i) {
                 Object& p = mgr.object(i);
                 if (p.is_active() && p.tertiary_slot == slot) {
                     p.tertiary_data_offset = newv;
                     live = true;
-                    live_obj = i;
                 }
             }
-            mgr.log_diag(
-                "diag   apply entry=%u live=%d obj=%d",
-                slot, (int)live, live_obj);
             if (live) {
                 mgr.set_tertiary_data_byte(slot, newv);
             } else {
@@ -652,11 +575,6 @@ void update_switch(Object& obj, UpdateContext& ctx) {
         uint8_t data   = obj.tertiary_data_offset;
         uint8_t toggle = static_cast<uint8_t>((data >> 1) & 0x03);
         uint8_t effect = static_cast<uint8_t>(data >> 3);
-        ctx.mgr.log_diag(
-            "diag update_switch press at (%d,%d) slot=%u data=0x%02x "
-            "effect=%u toggle=%u",
-            obj.x.whole, obj.y.whole, obj.tertiary_slot, data,
-            effect, toggle);
         // Mirror the change into the tertiary slot too.
         if (obj.tertiary_slot > 0) {
             ctx.mgr.set_tertiary_data_byte(obj.tertiary_slot, data);

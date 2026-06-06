@@ -439,33 +439,11 @@ void Game::tick_test_flood() {
 
 // ---------- Startup test spawns ----------------------------------------
 //
-// Drops a pair of red slimes onto the door at (80, 96) so a fresh game
-// has a visible damage event in view, and optionally scatters one of
-// every animated NPC type in a grid NW of the player when [debug]
-// stress_test is on. Both rigs are port-only debug aids — the 6502 ROM
-// has no equivalent — but they're useful enough during AI / damage
-// regression work to keep around behind the existing config gate.
+// Optionally scatters one of every animated NPC type in a grid NW of the
+// player when [debug] stress_test is on, plus the grenade-chain and
+// icer-drop rigs. Port-only debug aids — the 6502 ROM has no equivalent —
+// but useful during AI / damage regression work, kept behind config gates.
 void Game::spawn_test_rigs(bool stress_test, bool grenade_chain, bool icer_drop) {
-    // Two red slime drops onto door at (80, 96). Each deals 100 dmg
-    // (&47b1 LDA #&64); same-frame total 200 drops door (255->55) below
-    // pair-3 threshold 128 -> SLOW_OR_DESTROYED. Stagger x_frac so the
-    // pair doesn't overlap before reaching the door.
-    {
-        constexpr uint8_t kStartTileX = 80;
-        constexpr uint8_t kStartTileY = 90;
-        for (int i = 0; i < 2; i++) {
-            uint8_t x_frac = static_cast<uint8_t>(0x40 + i * 0x60);
-            int slot = object_mgr_.create_object(
-                ObjectType::RED_DROP, /*min_free_slots=*/0,
-                kStartTileX, x_frac, kStartTileY, 0x40);
-            if (slot > 0) {
-                Object& d = object_mgr_.object(slot);
-                d.velocity_x = 0;
-                d.velocity_y = 4;  // matches &47f3 LDA #&04 spawn velocity
-            }
-        }
-    }
-
     // [debug] grenade_chain — one ACTIVE_GRENADE + four INACTIVE_GRENADEs
     // on door (80, 95). tick_test_grenades() flips the inactives to
     // ACTIVE mid-fuse so the four detonate in a chain ~48 frames after
