@@ -108,12 +108,15 @@ The build pulls in single-header dependencies bundled under `deps/`:
 
 ## Run
 
-```
-exile.exe
+```sh
+exile.exe          # Windows
+./build/exile      # Linux / macOS
 ```
 
-Configuration lives in `exile.ini` — start position, cache sizes, debug
-flags, key bindings, and the landscape-generator A/B toggle.
+Run from the repo root either way, so `exile.ini`, `exile.map`, `data/`,
+and `resources/` resolve. Configuration lives in `exile.ini` — start
+position, cache sizes, debug flags, key bindings, and the
+landscape-generator A/B toggle.
 
 ## Controls
 
