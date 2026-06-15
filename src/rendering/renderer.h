@@ -95,6 +95,8 @@ namespace InputKey {
     // scrub UI; both auto-repeat while held to scrub continuously.
     constexpr int KEYPAD_STAR     = 0x10b;
     constexpr int KEYPAD_MINUS    = 0x10c;
+    // Editing text (pause-menu save filename). Not bound to any game action.
+    constexpr int BACKSPACE       = 0x10d;
 }
 
 class IRenderer {

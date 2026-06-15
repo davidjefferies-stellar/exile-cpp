@@ -199,6 +199,11 @@ bool Game::init() {
         }
     }
 
+    // &0987 = &7c: stock the world-worm reservoir (31 creatures) so the
+    // earth-emergence path (&2660) can spawn worms east of 0x76. The maggot
+    // reservoir (+0x02) is force-refilled each frame by update_triax_lab.
+    object_mgr_.set_tertiary_data_byte(0x01, 0x7c);
+
     // [startup_spawns] — one create_object per entry. min_free_slots=0
     // so an entry can fill the last free slot if the user has stacked a
     // lot of them. Skipped silently when the slot pool is exhausted —
@@ -347,7 +352,12 @@ void Game::tick() {
             bool down = input_.state().toggle_pause;
             if (down && !pause_key_prev_) {
                 if (!commit_scrub_if_active()) {
-                    if (renderer_->debug_panels_open()) {
+                    if (menu_editing_filename_) {
+                        menu_editing_filename_ = false;  // cancel naming, back to menu
+                        filename_keys_prev_.clear();
+                    } else if (menu_selecting_load_) {
+                        menu_selecting_load_ = false;    // cancel load, back to menu
+                    } else if (renderer_->debug_panels_open()) {
                         renderer_->close_debug_panels();
                     } else if (menu_open_) {
                         menu_open_ = false;
@@ -360,8 +370,8 @@ void Game::tick() {
                         // W/P (move_up alias) doesn't cycle the selection
                         // on frame 0.
                         const InputState& s = input_.state();
-                        menu_up_prev_    = s.move_up;
-                        menu_down_prev_  = s.move_down;
+                        menu_up_prev_    = s.move_up   || s.pan_up;
+                        menu_down_prev_  = s.move_down || s.pan_down;
                         menu_enter_prev_ = s.pickup_drop || s.fire;
                     }
                 }
@@ -465,6 +475,23 @@ void Game::tick() {
             // Chained-grenade test rig — no-op unless the init() seed
             // block is enabled. Body lives in game_debug.cpp.
             tick_test_grenades();
+
+            // [debug] spawn at tile (80,88) every frame and let gravity
+            // drop it — half coronium boulders, half pianos. Temporary
+            // test rig — remove when done. Disabled for now.
+            if (false) {
+                ObjectType t = (rng_.next() & 0x01)
+                    ? ObjectType::CORONIUM_BOULDER : ObjectType::PIANO;
+                uint8_t sx = static_cast<uint8_t>(80 + ((rng_.next() & 0x03) - 1));
+                int slot = object_mgr_.create_object(
+                    t, /*min_free_slots=*/0,
+                    sx, rng_.next(), 88, rng_.next());
+                if (slot > 0) {
+                    Object& o = object_mgr_.object(slot);
+                    o.velocity_x = 0;
+                    o.velocity_y = 0;
+                }
+            }
 
             { Profile::Scope _p(profiler_, Profile::Section::Player);
               update_player(); }
@@ -582,6 +609,13 @@ void Game::update_timers() {
 void Game::process_input() {
     input_.clear();
 
+    // While naming a save the menu owns the keyboard; capture text and
+    // skip the game-action bindings entirely.
+    if (menu_editing_filename_) {
+        process_filename_edit_input();
+        return;
+    }
+
     int key;
     while ((key = renderer_->get_key()) != InputKey::NONE) {
         input_.process_key(key);
@@ -645,6 +679,93 @@ void Game::process_input() {
     }
 }
 
+// Drain raw keys while the save-filename editor is open. Edge-detect
+// against keys held last frame so a held key types one character.
+void Game::process_filename_edit_input() {
+    std::vector<int> down_now;
+    int key;
+    while ((key = renderer_->get_key()) != InputKey::NONE) {
+        if (key == InputKey::CLOSE_REQUESTED) { running_ = false; return; }
+        // Esc cancels via tick()'s pause-key edge logic so a held Esc
+        // doesn't also close the menu on the following frame.
+        if (key == InputKey::ESCAPE) input_.process_key(key);
+        down_now.push_back(key);
+    }
+    for (int k : down_now) {
+        if (k == InputKey::ESCAPE) continue;
+        bool held = false;
+        for (int p : filename_keys_prev_) if (p == k) { held = true; break; }
+        if (!held) apply_filename_key(k);
+    }
+    filename_keys_prev_ = std::move(down_now);
+}
+
+// Apply one fresh keypress to the filename buffer. Enter commits the
+// save, Backspace deletes; printable keys arrive lowercased from
+// get_key, so the charset is [a-z0-9._-]. Esc is handled in tick().
+void Game::apply_filename_key(int key) {
+    if (key == InputKey::ENTER) {
+        // The editor holds the base name only; the ".sav" type is added here.
+        std::string base = menu_filename_.empty() ? "exile" : menu_filename_;
+        std::string name = base + ".sav";
+        bool ok = save_game(name);
+        bundle_msg_ = ok ? ("Saved " + name) : ("Save FAILED: " + name);
+        bundle_msg_until_ = std::chrono::steady_clock::now() +
+                            std::chrono::seconds(3);
+        menu_editing_filename_ = false;
+        menu_open_ = false;
+        paused_    = false;
+        filename_keys_prev_.clear();
+        return;
+    }
+    if (key == InputKey::BACKSPACE) {
+        if (!menu_filename_.empty()) menu_filename_.pop_back();
+        return;
+    }
+    if (((key >= 'a' && key <= 'z') || (key >= '0' && key <= '9') ||
+         key == '.' || key == '-' || key == '_') &&
+        menu_filename_.size() < 32) {
+        menu_filename_.push_back(static_cast<char>(key));
+    }
+}
+
+// Populate the load selector from *.sav files in the working directory.
+// With none found, surface a banner and just close the menu.
+void Game::open_load_selector() {
+    load_files_ = scan_save_files(".", /*recursive=*/false);
+    load_selection_ = 0;
+    if (load_files_.empty()) {
+        bundle_msg_ = "No saves found";
+        bundle_msg_until_ = std::chrono::steady_clock::now() +
+                            std::chrono::seconds(3);
+        menu_open_ = false;
+        paused_    = false;
+        return;
+    }
+    menu_selecting_load_ = true;
+}
+
+// One frame of load-selector navigation. Enter loads the highlighted
+// file, auto-detecting BBC (0x400-byte) vs our text format by size.
+void Game::tick_load_selector(bool up_edge, bool down_edge, bool enter_edge) {
+    int n = static_cast<int>(load_files_.size());
+    if (n == 0) { menu_selecting_load_ = false; return; }
+    if (up_edge)   load_selection_ = (load_selection_ - 1 + n) % n;
+    if (down_edge) load_selection_ = (load_selection_ + 1) % n;
+    if (enter_edge) {
+        const std::string& path = load_files_[load_selection_];
+        std::ifstream probe(path, std::ios::binary | std::ios::ate);
+        std::streamsize sz = probe ? static_cast<std::streamsize>(probe.tellg()) : 0;
+        bool ok = (sz == 0x400) ? load_bbc_save(path) : load_game(path);
+        bundle_msg_ = ok ? ("Loaded " + path) : ("Load FAILED: " + path);
+        bundle_msg_until_ = std::chrono::steady_clock::now() +
+                            std::chrono::seconds(3);
+        menu_selecting_load_ = false;
+        menu_open_ = false;
+        paused_    = false;
+    }
+}
+
 // trigger_event lives in game_debug.cpp.
 
 // Port of &25a1-&25df update_triax_lab. Maggot count refill, periodic
@@ -683,6 +804,69 @@ void Game::update_triax_lab() {
         object_mgr_.set_tertiary_data_byte(0xc2, door_data);
     }
     Water::set_desired_y(1, (door_data & 0x02) ? 0xe2 : 0xd2);
+}
+
+// &2660 consider_emerging_worm_or_maggot. Pops a worm or maggot out of a
+// random earth tile near the player every 16 frames, biased toward the deep
+// lower world and scaled by the world reservoir the maggot machine keeps
+// topped up (tertiary +0x01 worms, +0x02 maggots).
+void Game::consider_emerging_worm_or_maggot() {
+    if (!every_sixteen_frames_) return;                         // &266c
+
+    const Object& player = object_mgr_.player();
+
+    // &2660-&2662 get_random_tile_near_player (diameter 7 -> -3..+4). Two
+    // rng draws like the mushroom pick, not the 6502's draw + state peek.
+    uint8_t tile_x = static_cast<uint8_t>(player.x.whole + (rng_.next() & 0x07) - 3);
+    uint8_t tile_y = static_cast<uint8_t>(player.y.whole + (rng_.next() & 0x07) - 3);
+
+    // &2665-&266a: only emerge from solid earth.
+    uint8_t tile = landscape_.get_tile(tile_x, tile_y);
+    if ((tile & TileFlip::TYPE_MASK) != static_cast<uint8_t>(TileType::EARTH))
+        return;
+
+    // &2670-&267b: bias toward the deep lower world. base = 0x80 unless
+    // flooding, OR'd with rnd; emerge only when tile_y exceeds it.
+    bool flooding = (flooding_state_ & 0x80) != 0;
+    uint8_t bias = static_cast<uint8_t>((flooding ? 0x00 : 0x80) | rng_.peek(1));
+    if (bias >= tile_y) return;
+
+    // &267d-&2686: always emerge during an explosion, else 1-in-8.
+    if (explosion_timer_ >= 0 && (rng_.peek(2) & 0x70) != 0) return;
+
+    // &2688-&269f: worm (offset 1) vs maggot (offset 2). 31-in-32 take the
+    // geographic type; flooding or player west of 0x76 -> maggot, player
+    // east of 0x76 -> worm.
+    bool prefer_maggot = rng_.next() >= 0x08;
+    if (!flooding && player.x.whole >= 0x76) prefer_maggot = false;
+    uint8_t offset    = prefer_maggot ? 0x02 : 0x01;
+    ObjectType type   = prefer_maggot ? ObjectType::MAGGOT : ObjectType::WORM;
+
+    // &26a3-&26a9 + &3e56-&3e5d: likelihood scales with the reservoir, and
+    // spawn_object needs it stocked (>=1 creature) and active.
+    uint8_t data = object_mgr_.tertiary_data_byte(offset);
+    uint8_t d2   = static_cast<uint8_t>(data << 1);
+    if (d2 < rng_.peek(2)) return;
+    if (d2 < 0x08) return;
+    if ((d2 & 0x06) != 0) return;
+
+    // &26ab spawn_object_in_event (6 free slots); &3e6d decrements the
+    // reservoir by 4 (the machine refills it to 0x60 each frame).
+    int slot = object_mgr_.create_object(type, /*min_free_slots=*/6,
+                                         tile_x, 0x80, tile_y, 0x80);
+    if (slot <= 0) return;
+    object_mgr_.set_tertiary_data_byte(offset, static_cast<uint8_t>(data - 4));
+
+    // &26b3-&26c5: head toward the player and flag burrow-out-of-earth.
+    // update_worm_or_maggot's &2a02 burrow path then crawls it out of the
+    // earth tile it spawned in.
+    Object& m = object_mgr_.object(slot);
+    m.velocity_x = static_cast<int8_t>(player.x.whole - tile_x);
+    m.velocity_y = static_cast<int8_t>(player.y.whole - tile_y);
+    m.state = 0x80;
+    // &4081-&4083: tag the spawn with its reservoir offset so the
+    // SPAWNED_FROM_NEST demote (&1d07) credits the count back (+4).
+    m.tertiary_slot = offset;
 }
 
 // Port of update_events (&259a-&2742): stars, Triax summoning, earthquake,
@@ -875,6 +1059,10 @@ void Game::update_events() {
                 res.data_offset, static_cast<uint8_t>(data - 4));
         }
     }
+
+    // &2660 consider_emerging_worm_or_maggot: pop a worm/maggot out of a
+    // nearby earth tile — the lower-world maggot population near the player.
+    consider_emerging_worm_or_maggot();
 
     // Earthquake progression (&25e2-&2610). negative state = running;
     // worsens more quickly early, tapers toward 0x21. Skipped: BBC R2
@@ -1352,10 +1540,10 @@ std::string timestamp_for_filename() {
 }
 } // namespace
 
-// Reads menu navigation keys while the menu is open. Up/Down cycle the
-// highlight; Enter / Space activates. We re-use the existing move_up /
-// move_down / fire / pickup_drop fields and swallow them here so the
-// player doesn't also fire / pickup on the same press.
+// Reads menu navigation keys while the menu is open. Arrow keys (pan_*)
+// or P/L (move_*) cycle the highlight; Enter / Space activates. The keys
+// are swallowed here so the player / camera don't also act on the same
+// press (fire / pickup / jet-thrust / map pan).
 void Game::tick_menu_input() {
     if (!menu_open_) {
         menu_up_prev_ = menu_down_prev_ = menu_enter_prev_ = false;
@@ -1363,17 +1551,33 @@ void Game::tick_menu_input() {
     }
     InputState s = input_.state();
 
-    bool up_down  = s.move_up;
-    bool dn_down  = s.move_down;
+    // Arrow keys (pan_*) and the P/L jetpack keys (move_*) both navigate.
+    bool up_down  = s.move_up   || s.pan_up;
+    bool dn_down  = s.move_down || s.pan_down;
     bool ent_down = s.pickup_drop || s.fire;
+    bool up_edge  = up_down  && !menu_up_prev_;
+    bool dn_edge  = dn_down  && !menu_down_prev_;
+    bool ent_edge = ent_down && !menu_enter_prev_;
 
-    if (up_down && !menu_up_prev_) {
+    if (menu_selecting_load_) {
+        tick_load_selector(up_edge, dn_edge, ent_edge);
+        menu_up_prev_    = up_down;
+        menu_down_prev_  = dn_down;
+        menu_enter_prev_ = ent_down;
+        InputState sw = s;
+        sw.move_up = sw.move_down = sw.pan_up = sw.pan_down = false;
+        sw.fire = sw.pickup_drop = false;
+        input_.set_state(sw);
+        return;
+    }
+
+    if (up_edge) {
         menu_selection_ = (menu_selection_ + kMenuItemCount - 1) % kMenuItemCount;
     }
-    if (dn_down && !menu_down_prev_) {
+    if (dn_edge) {
         menu_selection_ = (menu_selection_ + 1) % kMenuItemCount;
     }
-    if (ent_down && !menu_enter_prev_) {
+    if (ent_edge) {
         switch (menu_selection_) {
             case 0: {
                 std::string fn = create_issue_bundle();
@@ -1387,14 +1591,16 @@ void Game::tick_menu_input() {
                 break;
             }
             case 1:
-                save_game("exile.sav");
-                menu_open_ = false;
-                paused_    = false;
+                // Open the inline filename editor; the save happens when
+                // the user presses Enter in apply_filename_key. Seed
+                // filename_keys_prev_ with the activating Enter so a held
+                // key doesn't immediately commit on the first edit frame.
+                menu_editing_filename_ = true;
+                menu_filename_ = "exile";   // base name only; ".sav" added on save
+                filename_keys_prev_ = { InputKey::ENTER };
                 break;
             case 2:
-                load_game("exile.sav");
-                menu_open_ = false;
-                paused_    = false;
+                open_load_selector();
                 break;
             case 3:
                 menu_open_ = false;
@@ -1412,6 +1618,8 @@ void Game::tick_menu_input() {
     InputState swallowed = s;
     swallowed.move_up    = false;
     swallowed.move_down  = false;
+    swallowed.pan_up     = false;
+    swallowed.pan_down   = false;
     swallowed.fire       = false;
     swallowed.pickup_drop = false;
     input_.set_state(swallowed);

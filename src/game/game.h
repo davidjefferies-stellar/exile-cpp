@@ -502,6 +502,11 @@ private:
     // when flooding_state_'s bit 7 is set (lab fully floods to 0x67).
     void update_triax_lab();
 
+    // Port of &2660 consider_emerging_worm_or_maggot. Pops a worm or
+    // maggot out of a random earth tile near the player, drawing on the
+    // world reservoirs the maggot machine keeps topped up.
+    void consider_emerging_worm_or_maggot();
+
     // Test-events panel triggers (port-only). IDs match the kEventButtons
     // table in src/rendering/pixel_renderer_debug.cpp; keep both in sync.
     enum class EventId : int {
@@ -566,10 +571,12 @@ private:
     // a real BBC. Format documented in docs/save_game_format.md.
     bool load_bbc_save(const std::string& path);
 
-    // Recursively enumerate save files under `root` (typically
-    // "save_disks"). Returns paths suitable for load_game / load_bbc_save.
-    // Used by the renderer's Saves panel.
-    static std::vector<std::string> scan_save_files(const std::string& root);
+    // Enumerate save files under `root` (typically "save_disks"). Returns
+    // paths suitable for load_game / load_bbc_save. `recursive` walks
+    // subdirectories (legacy Saves panel); false scans only `root` itself
+    // (pause-menu load selector over the working directory).
+    static std::vector<std::string> scan_save_files(const std::string& root,
+                                                    bool recursive = true);
 
     // Stream-based variants used by the rewind ring buffer. snapshot()
     // serialises the same payload save_game writes to disk;
@@ -594,6 +601,25 @@ private:
     bool menu_up_prev_    = false;
     bool menu_down_prev_  = false;
     bool menu_enter_prev_ = false;
+
+    // "Save game" opens an inline filename editor instead of writing a
+    // fixed name. While editing, process_input captures raw keys via
+    // process_filename_edit_input; filename_keys_prev_ edge-detects so a
+    // held key types one character, not one per frame.
+    bool menu_editing_filename_ = false;
+    std::string menu_filename_;
+    std::vector<int> filename_keys_prev_;
+    void process_filename_edit_input();
+    void apply_filename_key(int key);
+
+    // "Load game" opens a selector over the *.sav files in the working
+    // directory (where pause-menu saves are written). Arrow / P-L keys
+    // move the highlight, Enter loads, Esc returns to the menu.
+    bool menu_selecting_load_ = false;
+    std::vector<std::string> load_files_;
+    int  load_selection_ = 0;
+    void open_load_selector();
+    void tick_load_selector(bool up_edge, bool down_edge, bool enter_edge);
 
     // Transient banner shown after the bundle action so the user can see
     // where the zip was written. steady_clock keeps the 3-second window

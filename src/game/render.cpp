@@ -1305,7 +1305,30 @@ void Game::refresh_selected_tile_info(uint8_t tx, uint8_t ty) {
 // also doubles as the bundle-saved banner so the user sees confirmation
 // without needing the "Tiles" debug checkbox on (which gates the
 // top-right overlay path).
+// Strip directory components so the selector shows "name.sav", not the
+// "./name.sav" generic path scan_save_files returns.
+static std::string save_base_name(const std::string& path) {
+    size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
 void Game::render_menu_overlay() {
+    if (menu_editing_filename_) {
+        // '_' is the text cursor; the ".sav" type is fixed and appended.
+        std::string body = "Save game\n\nFilename:\n";
+        body += menu_filename_ + "_.sav\n";
+        body += "\nEnter: save   Esc: cancel\n";
+        renderer_->set_menu_overlay(body.c_str(), -1);
+        return;
+    }
+    if (menu_selecting_load_) {
+        std::string body = "Load game\n\n";
+        for (const std::string& f : load_files_) body += save_base_name(f) + "\n";
+        body += "\nEnter: load   Esc: cancel\n";
+        int selection = 2 + load_selection_;   // skip title + blank line
+        renderer_->set_menu_overlay(body.c_str(), selection);
+        return;
+    }
     if (menu_open_) {
         const char* kBody =
             "Pause\n"

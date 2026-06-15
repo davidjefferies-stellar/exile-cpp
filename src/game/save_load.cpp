@@ -912,21 +912,34 @@ static bool natural_less(const std::string& a, const std::string& b) {
 // Recursive directory walk under `root`. Returns paths to *.sav files
 // sorted numerically (so 1.sav, 2.sav, ..., 10.sav, 11.sav). Forward-
 // slashed so the renderer's label-strip works on both Windows and Unix.
-std::vector<std::string> Game::scan_save_files(const std::string& root) {
+static void collect_sav(const std::filesystem::path& p,
+                        std::vector<std::string>& out) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::is_regular_file(p, ec)) return;
+    std::string ext = p.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), to_lower_ascii);
+    if (ext != ".sav") return;
+    out.push_back(p.generic_string());
+}
+
+std::vector<std::string> Game::scan_save_files(const std::string& root,
+                                               bool recursive) {
     namespace fs = std::filesystem;
     std::vector<std::string> out;
     std::error_code ec;
     if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) return out;
-    for (auto it = fs::recursive_directory_iterator(
-                       root, fs::directory_options::skip_permission_denied, ec);
-         !ec && it != fs::recursive_directory_iterator();
-         it.increment(ec)) {
-        if (!it->is_regular_file(ec)) continue;
-        const fs::path& p = it->path();
-        std::string ext = p.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), to_lower_ascii);
-        if (ext != ".sav") continue;
-        out.push_back(p.generic_string());
+    auto opts = fs::directory_options::skip_permission_denied;
+    if (recursive) {
+        for (auto it = fs::recursive_directory_iterator(root, opts, ec);
+             !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            collect_sav(it->path(), out);
+        }
+    } else {
+        for (auto it = fs::directory_iterator(root, opts, ec);
+             !ec && it != fs::directory_iterator(); it.increment(ec)) {
+            collect_sav(it->path(), out);
+        }
     }
     std::sort(out.begin(), out.end(), natural_less);
     return out;

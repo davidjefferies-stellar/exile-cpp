@@ -39,6 +39,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item "${{ github.workspace }}\build\bin\exile.exe" $stage
           Copy-Item "${{ github.workspace }}\exile.ini" $stage
+          # Ship the save disks so players can load them (game scans save_disks/ at runtime).
+          Copy-Item "${{ github.workspace }}\save_disks" $stage -Recurse
 
       - name: Zip the bundle
         shell: pwsh
@@ -86,6 +88,8 @@ jobs:
           mkdir -p stage
           cp build/exile stage/
           cp exile.ini stage/
+          # Ship the save disks so players can load them (game scans save_disks/ at runtime).
+          cp -r save_disks stage/
 
       # tar.gz, not zip, to keep the executable bit.
       - name: Tar the bundle

@@ -309,7 +309,7 @@ bool consume_left_click(PixelRenderer& r) {
         { "Damage",     &r.damage_overlay_on },
         { "Mood",       &r.mood_overlay_on   },
         { "Events",     &r.events_panel_on   },
-        { "Saves",      &r.saves_panel_on    },
+        { "Legacy Saves", &r.saves_panel_on  },
     };
     int hud_y = r.hud_y_px();
     for (int i = 0; i < 10; i++) {
@@ -951,7 +951,7 @@ bool render_hud_panels(PixelRenderer& r) {
         { "Damage",     &r.damage_overlay_on },
         { "Mood",       &r.mood_overlay_on   },
         { "Events",     &r.events_panel_on   },
-        { "Saves",      &r.saves_panel_on    },
+        { "Legacy Saves", &r.saves_panel_on  },
     };
     int cy = checkbox_slot_y(hud_y);
     for (int i = 0; i < 10; i++) {

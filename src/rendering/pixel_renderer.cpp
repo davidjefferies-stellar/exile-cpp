@@ -1095,6 +1095,7 @@ int PixelRenderer::get_key() {
                 case 20: decoded = InputKey::LEFT; break;
                 case 10: decoded = InputKey::ENTER; break;
                 case 27: decoded = InputKey::ESCAPE; break;
+                case 8:  decoded = InputKey::BACKSPACE; break;
                 default:
                     if (i >= 'A' && i <= 'Z') decoded = i + 32;
                     else if (i >= 0x20 && i <= 0x80) decoded = i;
